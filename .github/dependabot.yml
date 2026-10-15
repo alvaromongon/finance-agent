@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      # js-yaml 5 drops DumpOptions.quotingType, used to write the brain; see the migration issue.
+      - dependency-name: js-yaml
+        update-types: ["version-update:semver-major"]
+    groups:
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      # The image follows the Node LTS pinned in .nvmrc; a major Node upgrade is a deliberate change.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]

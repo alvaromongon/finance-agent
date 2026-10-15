@@ -1,0 +1,6 @@
+#!/bin/sh
+# Local quality gate: the same checks as CI (.github/workflows/ci.yml).
+# Enabled by `npm ci`/`npm install` through the `prepare` script.
+set -e
+npm audit --audit-level=high --omit=dev
+npm run check

@@ -1,0 +1,129 @@
+name: Finance Agent Engine — Email Relay
+
+# Reusable workflow: sends the emails queued in logs/outbox/ over SMTP
+# (outbox:send) and closes a screening run left unsummarized
+# (screening:summarize). Each file is deleted ONLY if it was sent. Returns the
+# deletions as a patch in an artifact; it does NOT commit.
+
+on:
+  workflow_call:
+    inputs:
+      data-path:
+        description: "Path of the brain (portfolio, watchlist, logs…) inside the calling repo"
+        required: true
+        type: string
+      engine-repository:
+        description: "Engine repository (owner/name); empty = the calling repo"
+        required: false
+        type: string
+        default: ""
+      engine-ref:
+        description: "Engine ref (tag, branch or SHA); empty = the run's commit"
+        required: false
+        type: string
+        default: ""
+      engine-dir:
+        description: "Engine folder inside its repository"
+        required: false
+        type: string
+        default: "."
+      smtp-user:
+        required: true
+        type: string
+      alert-email-to:
+        required: true
+        type: string
+      alert-email-from:
+        required: false
+        type: string
+        default: ""
+      # outbox:send only relays rendered emails; screening:summarize renders one.
+      output-language:
+        description: "Language of the engine's emails, reports and notes: en | es (empty = en)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SMTP_PASS:
+        required: true
+    outputs:
+      changes-artifact:
+        description: "Artifact with the patch (changes.patch) of the changes under data-path"
+        value: ${{ jobs.relay.outputs.changes-artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    outputs:
+      changes-artifact: ${{ steps.changes.outputs.artifact }}
+    env:
+      VAULT_PROJECT_DIR: ${{ github.workspace }}/${{ inputs.data-path }}
+      OUTPUT_LANGUAGE: ${{ inputs.output-language }}
+      MAIL_REQUIRE_DELIVERY: "true"
+      SMTP_USER: ${{ inputs.smtp-user }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      ALERT_EMAIL_TO: ${{ inputs.alert-email-to }}
+      ALERT_EMAIL_FROM: ${{ inputs.alert-email-from }}
+    steps:
+      - name: Checkout data
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: ${{ inputs.data-path }}
+
+      - name: Checkout engine
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.engine-repository || github.repository }}
+          ref: ${{ inputs.engine-ref || github.sha }}
+          path: _engine
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: _engine/${{ inputs.engine-dir }}/package-lock.json
+
+      - name: Install deps
+        working-directory: _engine/${{ inputs.engine-dir }}
+        run: npm ci
+
+      # Closes a screening run left unsummarized: builds the aggregated
+      # email from results.jsonl and, as the relay runs in strict mode,
+      # deletes it only if it was sent.
+      - name: Summarize pending screening run
+        working-directory: _engine/${{ inputs.engine-dir }}
+        run: |
+          if [ -f "$VAULT_PROJECT_DIR/logs/pending-screening/results.jsonl" ]; then
+            npm run screening:summarize
+          else
+            echo "No pending results.jsonl — nothing to summarize."
+          fi
+
+      - name: Send outbox
+        working-directory: _engine/${{ inputs.engine-dir }}
+        run: npm run outbox:send
+
+      # Patch of everything the run changed under data-path (additions,
+      # changes and deletions). The calling workflow applies it and decides
+      # what to commit.
+      - name: Export changes
+        id: changes
+        env:
+          DATA_PATH: ${{ inputs.data-path }}
+        run: |
+          git add -A -- "$DATA_PATH"
+          git diff --cached --binary > "$RUNNER_TEMP/changes.patch"
+          echo "artifact=finance-agent-email-relay-changes" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: finance-agent-email-relay-changes
+          path: ${{ runner.temp }}/changes.patch
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true # re-run of a failed job: the artifact already exists

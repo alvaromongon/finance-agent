@@ -1,0 +1,594 @@
+// Decision evaluation: what happened after each decision in the
+// log (ADR-0006), closed trades in net R, the aggregates and the cutoff
+// criterion table (ADR-0009 §4). No I/O: decisions-evaluate.ts supplies the
+// log, portfolio.md and the series, and decisions-evaluation-render.ts the
+// Markdown.
+import { messages, type Messages } from "../i18n/index.js";
+import { config } from "../config.js";
+import type { Decision, DecisionType } from "../decisions.js";
+import type { HistoricalBar } from "../providers/types.js";
+import { CONVICTIONS, CURRENCIES } from "../types.js";
+import type { Currency, PortfolioSnapshot } from "../types.js";
+import { suggestStop } from "./atr-stop.js";
+import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
+import { siloPerformance, type SiloPerformance } from "./silo-performance.js";
+
+/** Framework parameters the evaluation uses; `config.framework` and `config.reference` by default. */
+export interface EvaluationFramework {
+  reference: Readonly<Record<Currency, string>>;
+  minRewardRisk: number;
+  cutReviewTrades: number;
+  cutDecisionTrades: number;
+  drawdownPausePct: number;
+}
+
+/** The configured framework, with the reference ETFs that come from the environment. */
+const configuredFramework = (): EvaluationFramework => ({ ...config.framework, reference: config.reference });
+
+/** Measured horizons, in the security's own sessions. */
+export const SESSION_HORIZONS = [20, 60] as const;
+
+/** Sessions after the decision in which the plan's stop and target are looked for. */
+export const PLAN_WINDOW_SESSIONS = 60;
+
+/** Below this size, reports warn that the group does not allow a conclusion. */
+export const MIN_SAMPLE = 30;
+
+export function mean(values: readonly number[]): number | null {
+  return values.length === 0 ? null : values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+export function median(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+/** C v1 is rules "1.x" and later; while it is being built, "0.x" (ADR-0009 §5). */
+export function isCv1(rulesVersion: string): boolean {
+  const major = Number.parseInt(rulesVersion, 10);
+  return Number.isFinite(major) && major >= 1;
+}
+
+/** Decisions with an asset and a price to follow over time; money flows have none. */
+const TRACKED_TYPES: readonly DecisionType[] = [
+  "screen_interesting",
+  "screen_rejected",
+  "buy_proposal",
+  "buy_blocked",
+  "hold",
+  "sell",
+  "adjust_stop",
+  "entry",
+  "exit",
+];
+
+/** Buys, made or not, measured against a plan in R. */
+const BUY_PLAN_TYPES: readonly DecisionType[] = [
+  "screen_interesting",
+  "screen_rejected",
+  "buy_proposal",
+  "buy_blocked",
+  "entry",
+];
+
+/** Also the `hold` of an eligible setup the reasoner did not buy (ADR-0013): it is a buy not made. */
+function hasBuyPlan(d: Decision): boolean {
+  return BUY_PLAN_TYPES.includes(d.type) || (d.type === "hold" && d.eligibility?.verdict === "eligible");
+}
+
+// ─── Plan in R ───────────────────────────────────────────────────────────────
+
+export interface BuyPlan {
+  entry: number;
+  stop: number;
+  target: number;
+  /** The stop or the target are not a ticket's: they come from the recorded ATR or the minimum R:R. */
+  inferred: boolean;
+}
+
+/**
+ * Plan a buy is measured against. It uses the stop and target of the engine
+ * ticket, of the decision itself or of the proposal it cites. If they are
+ * missing (screening, blocks without a ticket, entries without a stop), the
+ * stop at the horizon distance with the recorded ATR (ADR-0011) and the target
+ * at the minimum R:R (ADR-0009 §3). `null` without a price or a way to set the stop.
+ */
+export function buyPlan(d: Decision, related: Decision | undefined, minRewardRisk: number): BuyPlan | null {
+  const entry = d.price;
+  if (entry == null) return null;
+  const ticketStop = d.stop_initial ?? related?.stop_initial;
+  const horizon = d.horizon ?? related?.horizon ?? "medium";
+  const stop = ticketStop ?? (d.atr14 != null ? suggestStop(entry, d.atr14, horizon) : undefined);
+  if (stop == null || !(stop < entry)) return null;
+  const ticketTarget = d.target ?? related?.target;
+  const anchored = ticketTarget != null && ticketTarget > entry;
+  return {
+    entry,
+    stop,
+    target: anchored ? ticketTarget : entry + minRewardRisk * (entry - stop),
+    inferred: ticketStop == null || !anchored,
+  };
+}
+
+export interface Excursion {
+  /** Maximum rise and maximum fall in R from the plan entry. */
+  mfeR: number;
+  maeR: number;
+  /** What the price touched first; `null` if neither in the observed sessions. */
+  first: "stop" | "target" | null;
+  /** It touched the stop and, later in the same window, the target. */
+  targetAfterStop: boolean;
+  /**
+   * Plan R: the target's, −1 at the stop (the daily bar does not see gaps) or,
+   * if neither was touched in the full window, the last close's. `null` while
+   * the window is still open without touching either.
+   */
+  resultR: number | null;
+  /** Observed sessions, up to PLAN_WINDOW_SESSIONS. */
+  sessions: number;
+}
+
+/** Price path against the plan in the sessions after the decision. */
+export function excursion(
+  bars: readonly HistoricalBar[],
+  date: string,
+  plan: BuyPlan,
+  sessions = PLAN_WINDOW_SESSIONS,
+): Excursion | null {
+  // Only later sessions: the decision day's bar mixes what happened before and after.
+  const window = bars.filter((b) => b.date > date).slice(0, sessions);
+  if (window.length === 0) return null;
+
+  const toR = (price: number) => (price - plan.entry) / (plan.entry - plan.stop);
+  let first: Excursion["first"] = null;
+  let targetAfterStop = false;
+  let high = -Infinity;
+  let low = Infinity;
+  for (const bar of window) {
+    high = Math.max(high, bar.high);
+    low = Math.min(low, bar.low);
+    if (first == null) {
+      // If one session touches both, the order is unknown: the stop counts.
+      if (bar.low <= plan.stop) first = "stop";
+      else if (bar.high >= plan.target) first = "target";
+    } else if (first === "stop" && bar.high >= plan.target) {
+      targetAfterStop = true;
+    }
+  }
+
+  const complete = window.length >= sessions;
+  const resultR =
+    first === "target" ? toR(plan.target) : first === "stop" ? -1 : complete ? toR(window.at(-1)!.close) : null;
+  return { mfeR: toR(high), maeR: toR(low), first, targetAfterStop, resultR, sessions: window.length };
+}
+
+// ─── Per decision ────────────────────────────────────────────────────────────
+
+export interface DecisionEvaluation {
+  decision: Decision & { ticker: string };
+  /** Benchmark of the decision's silo. */
+  reference: string;
+  /** Last close ≤ decision date; null = no usable history. */
+  base: HistoricalBar | null;
+  horizons: Record<number, HorizonOutcome>;
+  plan: BuyPlan | null;
+  excursion: Excursion | null;
+}
+
+/**
+ * Crosses each decision with the series of its asset and of its silo
+ * benchmark. `barsBySymbol` must hold only complete closes (`loadClosedBars`).
+ */
+export function evaluateDecisions(
+  decisions: readonly Decision[],
+  barsBySymbol: ReadonlyMap<string, HistoricalBar[]>,
+  framework: Pick<EvaluationFramework, "reference" | "minRewardRisk"> = configuredFramework(),
+  horizons: readonly number[] = SESSION_HORIZONS,
+): DecisionEvaluation[] {
+  const byId = new Map(decisions.map((d) => [d.id, d] as const));
+  return decisions
+    .filter((d): d is Decision & { ticker: string } => d.ticker != null && TRACKED_TYPES.includes(d.type))
+    .map((d) => {
+      const bars = barsBySymbol.get(d.ticker) ?? [];
+      const reference = framework.reference[d.currency];
+      const referenceBars = barsBySymbol.get(reference);
+      const outcomes: Record<number, HorizonOutcome> = {};
+      for (const h of horizons) {
+        const ret = forwardReturn(bars, d.date, h);
+        outcomes[h] = { ret, excess: ret ? excessReturn(ret, referenceBars) : null };
+      }
+      const plan = hasBuyPlan(d)
+        ? buyPlan(d, d.related_id ? byId.get(d.related_id) : undefined, framework.minRewardRisk)
+        : null;
+      return {
+        decision: d,
+        reference,
+        base: closeOnOrBefore(bars, d.date),
+        horizons: outcomes,
+        plan,
+        excursion: plan ? excursion(bars, d.date, plan) : null,
+      };
+    });
+}
+
+// ─── Closed trades ───────────────────────────────────────────────────────────
+
+export interface ClosedTrade {
+  entry: Decision;
+  exit: Decision;
+  /** Initial stop: the entry's or, if missing, that of the proposal it cites. */
+  stop: number | null;
+  /** Realized R net of costs (ADR-0009 §2); null without an initial stop below the entry. */
+  rNet: number | null;
+  /** Counts for the cutoff: system entry under C v1 (ADR-0009 §4). */
+  counts: boolean;
+}
+
+/** An `exit` and the `entry` it cites. An exit without a recorded entry is not a measurable trade. */
+export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
+  const byId = new Map(decisions.map((d) => [d.id, d] as const));
+  const trades: ClosedTrade[] = [];
+  for (const exit of decisions) {
+    if (exit.type !== "exit" || !exit.related_id) continue;
+    const entry = byId.get(exit.related_id);
+    if (entry?.type !== "entry") continue;
+    const stop =
+      entry.stop_initial ?? (entry.related_id ? byId.get(entry.related_id)?.stop_initial : undefined) ?? null;
+    trades.push({
+      entry,
+      exit,
+      stop,
+      rNet: realizedR(entry, exit, stop),
+      counts: entry.origin === "sistema" && isCv1(entry.rules_version),
+    });
+  }
+  return trades;
+}
+
+/**
+ * Net R: (exit − entry − costs per unit) / (entry − initial stop).
+ * Costs per unit are the buy's and, if any, the sale's.
+ */
+export function realizedR(entry: Decision, exit: Decision, stop: number | null): number | null {
+  const { price: entryPrice, amount: entryAmount } = entry;
+  const { price: exitPrice, amount: exitAmount } = exit;
+  if (stop == null || entryPrice == null || exitPrice == null || !entryAmount || !exitAmount || !(stop < entryPrice)) {
+    return null;
+  }
+  const costPerUnit = (entry.costs ?? 0) / (entryAmount / entryPrice) + (exit.costs ?? 0) / (exitAmount / exitPrice);
+  return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
+}
+
+/** Entries not cited by an exit. */
+export function openEntries(decisions: readonly Decision[]): Decision[] {
+  const closed = new Set(decisions.filter((d) => d.type === "exit").map((d) => d.related_id));
+  return decisions.filter((d) => d.type === "entry" && !closed.has(d.id));
+}
+
+// ─── Aggregates ──────────────────────────────────────────────────────────────
+
+export interface TradeStats {
+  total: number;
+  /** With an initial stop: the only ones in the expectancy. */
+  withR: number;
+  expectancy: number | null;
+  winners: number;
+}
+
+export function tradeStats(trades: readonly ClosedTrade[]): TradeStats {
+  const rs = trades.map((t) => t.rNet).filter((r): r is number => r != null);
+  return { total: trades.length, withR: rs.length, expectancy: mean(rs), winners: rs.filter((r) => r > 0).length };
+}
+
+export interface HorizonStats {
+  /** Horizon completed: the only ones in the averages. */
+  complete: number;
+  meanReturn: number | null;
+  meanExcess: number | null;
+}
+
+export interface GroupStats {
+  total: number;
+  horizons: Record<number, HorizonStats>;
+  /** With plan R: they touched stop or target, or completed the window. */
+  withResult: number;
+  targetFirst: number;
+  stopFirst: number;
+  targetAfterStop: number;
+  meanResultR: number | null;
+}
+
+/**
+ * Aggregates a group of decisions. It only counts completed horizons:
+ * averaging a +3% at 5 sessions with a +3% at 60 would mix horizons.
+ */
+export function groupStats(
+  evals: readonly DecisionEvaluation[],
+  horizons: readonly number[] = SESSION_HORIZONS,
+): GroupStats {
+  const byHorizon: Record<number, HorizonStats> = {};
+  for (const h of horizons) {
+    const complete = evals.map((e) => e.horizons[h]).filter((o) => o?.ret != null && !o.ret.partial);
+    byHorizon[h] = {
+      complete: complete.length,
+      meanReturn: mean(complete.map((o) => o.ret!.pct)),
+      meanExcess: mean(complete.map((o) => o.excess).filter((x): x is number => x != null)),
+    };
+  }
+  const excursions = evals.map((e) => e.excursion).filter((x): x is Excursion => x != null);
+  const results = excursions.map((x) => x.resultR).filter((r): r is number => r != null);
+  return {
+    total: evals.length,
+    horizons: byHorizon,
+    withResult: results.length,
+    targetFirst: excursions.filter((x) => x.first === "target").length,
+    stopFirst: excursions.filter((x) => x.first === "stop").length,
+    targetAfterStop: excursions.filter((x) => x.targetAfterStop).length,
+    meanResultR: mean(results),
+  };
+}
+
+export interface Group<T> {
+  label: string;
+  items: T[];
+}
+
+export interface Grouping {
+  title: string;
+  /** What it groups and what question it answers. */
+  note: string;
+  groups: Group<DecisionEvaluation>[];
+}
+
+const breaksRules = (d: Decision) => (d.rule_violations?.length ?? 0) > 0;
+
+/** Origin (ADR-0009 §8) by whether it breaks a rule. */
+function byOriginAndRules<T>(items: readonly T[], decisionOf: (item: T) => Decision, m: Messages): Group<T>[] {
+  return (["sistema", "propietario"] as const).flatMap((origin) =>
+    [false, true].map((broke) => ({
+      label: m.evaluation.groupings.originRules(origin === "sistema", broke),
+      items: items.filter((i) => decisionOf(i).origin === origin && breaksRules(decisionOf(i)) === broke),
+    })),
+  );
+}
+
+/** Buy blocks with (or without) `regime_adverse` among their reasons. */
+function blockedByRegime(evals: readonly DecisionEvaluation[], byRegime: boolean): DecisionEvaluation[] {
+  return evals.filter(
+    (e) =>
+      e.decision.type === "buy_blocked" &&
+      (e.decision.eligibility?.reasons.includes("regime_adverse") ?? false) === byRegime,
+  );
+}
+
+export function decisionGroupings(evals: readonly DecisionEvaluation[], m: Messages = messages()): Grouping[] {
+  const t = m.evaluation.groupings;
+  const ofType = (...types: DecisionType[]) => evals.filter((e) => types.includes(e.decision.type));
+  const buys = ofType("buy_proposal", "buy_blocked");
+  const planned = ofType("buy_proposal", "buy_blocked", "entry");
+  const versions = [...new Set(planned.map((e) => e.decision.rules_version))].sort(compareVersions);
+
+  return [
+    {
+      title: t.entriesTitle,
+      note: t.entriesNote,
+      groups: byOriginAndRules(ofType("entry"), (e) => e.decision, m),
+    },
+    {
+      title: t.convictionTitle,
+      note: t.convictionNote,
+      groups: [
+        ...CONVICTIONS.map((c) => ({
+          label: c,
+          items: buys.filter((e) => hasEngineConviction(e.decision) && e.decision.conviction === c),
+        })),
+        { label: t.noEngineConviction, items: buys.filter((e) => !hasEngineConviction(e.decision)) },
+      ],
+    },
+    {
+      title: t.eligibleTitle,
+      note: t.eligibleNote,
+      groups: [
+        { label: t.proposals, items: ofType("buy_proposal") },
+        {
+          label: t.eligibleNotProposed,
+          items: evals.filter((e) => e.decision.type === "hold" && e.decision.eligibility?.verdict === "eligible"),
+        },
+        // Disjoint on purpose: with regime blocks inside the total of blocks, the
+        // control row would contain the one being measured and the two
+        // medians would not be comparable.
+        { label: t.blockedByRegime, items: blockedByRegime(evals, true) },
+        { label: t.blockedOther, items: blockedByRegime(evals, false) },
+      ],
+    },
+    {
+      title: t.screeningTitle,
+      note: t.screeningNote,
+      groups: [
+        { label: t.interesting, items: ofType("screen_interesting") },
+        { label: t.rejected, items: ofType("screen_rejected") },
+      ],
+    },
+    {
+      title: t.screeningConvictionTitle,
+      note: t.screeningConvictionNote,
+      groups: CONVICTIONS.map((c) => ({
+        label: c,
+        items: ofType("screen_interesting").filter(
+          (e) =>
+            e.decision.conviction === c && compareVersions(e.decision.rules_version, CONVICTION_RUBRIC_VERSION) >= 0,
+        ),
+      })),
+    },
+    {
+      title: t.rankingTitle,
+      note: t.rankingNote,
+      groups: [
+        {
+          label: t.ranking,
+          items: ofType("screen_interesting", "screen_rejected").filter(
+            (e) => e.decision.rank != null && !e.decision.exploration,
+          ),
+        },
+        {
+          label: t.exploration,
+          items: ofType("screen_interesting", "screen_rejected").filter((e) => e.decision.exploration === true),
+        },
+      ],
+    },
+    {
+      title: t.versionTitle,
+      note: t.versionNote,
+      groups: versions.map((v) => ({ label: v, items: planned.filter((e) => e.decision.rules_version === v) })),
+    },
+  ];
+}
+
+/** Closed trades: the cutoff counter and the origin by rules. */
+export function tradeGroupings(trades: readonly ClosedTrade[], m: Messages = messages()): Group<ClosedTrade>[] {
+  return [
+    { label: m.evaluation.groupings.cutCounter, items: trades.filter((t) => t.counts) },
+    ...byOriginAndRules(trades, (t) => t.entry, m),
+  ];
+}
+
+/** The engine computed the conviction if it carries the points behind it. */
+const hasEngineConviction = (d: Decision) => d.conviction != null && d.conviction_points != null;
+
+/** First rules version in which the engine computes the screening conviction. */
+const CONVICTION_RUBRIC_VERSION = "0.8";
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+// ─── Cutoff criterion table ──────────────────────────────────────────────────
+
+export interface CutBoard {
+  /** Rules version in force (strategies/base.md). */
+  rulesVersion: string;
+  /** Date of the first entry under C v1; null while the counter has not started. */
+  counterStart: string | null;
+  /** Since when portfolios and drawdown are measured: the counter start or, in rehearsal, the log's. */
+  measuredFrom: string | null;
+  /** Closed trades that count for the cutoff. */
+  trades: TradeStats;
+  /** System entries under C v1 still open. */
+  open: number;
+  silos: SiloPerformance[];
+  /** The two real portfolios and the two shadows, in EUR at the day's rate. */
+  totalEur: { real: number; shadow: number } | null;
+  framework: EvaluationFramework;
+}
+
+/** The counter starts with the first entry under C v1 (ADR-0009 §4). */
+export function counterStart(decisions: readonly Decision[]): string | null {
+  return (
+    decisions
+      .filter((d) => d.type === "entry" && isCv1(d.rules_version))
+      .map((d) => d.date)
+      .sort()[0] ?? null
+  );
+}
+
+export interface EvaluationInput {
+  decisions: readonly Decision[];
+  /** Today's state of each silo per portfolio.md. */
+  portfolios: Record<Currency, PortfolioSnapshot>;
+  bars: ReadonlyMap<string, HistoricalBar[]>;
+  asOf: string;
+  rulesVersion: string;
+  /** Dollars per euro at the last close; null if there is no rate. */
+  eurUsd: number | null;
+  framework?: EvaluationFramework;
+}
+
+/**
+ * While C v1 is being built, portfolios and drawdown are measured in
+ * rehearsal from the first decision in the log: so the reconstruction is
+ * tested before it counts, and does not start on counter day never seen before.
+ */
+export function buildCutBoard(input: EvaluationInput, trades = closedTrades(input.decisions)): CutBoard {
+  const framework = input.framework ?? configuredFramework();
+  const start = counterStart(input.decisions);
+  const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
+  const silos =
+    measuredFrom == null
+      ? []
+      : CURRENCIES.map((currency) =>
+          siloPerformance({
+            currency,
+            portfolio: input.portfolios[currency],
+            decisions: input.decisions,
+            start: measuredFrom,
+            asOf: input.asOf,
+            bars: input.bars,
+            reference: framework.reference[currency],
+          }),
+        );
+
+  const eur = silos.find((s) => s.currency === "EUR");
+  const usd = silos.find((s) => s.currency === "USD");
+  const rate = input.eurUsd;
+  const totalEur =
+    eur?.shadow != null && usd?.shadow != null && rate != null && rate > 0
+      ? { real: eur.real + usd.real / rate, shadow: eur.shadow + usd.shadow / rate }
+      : null;
+
+  return {
+    rulesVersion: input.rulesVersion,
+    counterStart: start,
+    measuredFrom,
+    trades: tradeStats(trades.filter((t) => t.counts)),
+    open: openEntries(input.decisions).filter((d) => d.origin === "sistema" && isCv1(d.rules_version)).length,
+    silos,
+    totalEur,
+    framework,
+  };
+}
+
+export interface EvaluationReport {
+  asOf: string;
+  decisions: number;
+  /** Dates of the first and the last decision. */
+  span: [string, string] | null;
+  board: CutBoard;
+  evaluations: DecisionEvaluation[];
+  trades: ClosedTrade[];
+}
+
+export function buildEvaluationReport(input: EvaluationInput): EvaluationReport {
+  const trades = closedTrades(input.decisions);
+  const dates = input.decisions.map((d) => d.date).sort();
+  return {
+    asOf: input.asOf,
+    decisions: input.decisions.length,
+    span: dates.length > 0 ? [dates[0], dates[dates.length - 1]] : null,
+    board: buildCutBoard(input, trades),
+    evaluations: evaluateDecisions(input.decisions, input.bars, input.framework ?? configuredFramework()),
+    trades,
+  };
+}
+
+/** Symbols to download: every asset in the log and in portfolio.md, and each silo's benchmark. */
+export function evaluationSymbols(
+  decisions: readonly Decision[],
+  portfolios: Record<Currency, PortfolioSnapshot>,
+  framework: Pick<EvaluationFramework, "reference"> = configuredFramework(),
+): string[] {
+  return [
+    ...new Set([
+      ...decisions.map((d) => d.ticker).filter((t): t is string => t != null),
+      ...CURRENCIES.flatMap((c) => portfolios[c].positions.map((p) => p.ticker)),
+      ...CURRENCIES.map((c) => framework.reference[c]),
+    ]),
+  ];
+}

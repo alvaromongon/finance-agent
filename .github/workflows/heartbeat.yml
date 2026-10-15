@@ -1,0 +1,152 @@
+name: Finance Agent Engine — Heartbeat
+
+# Reusable workflow: runs the engine's heartbeat against the calling repo's
+# data and returns its changes as a patch in an artifact. It does NOT commit:
+# the calling workflow does, so the engine needs no write access to the data
+# repository.
+
+on:
+  workflow_call:
+    inputs:
+      currency:
+        description: "Currency of the run (silo): EUR or USD"
+        required: true
+        type: string
+      data-path:
+        description: "Path of the brain (portfolio, watchlist, logs…) inside the calling repo"
+        required: true
+        type: string
+      engine-repository:
+        description: "Engine repository (owner/name); empty = the calling repo"
+        required: false
+        type: string
+        default: ""
+      engine-ref:
+        description: "Engine ref (tag, branch or SHA); empty = the run's commit"
+        required: false
+        type: string
+        default: ""
+      engine-dir:
+        description: "Engine folder inside its repository"
+        required: false
+        type: string
+        default: "."
+      analyst-provider:
+        required: false
+        type: string
+        default: ""
+      claude-model:
+        required: false
+        type: string
+        default: ""
+      smtp-user:
+        required: true
+        type: string
+      alert-email-to:
+        required: true
+        type: string
+      alert-email-from:
+        required: false
+        type: string
+        default: ""
+      output-language:
+        description: "Language of the engine's emails, reports and notes: en | es (empty = en)"
+        required: false
+        type: string
+        default: ""
+      reference-ticker-eur:
+        description: "Benchmark ETF of the EUR silo (shadow portfolio, regime and relative strength)"
+        required: true
+        type: string
+      reference-ticker-usd:
+        description: "Benchmark ETF of the USD silo"
+        required: true
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+      SMTP_PASS:
+        required: true
+    outputs:
+      changes-artifact:
+        description: "Artifact with the patch (changes.patch) of the changes under data-path"
+        value: ${{ jobs.heartbeat.outputs.changes-artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    outputs:
+      changes-artifact: ${{ steps.changes.outputs.artifact }}
+    steps:
+      - name: Checkout data
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: ${{ inputs.data-path }}
+
+      - name: Checkout engine
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.engine-repository || github.repository }}
+          ref: ${{ inputs.engine-ref || github.sha }}
+          path: _engine
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: _engine/${{ inputs.engine-dir }}/package-lock.json
+
+      - name: Install deps
+        working-directory: _engine/${{ inputs.engine-dir }}
+        run: npm ci
+
+      - name: Typecheck + tests
+        working-directory: _engine/${{ inputs.engine-dir }}
+        run: npm run typecheck && npm test
+
+      - name: Run heartbeat
+        working-directory: _engine/${{ inputs.engine-dir }}
+        env:
+          # The step's cwd is the engine folder, so the data is referenced
+          # by its absolute workspace path.
+          VAULT_PROJECT_DIR: ${{ github.workspace }}/${{ inputs.data-path }}
+          OUTPUT_LANGUAGE: ${{ inputs.output-language }}
+          REFERENCE_TICKER_EUR: ${{ inputs.reference-ticker-eur }}
+          REFERENCE_TICKER_USD: ${{ inputs.reference-ticker-usd }}
+          ANALYST_PROVIDER: ${{ inputs.analyst-provider }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: ${{ inputs.claude-model }}
+          # Delivery required: without SMTP credentials the run fails instead
+          # of falling back to "logs only" and losing the alert in silence.
+          MAIL_REQUIRE_DELIVERY: "true"
+          SMTP_USER: ${{ inputs.smtp-user }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          ALERT_EMAIL_TO: ${{ inputs.alert-email-to }}
+          ALERT_EMAIL_FROM: ${{ inputs.alert-email-from }}
+          CURRENCY: ${{ inputs.currency }}
+        run: npx tsx src/index.ts --currency "$CURRENCY"
+
+      # Patch of everything the run changed under data-path (additions,
+      # changes and deletions). The calling workflow applies it and decides
+      # what to commit.
+      - name: Export changes
+        id: changes
+        env:
+          DATA_PATH: ${{ inputs.data-path }}
+        run: |
+          git add -A -- "$DATA_PATH"
+          git diff --cached --binary > "$RUNNER_TEMP/changes.patch"
+          echo "artifact=finance-agent-heartbeat-changes" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: finance-agent-heartbeat-changes
+          path: ${{ runner.temp }}/changes.patch
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true # re-run of a failed job: the artifact already exists

@@ -1,0 +1,47 @@
+name: Finance Agent — Commit changes
+description: >
+  Applies the patch left by one of the engine's reusable workflows and commits
+  only the given paths to the calling repository. Needs a previous checkout
+  with write permission.
+
+inputs:
+  artifact:
+    description: "Artifact with changes.patch (the reusable workflow's changes-artifact output)"
+    required: true
+  paths:
+    description: "Paths to commit, separated by spaces"
+    required: true
+  message:
+    description: "Commit message; the UTC date (YYYY-MM-DD) is appended"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/finance-agent-changes
+
+    - name: Apply and commit
+      shell: bash
+      env:
+        PATCH_FILE: ${{ runner.temp }}/finance-agent-changes/changes.patch
+        COMMIT_PATHS: ${{ inputs.paths }}
+        COMMIT_MESSAGE: ${{ inputs.message }}
+      run: |
+        if [ ! -s "$PATCH_FILE" ]; then
+          echo "The run changed no data — nothing to commit."
+          exit 0
+        fi
+        git apply --binary "$PATCH_FILE"
+        git config user.name  "finance-agent[bot]"
+        git config user.email "finance-agent@users.noreply.github.com"
+        git add -A -- $COMMIT_PATHS
+        if git diff --cached --quiet; then
+          echo "Nothing to commit under the given paths."
+          exit 0
+        fi
+        git commit -m "$COMMIT_MESSAGE $(date -u +%Y-%m-%d)"
+        git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+        git push

@@ -1,0 +1,59 @@
+{
+  "name": "finance-agent",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Finance Agent engine: reads market data, filters signals and escalates to Claude to send email alerts. State and memory live as Markdown files in a separate data directory.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx/esm --import ./src/tests/test-env.ts --test \"src/tests/*.test.ts\"",
+    "smoke-test": "tsx src/smoke-test.ts",
+    "heartbeat:eu": "tsx src/index.ts --currency EUR",
+    "heartbeat:us": "tsx src/index.ts --currency USD",
+    "analyze": "tsx src/analyze.ts",
+    "decisions:evaluate": "tsx src/decisions-evaluate.ts",
+    "monday-briefing": "tsx src/monday-briefing.ts",
+    "monday-briefing:prepare": "tsx src/monday-briefing.ts prepare",
+    "monday-briefing:finalize": "tsx src/monday-briefing.ts finalize",
+    "weekly-screening": "tsx src/weekly-screening.ts",
+    "screening:prepare": "tsx src/weekly-screening.ts prepare",
+    "screening:resolve": "tsx src/weekly-screening.ts resolve",
+    "screening:outcomes": "tsx src/screening-outcomes.ts",
+    "screening:summarize": "tsx src/weekly-screening.ts summarize",
+    "outbox:send": "tsx src/outbox.ts send",
+    "pending:list": "tsx src/pending.ts list",
+    "pending:show": "tsx src/pending.ts show",
+    "pending:resolve": "tsx src/pending.ts resolve",
+    "decision:record": "tsx src/decision.ts record",
+    "demo": "tsx src/demo.ts",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:coverage": "node --import tsx/esm --import ./src/tests/test-env.ts --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test-coverage-exclude='src/tests/**' --test-coverage-lines=80 \"src/tests/*.test.ts\"",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage",
+    "prepare": "git config core.hooksPath .githooks || true"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "dotenv": "^18.0.6",
+    "js-yaml": "^4.1.0",
+    "marked": "^18.1.0",
+    "nodemailer": "^10.1.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^26.6.4",
+    "@types/nodemailer": "^8.0.2",
+    "eslint": "^10.12.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.71.2"
+  }
+}

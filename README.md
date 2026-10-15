@@ -1,0 +1,297 @@
+# Finance Agent
+
+A swing-trading assistant for a small personal portfolio. It runs cheap technical filters in code
+several times a day, escalates to Claude only when a signal fires, and emails a proposal with its
+ticket already computed. **It never places orders**: you decide and execute at your broker.
+
+> [!WARNING]
+> **Not financial advice.** This is a personal project shared as-is under the MIT license. It
+> makes mistakes, its rules are calibrated on small samples, and any trade you make with it is
+> your decision and your risk. Market data comes from Yahoo Finance's unofficial API by default:
+> you are responsible for respecting [Yahoo's terms of use](https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html).
+
+## At a glance
+
+- **What it does**:
+  - Watches your positions and watchlist in two currency silos (EUR, USD).
+  - Detects entry setups (pullbacks and breakouts).
+  - Blocks the ones that fail deterministic rules.
+  - Sizes every ticket by risk, and asks Claude only about what is actually buyable or at risk.
+  - Ranks a weekly screening, briefs you on Mondays, and records every decision, including the ones not to act, so it can measure itself against simply holding a benchmark ETF.
+- **Where state lives**: Markdown files in a data directory you own (the _brain_), read in any notes app and versioned in git ([ADR-0003](docs/decisions/0003-state-as-versioned-markdown.md)).
+- **Run it in one command**, with no keys and no network:
+
+  ```bash
+  npm ci && npm run demo -- --currency EUR
+  ```
+
+- **SLO**: the quality of its proposals against what actually happened, executed or not, with confidence bounds ([SLO](#slo)). Operational cost: at most one Claude call per escalated signal.
+- **Quality**: 783 tests, line coverage ≥ 80% enforced in CI (96.8% measured), type-checked lint, CodeQL, Dependabot, dependency audit, and a pre-push hook that runs the same checks ([Quality gates](#quality-gates)).
+
+## Requirements
+
+- Node.js ≥ 22 (`.nvmrc`) and npm.
+- To run it for real:
+  - an [Anthropic API key](https://console.anthropic.com/), or Claude Code for [handoff mode](#reasoner-api-or-handoff);
+  - an SMTP account (for example Gmail with an app password);
+  - a GitHub repository for your data, if you want it scheduled.
+
+## Quick start
+
+```bash
+npm ci
+npm test
+npm run demo -- --currency EUR   # or USD
+```
+
+The demo runs one heartbeat against the example brain in [`examples/brain/`](examples/brain): a
+fictitious portfolio, watchlist, two theses, policy and universe. Prices are synthetic, from
+[`examples/market/`](examples/market). It works on a temporary copy, does not call Claude (the
+escalations stay in `logs/pending/`) and sends no email: it prints it.
+
+- In EUR it shows a position close to its stop being escalated and an armed breakout with its Buy Stop.
+- In USD it shows an armed breakout.
+
+`npx tsx examples/market/generate.ts` regenerates the prices.
+
+## Configuration, step by step
+
+Every variable is documented in [`.env.example`](.env.example). Copy it to `.env` for local runs.
+In GitHub Actions they come from repository variables and secrets.
+
+1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
+   - `portfolio.md`, which you keep in sync with your broker by hand;
+   - `watchlist.md`, `screening-universe.md` and the theses.
+
+   The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
+
+2. **Benchmarks.** Set `REFERENCE_TICKER_EUR` and `REFERENCE_TICKER_USD` to one **accumulating** ETF per silo, for example a STOXX Europe 600 and an S&P 500 UCITS ETF. They drive the shadow portfolio, the market regime and relative strength ([ADR-0009](docs/decisions/0009-swing-framework-risk-sizing-and-measurement.md)).
+3. **Reasoner.**
+   - `ANALYST_PROVIDER=api` with `ANTHROPIC_API_KEY`;
+   - or `handoff`, to leave the reasoning to a Claude Code session ([below](#reasoner-api-or-handoff)).
+4. **Email.**
+   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `ALERT_EMAIL_TO`. Without them, emails are printed to the log.
+   - From an environment that can't open SMTP, use `MAIL_TRANSPORT=outbox` and run the relay ([ADR-0005](docs/decisions/0005-email-outbox-and-relay.md)).
+5. **Output language.** `OUTPUT_LANGUAGE=en` (default) or `es` for emails, reports and notes. The input format stays in English.
+6. **Broker parameters.** The engine integrates with no broker. Tell it what yours allows and charges:
+   - `BROKER_FRACTIONAL_SHARES`;
+   - `BROKER_MIN_ORDER_VALUE`;
+   - `BROKER_FX_CONVERSION_PCT`.
+7. **Check connectivity.** `npm run smoke-test` checks Yahoo Finance and, if a key is set, Anthropic, without touching your data or sending email.
+
+### Scheduling from your data repository
+
+Your data repository calls this repository's reusable workflows, pinned to a tag
+([ADR-0001](docs/decisions/0001-public-engine-private-data.md)). They run the engine with
+read-only permission and return the changes as a patch. Your workflow applies the patch and
+commits it:
+
+```yaml
+name: Finance Agent — heartbeat
+on:
+  schedule:
+    - cron: "0 17 * * 1-5" # after the European close
+permissions: {}
+jobs:
+  heartbeat:
+    permissions:
+      contents: read
+    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.1.0
+    with:
+      currency: EUR
+      data-path: finance-agent # where your brain lives in this repo
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0
+      output-language: en
+      reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
+      reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
+      smtp-user: ${{ vars.SMTP_USER }}
+      alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+  commit:
+    needs: heartbeat
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+        with:
+          artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
+          paths: finance-agent/logs/ finance-agent/portfolio.md
+          message: "chore(logs): heartbeat EUR"
+```
+
+The same pattern applies to `monday-briefing.yml`, `screening.yml` and `email-relay.yml`.
+Upgrading the engine means changing the tag.
+
+### Reasoner: API or handoff
+
+With `ANALYST_PROVIDER=handoff`, the engine writes each escalation and its prompts to
+`logs/pending/` instead of calling the API. A Claude Code session, for example a scheduled
+routine, then reasons over them through deterministic commands that validate its answer before
+recording anything ([ADR-0004](docs/decisions/0004-handoff-mode-for-the-reasoner.md)):
+
+| Flow                  | Commands                                                        |
+| --------------------- | --------------------------------------------------------------- |
+| Heartbeat escalations | `pending:list`, `pending:show`, `pending:resolve`               |
+| Monday briefing       | `monday-briefing:prepare`, `monday-briefing:finalize`           |
+| Weekly screening      | `screening:prepare`, `screening:resolve`, `screening:summarize` |
+
+The system prompts live in your brain, under `routines/`.
+
+## Commands
+
+| Command                                 | What it does                                          |
+| --------------------------------------- | ----------------------------------------------------- |
+| `npm run demo -- --currency EUR\|USD`   | One heartbeat against the example brain, offline      |
+| `npm run heartbeat:eu` / `heartbeat:us` | One heartbeat for a silo                              |
+| `npm run weekly-screening`              | Weekly screening (API mode)                           |
+| `npm run monday-briefing`               | Monday briefing (API mode)                            |
+| `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report |
+| `npm run decision:record`               | Records a trade or cash flow you made (JSON on stdin) |
+| `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
+| `npm run outbox:send`                   | Sends the queued emails (relay)                       |
+| `npm run smoke-test`                    | Connectivity check                                    |
+
+## Docker
+
+```bash
+docker build -t finance-agent .
+docker run --rm finance-agent                       # offline demo against the example brain
+docker run --rm -v "$PWD/brain:/data" --env-file .env finance-agent dist/index.js --currency EUR
+```
+
+Multi-stage build on `node:22-slim`. The runtime is distroless (`nodejs22-debian13:nonroot`): no
+shell, a non-root user, production dependencies only. Your brain is mounted at `/data`
+(`VAULT_PROJECT_DIR`).
+
+## How to test
+
+```bash
+npm test               # all tests, offline: every external dependency is stubbed
+npm run test:coverage  # with coverage; fails below 80% of lines
+npm run check          # the full local gate: typecheck, lint, format, tests with coverage
+```
+
+Tests never call Yahoo Finance, Anthropic or SMTP. Shared test data and bar builders live in
+`src/tests/fixtures/`.
+
+## Structure and conventions
+
+```
+src/
+  index.ts, heartbeat*.ts     # the heartbeat: signals, setups, risk triggers
+  weekly-screening.ts         # screening: prepare / resolve / summarize
+  screening-ranking.ts        # filter 0 and ranking
+  monday-briefing.ts          # briefing: prepare / finalize
+  decisions*.ts, decision.ts  # decision log, evaluation, manual records
+  analyst/, claude-analyst.ts # reasoner backends (api, handoff) and prompts
+  providers/                  # market data (yahoo-finance, fixtures)
+  utils/                      # pure rules: sizing, stops, eligibility, setups, regime…
+  i18n/                       # output catalogs (en, es)
+  vault-io.ts                 # reads and writes the brain
+  tests/                      # node:test suites
+examples/brain/               # fictitious brain in the v1 format
+examples/market/              # synthetic daily bars for the demo
+docs/                         # input format, ADRs, agent workflow
+```
+
+TypeScript in strict mode with ESM, `node:test`, ESLint (`typescript-eslint` type-checked) and Prettier.
+Code, comments and docs are in English.
+
+## Design
+
+```mermaid
+flowchart LR
+  subgraph data["Your data repository (brain)"]
+    P[portfolio.md]
+    W[watchlist.md]
+    U[screening-universe.md]
+    L[(logs/decisions.jsonl)]
+  end
+  Y[Yahoo Finance] --> H
+  P --> H
+  W --> H["Heartbeat: signals, setups, eligibility, sizing (no LLM)"]
+  H -- "buyable setups and risk triggers only" --> C{{"Claude (api or handoff)"}}
+  C --> V[Validate the ticket]
+  H -- "blocked and armed setups" --> L
+  V --> L
+  V --> E[Email]
+  H -- "stop breached or too tight" --> E
+  U --> S["Weekly screening: filter 0, ranking, exploration"] --> C
+  L --> D["decisions:evaluate (SLO report)"]
+```
+
+The main decisions, each in its ADR ([index](docs/decisions/README.md)):
+
+- **Escalate to Claude only after deterministic filters** ([0002](docs/decisions/0002-escalate-to-claude-only-after-deterministic-filters.md)). A quiet day costs no tokens. The model reads news and theses; the code does the arithmetic.
+- **Deterministic where money is involved** ([0009](docs/decisions/0009-swing-framework-risk-sizing-and-measurement.md), [0010](docs/decisions/0010-deterministic-entry-eligibility-filter.md), [0011](docs/decisions/0011-stops-sized-in-atr.md)). Stop, size and R:R come from the engine: 1% risk per trade, stops in ATR, 2:1 minimum.
+- **State in Markdown, decisions in JSON Lines** ([0003](docs/decisions/0003-state-as-versioned-markdown.md), [0006](docs/decisions/0006-single-append-only-decision-log.md)). Readable and editable by a person, mergeable by git, and every decision measurable.
+- **Outbox pattern** ([0005](docs/decisions/0005-email-outbox-and-relay.md)). Email from environments that can't open SMTP, never lost.
+- **Setups as the single way in** ([0013](docs/decisions/0013-entry-setups.md)), fed by a ranked screening with a random exploration control ([0012](docs/decisions/0012-screening-funnel.md)).
+
+## SLO
+
+The engine proposes; you decide. Its objective is therefore **the quality of its proposals
+against what actually happened**, not speed ([ADR-0014](docs/decisions/0014-decision-quality-slo.md)).
+A proposal does not need to be executed to be judged: the evaluator replays its plan (entry, stop,
+target) on the following sessions. The SLIs are computed by `npm run decisions:evaluate` from the
+decision log, with no LLM:
+
+| SLI                                                                                                                       | Target                                                                                                  | Below the minimum sample                                                             |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| **Proposal quality** (headline): plan R of every buy proposal over 60 sessions, executed or not, against the benchmark    | 90% lower bound > 0R                                                                                    | "insufficient data" under 30 proposals, "inconclusive" while the interval contains 0 |
+| Screening lift: ranked candidates minus exploration, excess return at 60 sessions                                         | lower bound > 0                                                                                         | same                                                                                 |
+| Your portfolio against a shadow portfolio holding the benchmark (private)                                                 | real ≥ shadow                                                                                           | always reported                                                                      |
+| Expectancy of the trades you executed from proposals, net R (private)                                                     | lower bound > 0R                                                                                        | same as the headline                                                                 |
+| **Operational**: Claude calls and provider requests per heartbeat, over a 40-ticker watchlist with every provider stubbed | 0 Claude calls on a quiet run; exactly 1 per escalated signal; history requests ≤ tickers + 1 + signals | [`slo-operational.test.ts`](src/tests/slo-operational.test.ts), in CI                |
+
+There is no wall-clock target: with stubs on shared CI runners a duration measures neither Yahoo
+nor Claude, and it would be flaky (ADR-0014). The two private SLIs depend on your account and your execution. They stay in your own report.
+This repository publishes the method, the targets and the evaluator, and runs them on the example
+brain. Publishing the evaluation of real proposals is deferred until there is a sample. It would
+be in R, with no money, and pre-registered rather than selected ([ADR-0014](docs/decisions/0014-decision-quality-slo.md)).
+Confidence bounds and per-regime reporting are being added to the evaluator
+([#1](https://github.com/alvaromongon/finance-agent/issues/1)).
+
+## Assumptions and limits
+
+- Two currency silos, EUR and USD, each with its benchmark.
+- Daily bars: a gap through a stop is booked at the stop.
+- The portfolio is synced by hand. The engine can't know whether your broker executed a stop, so it warns you to check.
+- Yahoo Finance's endpoints are unofficial and can change without notice. The provider falls back from batch to per-ticker requests, but has no paid alternative yet.
+- Some stored values inherited from the original deployment are in Spanish: the decision `origin` (`sistema`, `propietario`) and the market regime (`favorable`, `neutral`, `adverso`). They are part of the stored format.
+
+## Quality gates
+
+| Check                                                             | Local (`.githooks/pre-push`) | CI                                            |
+| ----------------------------------------------------------------- | ---------------------------- | --------------------------------------------- |
+| Locked install (`npm ci`)                                         | —                            | ✓                                             |
+| Dependency audit (high+, production)                              | ✓                            | ✓                                             |
+| Typecheck (`tsc --noEmit`)                                        | ✓                            | ✓                                             |
+| Lint, warnings fail                                               | ✓                            | ✓                                             |
+| Format check (Prettier)                                           | ✓                            | ✓                                             |
+| Tests with line coverage ≥ 80%                                    | ✓                            | ✓, with the coverage table in the run summary |
+| CodeQL (JavaScript/TypeScript, Actions)                           | —                            | ✓, also weekly                                |
+| Docker build, demo in the container, Trivy (CRITICAL/HIGH, fixed) | —                            | ✓                                             |
+| Dependabot (npm, Actions, 7-day cooldown)                         | —                            | ✓                                             |
+
+The hook is enabled by `npm ci` (`prepare` sets `core.hooksPath`).
+
+## Future enhancements
+
+- Confidence bounds, per-regime reporting and execution-gap measures in `decisions:evaluate` ([#1](https://github.com/alvaromongon/finance-agent/issues/1)).
+- A pluggable paid market data provider.
+
+## How this was built
+
+Developed with AI assistance (Claude Code), with test-driven development and an issue-to-PR
+workflow described in [`docs/agents/workflow.md`](docs/agents/workflow.md). Design decisions are
+recorded as ADRs and proposed through pull requests.
+
+## License
+
+[MIT](LICENSE)

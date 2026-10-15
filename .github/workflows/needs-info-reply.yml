@@ -1,0 +1,27 @@
+# When the reporter answers an issue labeled needs-info, send it back to triage, so the next
+# github-triage run picks it up. Only the issue author's reply counts.
+name: Needs-info reply
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  back-to-triage:
+    name: Back to triage
+    if: >-
+      !github.event.issue.pull_request &&
+      contains(github.event.issue.labels.*.name, 'needs-info') &&
+      github.event.comment.user.login == github.event.issue.user.login
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Relabel needs-info → needs-triage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: gh issue edit "$ISSUE" --remove-label needs-info --add-label needs-triage

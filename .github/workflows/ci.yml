@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install (locked)
+        run: npm ci
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high --omit=dev
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint -- --max-warnings 0
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Tests with coverage (lines >= 80%)
+        run: |
+          set -o pipefail
+          npm run test:coverage 2>&1 | tee "$RUNNER_TEMP/test-output.txt"
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## Coverage"
+            echo
+            echo '```'
+            sed -n '/start of coverage report/,/end of coverage report/p' "$RUNNER_TEMP/test-output.txt" | sed 's/^ℹ //'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: test-output
+          path: ${{ runner.temp }}/test-output.txt
+          retention-days: 14
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: docker build -t finance-agent:ci .
+
+      - name: Smoke test (offline demo in the container)
+        run: docker run --rm finance-agent:ci 2>&1 | tee "$RUNNER_TEMP/demo.txt" && grep -q "Escalations for the reasoner" "$RUNNER_TEMP/demo.txt"
+
+      - name: Vulnerability scan (CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: finance-agent:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

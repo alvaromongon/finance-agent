@@ -1,0 +1,37 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript, actions
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          # Code scanning needs a public repo (or Advanced Security): while private,
+          # analyze without uploading so the job still catches failures.
+          upload: ${{ github.event.repository.private && 'never' || 'always' }}
