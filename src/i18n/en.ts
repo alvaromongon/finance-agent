@@ -314,6 +314,26 @@ export const en = {
     },
   },
 
+  chart: {
+    title: "Proposal quality (SLI 1)",
+    insufficient: (n: number, min: number) => `Insufficient data: ${n} of ${min} evaluated proposals`,
+    enough: (n: number) => `${n} evaluated proposals. The confidence bound is not computed yet (ADR-0014).`,
+    summary: (meanR: string, benchmarkR: string) => `Mean plan R ${meanR} · benchmark, same windows ${benchmarkR}`,
+    noProposals: "No evaluated buy proposals yet.",
+    meanRLabel: "Mean plan R (cumulative)",
+    benchmarkLabel: "Benchmark, same windows (in R)",
+    countLabel: "Evaluated proposals (n)",
+    minSampleLabel: (min: number) => `n = ${min}`,
+    method: [
+      "Plan R: each proposal's stop, target or last close over 60 sessions.",
+      "Benchmark: its return over the same window, divided by the stop distance.",
+    ],
+    notice: "Not financial advice. R and counts only; no money amounts.",
+    description: (n: number, from: string, to: string) =>
+      `Cumulative mean plan R of ${n} evaluated buy proposals against the benchmark, from ${from} to ${to}, and the number of evaluated proposals over time.`,
+    descriptionEmpty: "No evaluated buy proposals yet.",
+  },
+
   outcomes: {
     frontmatterTitle: "Screening outcomes — What happened after each evaluation",
     generated: (today: string, count: number, tickers: number, span: string) => [

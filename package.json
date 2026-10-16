@@ -14,6 +14,7 @@
     "heartbeat:us": "tsx src/index.ts --currency USD",
     "analyze": "tsx src/analyze.ts",
     "decisions:evaluate": "tsx src/decisions-evaluate.ts",
+    "decisions:chart": "tsx src/decisions-chart.ts",
     "monday-briefing": "tsx src/monday-briefing.ts",
     "monday-briefing:prepare": "tsx src/monday-briefing.ts prepare",
     "monday-briefing:finalize": "tsx src/monday-briefing.ts finalize",
