@@ -311,6 +311,26 @@ export const es: Messages = {
     },
   },
 
+  chart: {
+    title: "Calidad de las propuestas (SLI 1)",
+    insufficient: (n, min) => `Datos insuficientes: ${n} de ${min} propuestas evaluadas`,
+    enough: (n) => `${n} propuestas evaluadas. Todavía no se calcula la cota de confianza (ADR-0014).`,
+    summary: (meanR, benchmarkR) => `R medio del plan ${meanR} · referencia, mismas ventanas ${benchmarkR}`,
+    noProposals: "Todavía no hay propuestas de compra evaluadas.",
+    meanRLabel: "R medio del plan (acumulado)",
+    benchmarkLabel: "Referencia, mismas ventanas (en R)",
+    countLabel: "Propuestas evaluadas (n)",
+    minSampleLabel: (min) => `n = ${min}`,
+    method: [
+      "R del plan: stop, objetivo o último cierre de cada propuesta en 60 sesiones.",
+      "Referencia: su rentabilidad en la misma ventana, dividida por la distancia al stop.",
+    ],
+    notice: "No es asesoramiento financiero. Solo R y recuentos; sin importes.",
+    description: (n, from, to) =>
+      `R medio acumulado del plan de ${n} propuestas de compra evaluadas frente a la referencia, de ${from} a ${to}, y número de propuestas evaluadas a lo largo del tiempo.`,
+    descriptionEmpty: "Todavía no hay propuestas de compra evaluadas.",
+  },
+
   outcomes: {
     frontmatterTitle: "Screening outcomes — Qué pasó después de cada evaluación",
     generated: (today, count, tickers, span) => [
