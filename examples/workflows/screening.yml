@@ -1,0 +1,50 @@
+# Example caller: weekly screening, API mode.
+# Copy to .github/workflows/ in your data repository. See the README, "Running the reasoner".
+name: Finance Agent — weekly screening
+
+on:
+  schedule:
+    - cron: "0 8 * * 6" # Saturday morning, UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: finance-agent-screening
+  cancel-in-progress: false
+
+jobs:
+  screening:
+    permissions:
+      contents: read
+    uses: alvaromongon/finance-agent/.github/workflows/screening.yml@v0.1.0
+    with:
+      data-path: finance-agent # where your brain lives in this repo
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0
+      output-language: en
+      reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
+      reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
+      smtp-user: ${{ vars.SMTP_USER }}
+      alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
+      # To run without email, delete the two lines above and the SMTP_PASS secret
+      # below, and uncomment this line (needs a release newer than v0.1.0):
+      # email: false
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+  commit:
+    needs: screening
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+        with:
+          artifact: ${{ needs.screening.outputs.changes-artifact }}
+          # What a screening writes: the run's files under logs/, new and
+          # archived theses in tesis/, new watchlist entries and the screening log.
+          paths: finance-agent/logs/ finance-agent/tesis/ finance-agent/watchlist.md finance-agent/screening-log.md
+          message: "chore(screening): weekly screening"

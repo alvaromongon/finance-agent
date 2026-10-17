@@ -1,0 +1,52 @@
+# Example caller: heartbeat of the EUR silo, API mode.
+# Copy to .github/workflows/ in your data repository. See the README, "Running the reasoner".
+name: Finance Agent — heartbeat EUR
+
+on:
+  schedule:
+    - cron: "0 17 * * 1-5" # after the European close, UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: finance-agent-heartbeat-eu
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    permissions:
+      contents: read
+    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.1.0
+    with:
+      currency: EUR
+      data-path: finance-agent # where your brain lives in this repo
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0
+      analyst-provider: api
+      output-language: en
+      reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
+      reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
+      smtp-user: ${{ vars.SMTP_USER }}
+      alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
+      # To run without email, delete the two lines above and the SMTP_PASS secret
+      # below, and uncomment this line (needs a release newer than v0.1.0):
+      # email: false
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+  commit:
+    needs: heartbeat
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+        with:
+          artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
+          # What a heartbeat writes: decision logs, sent-alert markers, pending
+          # escalations and the outbox (all under logs/), and the prices in portfolio.md.
+          paths: finance-agent/logs/ finance-agent/portfolio.md
+          message: "chore(logs): heartbeat EUR"

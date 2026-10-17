@@ -66,6 +66,21 @@ jobs:
           path: ${{ runner.temp }}/test-output.txt
           retention-days: 14
 
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Lints the repo's own workflows and the example callers in examples/workflows/.
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color .github/workflows/*.yml examples/workflows/*.yml
+
   docker:
     name: Docker image
     runs-on: ubuntu-latest

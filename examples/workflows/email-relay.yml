@@ -1,0 +1,56 @@
+# Example caller: email relay. Sends the emails queued in logs/outbox/ (MAIL_TRANSPORT=outbox)
+# and closes a screening run left unsummarized. Only needed when the runner that writes the
+# emails can't open SMTP, for example a Claude Code routine. In API mode the other workflows
+# send their own emails.
+# Copy to .github/workflows/ in your data repository. See the README, "Running the reasoner".
+name: Finance Agent — email relay
+
+on:
+  push:
+    paths:
+      - "finance-agent/logs/outbox/**"
+      - "finance-agent/logs/pending-screening/results.jsonl"
+  schedule:
+    # Fallback: pushes made with the default GITHUB_TOKEN (including the commit
+    # job of the other examples) don't trigger workflows, so poll as well.
+    - cron: "15 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# One relay at a time and never cancelled midway: two relays would send an email twice.
+concurrency:
+  group: finance-agent-email-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    permissions:
+      contents: read
+    uses: alvaromongon/finance-agent/.github/workflows/email-relay.yml@v0.1.0
+    with:
+      data-path: finance-agent # where your brain lives in this repo
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0
+      output-language: en
+      smtp-user: ${{ vars.SMTP_USER }}
+      alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
+      # Email off makes this workflow a no-op, so you can simply not install it.
+      # With a release newer than v0.1.0 you can also pass: email: false
+    secrets:
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+  commit:
+    needs: relay
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+        with:
+          artifact: ${{ needs.relay.outputs.changes-artifact }}
+          # What it deletes or closes, all under logs/: sent outbox files and
+          # the pending screening run.
+          paths: finance-agent/logs/
+          message: "chore(logs): email relay"
