@@ -14,8 +14,8 @@ Every event at the broker gets two changes, made together and committed together
 2. **`logs/decisions.jsonl`**, through `npm run decision:record`, with the event as JSON on stdin.
    Never edit the log by hand.
 
-The engine rebuilds each silo's value backwards from today's `portfolio.md` through the logged
-events, to compare you with the shadow portfolio. If the two disagree (a trade in the log that
+The engine rebuilds each [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo)'s value backwards from today's `portfolio.md` through the logged
+events, to compare you with the [shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio). If the two disagree (a trade in the log that
 `portfolio.md` does not show, or the other way round), the evaluation warns about negative cash or
 oversold units instead of reporting a wrong number.
 
@@ -73,7 +73,7 @@ arrived (`received`, in the target currency). Without `costs`, the fee defaults 
 
 ### Buy
 
-Give `price` and either `amount` or `units`, plus the initial `stop` (the base every R is
+Give `price` and either `amount` or `units`, plus the initial `stop` (the base every [R](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#r) is
 measured against). Then add the row to `Positions`: `Volume`, `Avg price` (as your broker reports it) and `Stop loss`. If you already hold the ticker, update the
 volume and the weighted average price instead of adding a row.
 
@@ -81,15 +81,20 @@ volume and the weighted average price instead of adding a row.
 { "type": "entry", "ticker": "KO", "currency": "USD", "price": 62, "units": 5, "stop": 58 }
 ```
 
-A buy that follows a system proposal or an armed breakout within 10 days is attributed to the
-system; any other is yours and is checked against the watchlist and the stop distance.
+Every buy is checked against the watchlist and the stop distance; one without a setup is
+recorded with the broken rule `entry_without_setup`. A buy that follows a system proposal or an
+armed breakout within 10 days is attributed to the system (`origin` `sistema`). Any other buy is
+yours (`propietario`), and so is one that follows a `buy_blocked` proposal: it is recorded with
+`overrode_block`.
 
 ### Sell
 
 Give `price` and `amount` or `units`. Record it first (see the order above), then delete the row,
 or lower `Volume` if you sold part of it (the average price of the rest does not change). Set
 `origin` to `sistema` only when the engine cannot infer that you followed its sell proposal. Add
-`pnl` only if you want to override the one computed from `portfolio.md`.
+`pnl` only if you want to override the one computed from `portfolio.md`. That computed figure is
+`(price - avg price) * units` and ignores `costs`: pass `pnl` explicitly if you want it net of
+fees (the two-month rule triggers on `pnl < 0`).
 
 ```json
 { "type": "exit", "ticker": "SAP.DE", "currency": "EUR", "price": 195, "units": 2, "costs": 1.5 }
