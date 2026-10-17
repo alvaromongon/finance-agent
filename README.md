@@ -61,7 +61,7 @@ Every variable is documented in [`.env.example`](.env.example). Copy it to `.env
 In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
-   - `portfolio.md`, which you keep in sync with your broker by hand;
+   - `portfolio.md`, which you keep in sync with your broker by hand, recording each trade and cash flow with `decision:record`: [Portfolio sync](examples/brain/routines/portfolio-sync.md);
    - `watchlist.md`, `screening-universe.md` and the theses.
 
    The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
@@ -194,6 +194,11 @@ are possible.
 | `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
 | `npm run outbox:send`                   | Sends the queued emails (relay)                       |
 | `npm run smoke-test`                    | Connectivity check                                    |
+
+`decision:record` takes one JSON event on stdin: `entry`, `exit`, `adjust_stop`, `deposit`,
+`withdrawal` or `fx_conversion`. The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
+gives the JSON for each and the order that keeps the P&L right. What to delete, move and archive
+in `logs/`, and how `DECISIONS_ARCHIVE_DIR` reads old quarters back: [Log retention](docs/log-retention.md).
 
 ## Docker
 
