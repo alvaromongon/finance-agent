@@ -101,7 +101,7 @@ escalations; plus `watchlist.md` and `tesis/` for the briefing and the screening
    (it gives a URL and a token, shown once) and a **daily schedule** as a fallback. The fallback
    covers a failed webhook and escalations the heartbeat committed while the routine was running.
 2. Store the URL and the token as the repository secrets `ROUTINE_FIRE_URL` and `ROUTINE_TOKEN`.
-3. Use [`heartbeat-eu-handoff.yml`](../examples/workflows/heartbeat-eu-handoff.yml) : its `wake-routine` job
+3. Use [`heartbeat-eu-handoff.yml`](../examples/workflows/heartbeat-eu-handoff.yml): its `wake-routine` job
    checks out the branch tip, fires the routine only after the commit job pushed, and only if
    `logs/pending/` holds files. To adapt `heartbeat-us.yml` the same way: set
    `analyst-provider: handoff`, drop `ANTHROPIC_API_KEY` from `secrets`, and copy the
