@@ -63,6 +63,23 @@ export type { ScreeningLogEntry };
 /** Data directory, read on use: VAULT_PROJECT_DIR has no default. */
 const projectDir = () => config.paths.vaultProjectDir;
 
+/**
+ * Reads a reasoning prompt from `routines/<name>.md`. There are no built-in
+ * defaults: a missing prompt fails with the example to copy.
+ */
+export async function readRoutinePrompt(name: "monday-briefing" | "weekly-screening"): Promise<string> {
+  const path = join(projectDir(), "routines", `${name}.md`);
+  try {
+    const prompt = await readTextFile(path);
+    if (prompt.trim() !== "") return prompt;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  throw new Error(
+    `routines/${name}.md not found or empty: copy examples/brain/routines/${name}.md into your brain and adapt it`,
+  );
+}
+
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
 /** Reads watchlist.md and returns the entries of the given currency. */

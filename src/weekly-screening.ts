@@ -34,6 +34,7 @@ import { computeTechnicals } from "./utils/technicals.js";
 import {
   appendDecisions,
   readPortfolio,
+  readRoutinePrompt,
   readRulesVersion,
   readWatchlist,
   readWatchlistAddedOn,
@@ -336,7 +337,7 @@ export async function prepareScreening(
       readUniverse(),
       readAllWatchlistTickers(),
       readScreeningLog(),
-      readTextFile(join(vaultDir, "routines", "weekly-screening.md")),
+      readRoutinePrompt("weekly-screening"),
       readTextFile(join(vaultDir, "watchlist.md")).catch(() => ""),
       readPortfolio("EUR"),
       readPortfolio("USD"),

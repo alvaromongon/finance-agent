@@ -33,7 +33,19 @@ migration script.
 | `portfolio-policy.md`, `routines/*.md` | no                         | Text only, passed to the reasoning model                |
 
 Files that are only passed to the model as text are not parsed, so they carry
-no `schema_version`. `version` in `strategies/base.md` is the version of the
+no `schema_version`.
+
+Each flow that reasons needs its own prompt in `routines/`. There are no
+built-in defaults: a missing prompt fails with the example to copy.
+
+| Prompt                           | Required by                                                                             | Example                                                                                             |
+| -------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `routines/monday-briefing.md`    | `monday-briefing:prepare` (system prompt of the weekly report)                          | [`examples/brain/routines/monday-briefing.md`](../examples/brain/routines/monday-briefing.md)       |
+| `routines/weekly-screening.md`   | `screening:prepare` (system prompt of each candidate)                                   | [`examples/brain/routines/weekly-screening.md`](../examples/brain/routines/weekly-screening.md)     |
+| `routines/execution-analysis.md` | none in the engine: the prompt a reasoner uses to resolve `pending:resolve` escalations | [`examples/brain/routines/execution-analysis.md`](../examples/brain/routines/execution-analysis.md) |
+
+`heartbeat`, `pending:*`, `decisions:evaluate`, `screening:outcomes`,
+`outbox:send` and `decision:record` need no prompt. `version` in `strategies/base.md` is the version of the
 trading rules, not of this format.
 
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
