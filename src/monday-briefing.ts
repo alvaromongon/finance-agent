@@ -39,7 +39,7 @@ import { CUT_BOARD_HEADING, extractCutBoard } from "./utils/decisions-evaluation
 import { siloValue } from "./utils/sizing.js";
 import { fetchBenchmarks } from "./utils/benchmark.js";
 import { formatRegimeLines } from "./utils/market-regime.js";
-import { sendSummaryEmail } from "./mailer.js";
+import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import { extractRetireList, extractPlanSummary } from "./utils/vault-parser.js";
 import { readTextFile } from "./utils/fs-text.js";
 import {
@@ -466,8 +466,15 @@ if (isMain) {
   if (!fn) {
     throw new Error("Usage: monday-briefing.ts [prepare|finalize]");
   }
-  fn().catch((err) => {
-    console.error("[monday-briefing] Error:", err instanceof Error ? err.message : err);
-    process.exitCode = 1;
-  });
+  // Fail fast when delivery is required but not configured, before any API
+  // spend (the same check the heartbeat runs at startup).
+  Promise.resolve()
+    .then(() => {
+      assertMailConfigured();
+      return fn();
+    })
+    .catch((err) => {
+      console.error("[monday-briefing] Error:", err instanceof Error ? err.message : err);
+      process.exitCode = 1;
+    });
 }
