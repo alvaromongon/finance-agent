@@ -136,6 +136,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_WEEKLY_MODEL: ${{ inputs.claude-weekly-model }}
           CLAUDE_WEEKLY_EFFORT: ${{ inputs.claude-weekly-effort }}
+          # With email on, delivery is required: missing SMTP settings fail the
+          # run. With email off (transport none) nothing is sent.
           MAIL_TRANSPORT: ${{ inputs.email && 'smtp' || 'none' }}
           MAIL_REQUIRE_DELIVERY: "true"
           SMTP_USER: ${{ inputs.smtp-user }}

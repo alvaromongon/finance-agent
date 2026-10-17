@@ -55,7 +55,7 @@ import {
   type ScreeningCandidateMeta,
 } from "./vault-io.js";
 import { assertSchemaVersion, type ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
-import { sendSummaryEmail } from "./mailer.js";
+import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import {
   classifyIndex,
   describeExit,
@@ -818,8 +818,15 @@ if (isMain) {
   if (!fn) {
     throw new Error("Usage: weekly-screening.ts [prepare|resolve|summarize]");
   }
-  fn().catch((err) => {
-    console.error("[screening] Error:", err instanceof Error ? err.message : err);
-    process.exitCode = 1;
-  });
+  // Fail fast when delivery is required but not configured, before any API
+  // spend (the same check the heartbeat runs at startup).
+  Promise.resolve()
+    .then(() => {
+      assertMailConfigured();
+      return fn();
+    })
+    .catch((err) => {
+      console.error("[screening] Error:", err instanceof Error ? err.message : err);
+      process.exitCode = 1;
+    });
 }

@@ -5,9 +5,12 @@
  *   - enabled without SMTP: the run fails;
  *   - enabled with SMTP: the email is sent.
  */
-import { describe, it, before, beforeEach } from "node:test";
+import { describe, it, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import nodemailer from "nodemailer";
+
+const ENV_KEYS = ["MAIL_REQUIRE_DELIVERY", "MAIL_TRANSPORT", "SMTP_USER", "SMTP_PASS", "ALERT_EMAIL_TO"] as const;
+const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
 process.env.MAIL_REQUIRE_DELIVERY = "true";
 
@@ -16,6 +19,13 @@ describe("mailer — email switched on or off", () => {
 
   before(async () => {
     mailer = await import("../mailer.js");
+  });
+
+  after(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
   });
 
   beforeEach(() => {

@@ -245,6 +245,19 @@ describe("outbox", () => {
       await access(join(outboxDir, badName));
     });
 
+    it("with MAIL_TRANSPORT=none sends nothing and keeps the queue", async () => {
+      await quiet(() => sendSummaryEmail("Queued", "a"));
+      process.env.MAIL_TRANSPORT = "none";
+
+      const result = await quiet(() =>
+        processOutbox(async () => {
+          throw new Error("must not send when email is off");
+        }),
+      );
+      assert.deepEqual(result, { sent: [], failed: [] });
+      assert.equal((await listOutbox()).length, 1);
+    });
+
     it("with an empty outbox does nothing", async () => {
       process.env.MAIL_TRANSPORT = "smtp";
       const result = await quiet(() =>

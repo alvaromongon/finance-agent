@@ -3,7 +3,7 @@
 // ONLY if sending it succeeded. The finance-agent-email-relay workflow runs it
 // from GitHub Actions, where direct SMTP does work.
 import { config } from "./config.js";
-import { sendEmailSmtp } from "./mailer.js";
+import { assertMailConfigured, sendEmailSmtp } from "./mailer.js";
 import { listOutboxFiles, readOutboxMessage, deleteOutboxFile } from "./vault-io.js";
 
 /**
@@ -18,6 +18,12 @@ export async function processOutbox(
     // Anti-loop guard: with MAIL_TRANSPORT=outbox the "send" would enqueue into
     // the outbox itself again. The relay must run in smtp mode.
     throw new Error("outbox:send requires MAIL_TRANSPORT=smtp (with outbox it would re-enqueue itself)");
+  }
+
+  if (config.mail.transport() === "none") {
+    // Email switched off: nothing is sent and the queue is left untouched.
+    console.log("[outbox] Email disabled (MAIL_TRANSPORT=none) — nothing sent.");
+    return { sent: [], failed: [] };
   }
 
   const files = await listOutboxFiles();
@@ -52,7 +58,11 @@ if (isMain) {
   if (cmd !== "send") {
     throw new Error("Usage: outbox.ts send");
   }
-  processOutbox()
+  Promise.resolve()
+    .then(() => {
+      assertMailConfigured();
+      return processOutbox();
+    })
     .then(({ failed }) => {
       // Red run if anything was left unsent — visibility in Actions.
       if (failed.length > 0) process.exitCode = 1;
