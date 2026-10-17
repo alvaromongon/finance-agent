@@ -1,5 +1,5 @@
 # Example caller: heartbeat of the USD silo, API mode.
-# Copy to .github/workflows/ in your data repository. See the README, "Running the reasoner".
+# Copy to .github/workflows/ in your data repository. See the README, "Reasoner: API or handoff" > "API runner: GitHub Actions".
 name: Finance Agent — heartbeat USD
 
 on:
@@ -20,7 +20,7 @@ jobs:
     uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.1.0
     with:
       currency: USD
-      data-path: finance-agent # where your brain lives in this repo
+      data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
       engine-repository: alvaromongon/finance-agent
       engine-ref: v0.1.0
       analyst-provider: api
@@ -48,5 +48,6 @@ jobs:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
           # What a heartbeat writes: decision logs, sent-alert markers, pending
           # escalations and the outbox (all under logs/), and the prices in portfolio.md.
+          # Change the finance-agent/ prefix together with data-path.
           paths: finance-agent/logs/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat USD"

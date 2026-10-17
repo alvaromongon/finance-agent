@@ -2,15 +2,19 @@
 # and closes a screening run left unsummarized. Only needed when the runner that writes the
 # emails can't open SMTP, for example a Claude Code routine. In API mode the other workflows
 # send their own emails.
-# Copy to .github/workflows/ in your data repository. See the README, "Running the reasoner".
+# Copy to .github/workflows/ in your data repository. See the README, "Reasoner: API or handoff" > "API runner: GitHub Actions".
 name: Finance Agent — email relay
 
 on:
   push:
-    paths:
+    paths: # change the finance-agent/ prefix together with data-path
       - "finance-agent/logs/outbox/**"
       - "finance-agent/logs/pending-screening/results.jsonl"
   schedule:
+    # Only needed with MAIL_TRANSPORT=outbox runners; in API mode delete this relay.
+    # Each hourly run consumes runner minutes. Partial-send risk: if outbox:send fails
+    # after sending some files, the commit job does not run, so those files are sent
+    # again the next hour (root cause in the reusable workflow, not handled here).
     # Fallback: pushes made with the default GITHUB_TOKEN (including the commit
     # job of the other examples) don't trigger workflows, so poll as well.
     - cron: "15 * * * *"
@@ -29,7 +33,7 @@ jobs:
       contents: read
     uses: alvaromongon/finance-agent/.github/workflows/email-relay.yml@v0.1.0
     with:
-      data-path: finance-agent # where your brain lives in this repo
+      data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
       engine-repository: alvaromongon/finance-agent
       engine-ref: v0.1.0
       output-language: en
@@ -52,5 +56,6 @@ jobs:
           artifact: ${{ needs.relay.outputs.changes-artifact }}
           # What it deletes or closes, all under logs/: sent outbox files and
           # the pending screening run.
+          # Change the finance-agent/ prefix together with data-path.
           paths: finance-agent/logs/
           message: "chore(logs): email relay"
