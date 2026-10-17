@@ -322,6 +322,7 @@ export const es: Messages = {
     countLabel: "Propuestas evaluadas (n)",
     minSampleLabel: (min) => `n = ${min}`,
     method: [
+      "R = múltiplos del riesgo asumido (entrada − stop inicial); +2R ganó el doble del riesgo. Términos: docs/glossary.md",
       "R del plan: stop, objetivo o último cierre de cada propuesta en 60 sesiones.",
       "Referencia: su rentabilidad en la misma ventana, dividida por la distancia al stop.",
     ],

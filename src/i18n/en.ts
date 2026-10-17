@@ -325,6 +325,7 @@ export const en = {
     countLabel: "Evaluated proposals (n)",
     minSampleLabel: (min: number) => `n = ${min}`,
     method: [
+      "R = multiples of the risk taken (entry − initial stop); +2R won twice the risk. Terms: docs/glossary.md",
       "Plan R: each proposal's stop, target or last close over 60 sessions.",
       "Benchmark: its return over the same window, divided by the stop distance.",
     ],

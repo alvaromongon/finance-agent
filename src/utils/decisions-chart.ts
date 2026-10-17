@@ -89,7 +89,7 @@ const LEFT = 64;
 const RIGHT = WIDTH - 20;
 const RPANEL = { top: 104, bottom: 250 };
 const NPANEL = { top: 292, bottom: 388 };
-const HEIGHT = 490;
+const HEIGHT = 508;
 
 // Both themes in the file itself: it is shown as an image, so the page cannot style it.
 const STYLE = `
@@ -235,7 +235,7 @@ export function renderProposalQualitySvg(series: ProposalSeries, m: Messages = m
   }
 
   out.push(
-    ...t.method.map((l, i) => text(LEFT, HEIGHT - 56 + i * 18, l, "muted")),
+    ...t.method.map((l, i) => text(LEFT, HEIGHT - 20 - (t.method.length - i) * 18, l, "muted")),
     text(LEFT, HEIGHT - 16, t.notice, "muted"),
     "</svg>",
   );

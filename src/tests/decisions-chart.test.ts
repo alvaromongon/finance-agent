@@ -154,6 +154,11 @@ describe("renderProposalQualitySvg", () => {
     assert.match(renderProposalQualitySvg(below, es), /No es asesoramiento financiero/);
   });
 
+  it("defines R on the chart and points to the glossary, since the image cannot link", () => {
+    assert.match(renderProposalQualitySvg(below, en), /R = multiples of the risk taken.*docs\/glossary\.md/);
+    assert.match(renderProposalQualitySvg(below, es), /R = múltiplos del riesgo asumido.*docs\/glossary\.md/);
+  });
+
   it("shows only R and counts: no currency, no money", () => {
     const svg = renderProposalQualitySvg(above, en);
     assert.doesNotMatch(svg, /[€$]|EUR|USD|silo/);
