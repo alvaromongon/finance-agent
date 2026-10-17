@@ -140,15 +140,16 @@ calls the Anthropic API itself, on a schedule. Copy the callers you need from
 `data-path` to where your brain lives, and add the repository variables and secrets of
 [Configuration](#configuration-step-by-step). Each one is pinned to a release tag and has a
 `commit` job that applies the run's patch and commits only the paths that flow writes. Other
-runners are possible, for example a Claude Code routine with `handoff` (below).
+runners are possible, for example Claude Code routines with `handoff` (below).
 
-| Example                                                         | Triggers                                                                           | Commits                                               |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)       | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`                               |
-| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)       | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`                               |
-| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml) | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `watchlist.md`, `tesis/`     |
-| [`screening.yml`](examples/workflows/screening.yml)             | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md` |
-| [`email-relay.yml`](examples/workflows/email-relay.yml)         | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                               |
+| Example                                                                   | Triggers                                                                           | Commits                                               |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`                               |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`                               |
+| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`                               |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `watchlist.md`, `tesis/`     |
+| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md` |
+| [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                               |
 
 The relay is only needed for runners that use `MAIL_TRANSPORT=outbox` (they can't open SMTP); do
 not install it in API mode, where the other flows send their own emails. Its hourly cron costs
@@ -172,6 +173,12 @@ recording anything ([ADR-0004](docs/decisions/0004-handoff-mode-for-the-reasoner
 | Weekly screening      | `screening:prepare`, `screening:resolve`, `screening:summarize` |
 
 The system prompts live in your brain, under `routines/`.
+
+One runner for this mode is scheduled Claude Code routines: the orchestration prompts, the routine
+environment (variables, network allowlist, engine pinned by a SessionStart hook), how the heartbeat
+wakes the routine and the email relay it requires are in
+[Runner: handoff with Claude Code routines](docs/routine-runner.md). It is an example; other runners
+are possible.
 
 ## Commands
 
