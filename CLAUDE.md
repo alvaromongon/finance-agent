@@ -14,5 +14,7 @@ an agent needs on top of it.
 
 ## Push and merge policy
 
-Agents may push `issue-*` branches and open PRs. Merging is done by the owner: ask before any
-other push, and never merge.
+Agents may push `issue-*` branches and open PRs. The work queue (`/github-work-queue`) may merge
+a PR with `gh pr merge --squash` once both reviews are clean and CI is green
+([Unattended merge](docs/agents/workflow.md#autonomy)). Outside the work queue, merging is done by
+the owner. Ask before any other push; never merge with `--admin`.
