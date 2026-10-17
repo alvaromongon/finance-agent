@@ -28,6 +28,7 @@ import {
   appendDecisions,
   readDecisions,
   readPortfolio,
+  readRoutinePrompt,
   readRulesVersion,
   readWatchlist,
   retireWatchlistEntry,
@@ -87,13 +88,9 @@ export async function prepareBriefing(
   const [watchlistMd, evaluationMd, systemPromptMd, policyMd] = await Promise.all([
     safeRead(join(vaultDir, "watchlist.md")),
     safeRead(join(logsDir, "decisions-evaluation.md")),
-    safeRead(join(vaultDir, "routines", "monday-briefing.md")),
+    readRoutinePrompt("monday-briefing"),
     safeRead(join(vaultDir, "portfolio-policy.md")),
   ]);
-
-  if (!systemPromptMd) {
-    throw new Error("routines/monday-briefing.md not found — system prompt required");
-  }
 
   // Cash and positions/watchlist of both silos (portfolio.md/watchlist.md are
   // single files with EUR/USD sections, but vault-io exposes them per currency).

@@ -299,7 +299,7 @@ describe("monday-briefing prepare/finalize", () => {
       await rm(join(vaultDir, "routines", "monday-briefing.md"));
       const error = mock.method(console, "error", () => {});
       try {
-        await assert.rejects(() => prepareBriefing(fakeProvider), /system prompt required/);
+        await assert.rejects(() => prepareBriefing(fakeProvider), /examples\/brain\/routines\/monday-briefing\.md/);
       } finally {
         error.mock.restore();
       }

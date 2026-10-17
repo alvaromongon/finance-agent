@@ -19,7 +19,8 @@ schema_version: 1
 The engine refuses a file without `schema_version` or with a version it does
 not know, naming the file in the error, instead of reading it partially. An
 incompatible change to this format bumps the version and ships with a
-migration script.
+migration script. The `version` in `strategies/base.md` is the version of the
+trading rules, not of this format.
 
 | File                                   | Versioned                  | Parsed parts                                            |
 | -------------------------------------- | -------------------------- | ------------------------------------------------------- |
@@ -33,8 +34,19 @@ migration script.
 | `portfolio-policy.md`, `routines/*.md` | no                         | Text only, passed to the reasoning model                |
 
 Files that are only passed to the model as text are not parsed, so they carry
-no `schema_version`. `version` in `strategies/base.md` is the version of the
-trading rules, not of this format.
+no `schema_version`.
+
+Each flow that reasons needs its own prompt in `routines/`. There are no
+built-in defaults: a missing prompt fails with the example to copy.
+
+| Prompt                           | Required by                                                                                                       | Example                                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `routines/monday-briefing.md`    | `monday-briefing:prepare` (system prompt of the weekly report)                                                    | [`examples/brain/routines/monday-briefing.md`](../examples/brain/routines/monday-briefing.md)       |
+| `routines/weekly-screening.md`   | `screening:prepare` (system prompt of each candidate)                                                             | [`examples/brain/routines/weekly-screening.md`](../examples/brain/routines/weekly-screening.md)     |
+| `routines/execution-analysis.md` | `heartbeat` whenever it escalates a signal (system prompt of the reasoner, `ANALYST_PROVIDER` `api` or `handoff`) | [`examples/brain/routines/execution-analysis.md`](../examples/brain/routines/execution-analysis.md) |
+
+`pending:*`, `decisions:evaluate`, `screening:outcomes`, `outbox:send` and
+`decision:record` need no prompt; `heartbeat` needs one only when it escalates.
 
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
 notation. `—`, `-` or `TBD` mean "no value".
