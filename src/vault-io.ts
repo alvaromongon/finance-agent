@@ -67,7 +67,9 @@ const projectDir = () => config.paths.vaultProjectDir;
  * Reads a reasoning prompt from `routines/<name>.md`. There are no built-in
  * defaults: a missing prompt fails with the example to copy.
  */
-export async function readRoutinePrompt(name: "monday-briefing" | "weekly-screening"): Promise<string> {
+export async function readRoutinePrompt(
+  name: "monday-briefing" | "weekly-screening" | "execution-analysis",
+): Promise<string> {
   const path = join(projectDir(), "routines", `${name}.md`);
   try {
     const prompt = await readTextFile(path);

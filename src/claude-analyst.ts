@@ -11,6 +11,7 @@ import { asHorizon, isAssumptionList } from "./decisions.js";
 import { describeRegime } from "./utils/market-regime.js";
 import { describeAdjustStopPreview, describeBuyPreview } from "./utils/sizing.js";
 import { readTextFile } from "./utils/fs-text.js";
+import { readRoutinePrompt } from "./vault-io.js";
 import type { Recommendation, Signal, TriggerKind } from "./types.js";
 
 export async function analyze(signal: Signal, newsHeadlines: string[] = []): Promise<Recommendation> {
@@ -53,11 +54,10 @@ export async function analyze(signal: Signal, newsHeadlines: string[] = []): Pro
 
 /** Reasoner instructions plus the strategies/base.md rules, if it exists. */
 export async function loadSystemPrompt(): Promise<string> {
-  const routinePath = join(config.paths.vaultProjectDir, "routines", "execution-analysis.md");
   const strategyPath = join(config.paths.vaultProjectDir, "strategies", "base.md");
 
   const [routine, strategy] = await Promise.all([
-    readTextFile(routinePath),
+    readRoutinePrompt("execution-analysis"),
     readTextFile(strategyPath).catch(() => ""),
   ]);
 

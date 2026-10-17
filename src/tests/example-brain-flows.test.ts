@@ -6,9 +6,10 @@
  */
 import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { Signal } from "../types.js";
 
 const EXAMPLES = join(import.meta.dirname, "..", "..", "examples");
 const MONDAY_REPORT = `## 0. Resumen ejecutivo
@@ -47,15 +48,28 @@ PLAN_SUMMARY: Keep the cash this week
 PROPOSALS: [{"ticker":"SAP.DE","action":"ADJUST_STOP","conviction":"medium"}]
 `;
 
+/** Snapshot of process.env, so a suite restores what it (or runDemo) changed. */
+const snapshotEnv = () => ({ ...process.env });
+const restoreEnv = (saved: NodeJS.ProcessEnv) => {
+  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+  Object.assign(process.env, saved);
+};
+
 describe("every flow runs on the example brain", () => {
   let dir: string;
+  let savedEnv: NodeJS.ProcessEnv;
+  let logMock: ReturnType<typeof mock.method>;
   const emailsQueued = async () => {
     const files = await readdir(join(dir, "logs", "outbox")).catch(() => [] as string[]);
     return files.length;
   };
 
   before(async () => {
-    mock.method(console, "log", () => {});
+    savedEnv = snapshotEnv();
+    // The bars end on 2026-10-09: pin the clock to the following Monday so no
+    // freshness check depends on the day the suite runs.
+    mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-12T12:00:00Z") });
+    logMock = mock.method(console, "log", () => {});
     mock.method(console, "warn", () => {});
     mock.method(console, "error", () => {});
     // The USD heartbeat first: the EUR one leaves the brain the rest uses.
@@ -67,21 +81,24 @@ describe("every flow runs on the example brain", () => {
     const eur = await runDemo("EUR");
     dir = eur.dir;
     assert.equal(eur.emails.length, 1);
-    // The bars end on 2026-10-09: pin the clock to the following Monday so the
-    // screening's freshness check does not depend on the day the suite runs.
-    mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-12T12:00:00Z") });
   });
 
   after(async () => {
     mock.timers.reset();
     mock.restoreAll();
+    restoreEnv(savedEnv);
     await rm(dir, { recursive: true, force: true });
   });
 
   it("pending:resolve closes the escalation with a canned answer", async () => {
     const { listPending, resolvePending } = await import("../pending.js");
+    logMock.mock.resetCalls();
     await listPending();
     const [file] = await readdir(join(dir, "logs", "pending"));
+    assert.deepEqual(
+      logMock.mock.calls.map((c) => c.arguments[0]),
+      [file],
+    );
     assert.match(file, /sap\.de\.md$/);
     await resolvePending(file, {
       ticker: "SAP.DE",
@@ -94,10 +111,16 @@ describe("every flow runs on the example brain", () => {
   });
 
   it("decisions:evaluate writes the evaluation the briefing reads", async () => {
-    const { loadEvaluationReport } = await import("../decisions-evaluation-run.js");
-    const { renderDecisionsEvaluation } = await import("../utils/decisions-evaluation-render.js");
-    const report = await loadEvaluationReport("[decisions-evaluate]");
-    await writeFile(join(dir, "logs", "decisions-evaluation.md"), renderDecisionsEvaluation(report), "utf8");
+    // The real command: it runs main() on import and writes the file.
+    await import("../decisions-evaluate.js");
+    const file = join(dir, "logs", "decisions-evaluation.md");
+    let written = "";
+    for (let attempt = 0; attempt < 50 && written === ""; attempt++) {
+      written = await readFile(file, "utf8").catch(() => "");
+      if (written === "") await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.ok(written.trim().length > 0, "the evaluation file is not empty");
+    assert.notEqual(process.exitCode, 1, "the command did not fail");
   });
 
   it("monday-briefing:prepare + finalize", async () => {
@@ -108,11 +131,11 @@ describe("every flow runs on the example brain", () => {
     assert.equal(systemPrompt, await readFile(join(EXAMPLES, "brain", "routines", "monday-briefing.md"), "utf8"));
     assert.match(userPrompt, /SAP\.DE/);
 
-    const before = await emailsQueued();
+    const queuedBefore = await emailsQueued();
     await finalizeBriefing(MONDAY_REPORT, provider);
     const logs = await readdir(join(dir, "logs"));
     assert.ok(logs.some((f) => f.endsWith("-monday-briefing.md")));
-    assert.equal(await emailsQueued(), before + 1);
+    assert.equal(await emailsQueued(), queuedBefore + 1);
   });
 
   it("screening:prepare + resolve + summarize", async () => {
@@ -136,9 +159,9 @@ describe("every flow runs on the example brain", () => {
           : { interesting: false, reason: "Example: nothing to add." },
       );
     }
-    const before = await emailsQueued();
+    const queuedBefore = await emailsQueued();
     await summarizeScreening();
-    assert.equal(await emailsQueued(), before + 1);
+    assert.equal(await emailsQueued(), queuedBefore + 1);
   });
 
   it("decision:record logs a trade the owner narrates", async () => {
@@ -166,8 +189,10 @@ describe("every flow runs on the example brain", () => {
 
 describe("a missing prompt names the example to copy", () => {
   let dir: string;
+  let savedEnv: NodeJS.ProcessEnv;
 
   before(async () => {
+    savedEnv = snapshotEnv();
     dir = await mkdtemp(join(tmpdir(), "finance-agent-no-prompts-"));
     await cp(join(EXAMPLES, "brain"), dir, { recursive: true });
     await rm(join(dir, "routines"), { recursive: true, force: true });
@@ -179,6 +204,7 @@ describe("a missing prompt names the example to copy", () => {
   });
 
   after(async () => {
+    restoreEnv(savedEnv);
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -197,6 +223,24 @@ describe("a missing prompt names the example to copy", () => {
     await assert.rejects(
       prepareScreening(new FixturesProvider(join(EXAMPLES, "market")), () => Promise.resolve([])),
       /routines\/weekly-screening\.md.*examples\/brain\/routines\/weekly-screening\.md/s,
+    );
+  });
+
+  it("heartbeat escalation (both analysts read execution-analysis.md)", async () => {
+    const { HandoffAnalystProvider } = await import("../analyst/handoff-provider.js");
+    const signal = {
+      ticker: "SAP.DE",
+      currency: "EUR",
+      triggers: ["approaching_stop"],
+      price: 170,
+      entry: { ticker: "SAP.DE", name: "SAP", market: "XETRA", currency: "EUR", horizon: "medium", thesis: "Example." },
+      position: undefined,
+      cash: 1000,
+      siloValue: 1000,
+    } as unknown as Signal;
+    await assert.rejects(
+      new HandoffAnalystProvider().escalate(signal, []),
+      /routines\/execution-analysis\.md.*examples\/brain\/routines\/execution-analysis\.md/s,
     );
   });
 });
