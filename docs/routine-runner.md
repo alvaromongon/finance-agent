@@ -46,12 +46,12 @@ pushes that do not trigger workflows.
 
 ## Network access
 
-The sandbox only allows outbound HTTPS, and the allowlist matches the exact host: a redirect to
-another host is blocked. Allow at least:
+The sandbox only allows outbound HTTPS to the hosts you allow. Allow at least:
 
 - `query1.finance.yahoo.com`: prices and history.
 - `feeds.finance.yahoo.com`: the news feed. The engine calls this host directly because
-  `finance.yahoo.com` redirects to it and the redirect would be blocked.
+  `finance.yahoo.com` redirects to it; in the author's observation the allowlist did not follow
+  such a redirect (not verified against the official documentation).
 - `github.com` (clone of the engine and push to your data repository) and `registry.npmjs.org`
   (`npm ci`).
 - Whatever the web search tool needs for the macro and business context.
@@ -86,7 +86,8 @@ the workflow callers; keep both on the same tag.
 
 Routine sessions work on a session branch by default. The prompts tell the session to check out
 the default branch, commit only the paths each flow writes, and `git pull --rebase` before
-`git push`. Allow the routine to push to the default branch in its repository settings. Nothing
+`git push`. Branch protection or rulesets on the default branch must allow the GitHub identity
+connected to the routine to push there (the routine settings have no option for it). Nothing
 reads a session branch: the next heartbeat, the email relay and the Monday briefing all look at
 the default branch.
 
@@ -100,17 +101,31 @@ escalations; plus `watchlist.md` and `tesis/` for the briefing and the screening
    (it gives a URL and a token, shown once) and a **daily schedule** as a fallback. The fallback
    covers a failed webhook and escalations the heartbeat committed while the routine was running.
 2. Store the URL and the token as the repository secrets `ROUTINE_FIRE_URL` and `ROUTINE_TOKEN`.
-3. Use [`heartbeat-eu-handoff.yml`](../examples/workflows/heartbeat-eu-handoff.yml) (and the same
-   with the USD schedule): its `wake-routine` job fires the routine only after the commit job
-   pushed, and only if `logs/pending/` holds files. Its request headers follow the routine API
-   documentation at the time of writing; check them against the current Claude Code docs.
+3. Use [`heartbeat-eu-handoff.yml`](../examples/workflows/heartbeat-eu-handoff.yml) : its `wake-routine` job
+   checks out the branch tip, fires the routine only after the commit job pushed, and only if
+   `logs/pending/` holds files. To adapt `heartbeat-us.yml` the same way: set
+   `analyst-provider: handoff`, drop `ANTHROPIC_API_KEY` from `secrets`, and copy the
+   `wake-routine` job (and the `needs` chain after `commit`). The fire request follows
+   [Trigger a routine](https://code.claude.com/docs/en/routines) (checked 2026-10-17). It is a
+   research-preview feature, so the `anthropic-beta` header may change; recheck it from time to
+   time. The `text` of the request reaches the session as untrusted informational data, and the
+   prompts do not depend on it.
 4. Create the Monday briefing and weekly screening routines with a weekly schedule and the
    prompts in [`examples/routines/`](../examples/routines).
 
 If the routine runs while a heartbeat is committing, the session's `git pull --rebase` handles the
 race; anything left pending is picked up by the next wake or the daily fallback. The pending item
-keeps the market snapshot of the day it was detected, so a late resolution is still judged on that
-day's facts.
+keeps the detection snapshot (strength, benchmark, setup, conviction and price), but entry,
+position, cash and silo value are rebuilt from the current `watchlist.md` and `portfolio.md` when
+it is resolved, so a late resolution mixes the day's signal with today's portfolio.
+
+## Security of the routine
+
+The routines process untrusted text (news headlines, web search results) while holding push
+rights. Scope the GitHub identity connected to them to this single repository, without the
+`workflow` permission, and protect `.github/**` with rulesets so a manipulated session cannot
+change the workflows. The prompts commit only the paths each flow writes and use a delimiter for
+the JSON answer that news text is unlikely to contain.
 
 ## Checklist
 
@@ -118,5 +133,5 @@ day's facts.
 - [ ] Routine environment with the variables and network allowlist above.
 - [ ] `install-engine.sh` registered as a SessionStart hook, tag pinned.
 - [ ] Three routines created from the example prompts, allowed to push to the default branch.
-- [ ] `heartbeat-eu-handoff.yml` (and USD) and `email-relay.yml` in `.github/workflows/`, with the
+- [ ] `heartbeat-eu-handoff.yml` (adapted for USD if you use it) and `email-relay.yml` in `.github/workflows/`, with the
       `ROUTINE_FIRE_URL`, `ROUTINE_TOKEN` and SMTP settings.

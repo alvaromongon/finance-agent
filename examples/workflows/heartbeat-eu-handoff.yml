@@ -55,8 +55,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7 # after the commit job pushed, so it sees the pending files
+      - uses: actions/checkout@v7
         with:
+          # The branch tip, not the run's starting commit (GITHUB_SHA): the commit job has pushed
+          # the pending files since, and only the tip contains them.
+          ref: ${{ github.ref_name }}
           persist-credentials: false
           sparse-checkout: finance-agent/logs/pending
       - name: Fire the routine
@@ -68,8 +71,11 @@ jobs:
             echo "No pending escalations — not waking the routine."
             exit 0
           fi
-          # Headers as documented for routine API triggers when this example was written;
-          # check them against the current Claude Code routines documentation.
+          # Request as documented in "Trigger a routine":
+          # https://code.claude.com/docs/en/routines (checked 2026-10-17). Routines are a
+          # research-preview feature: the anthropic-beta header may change, so recheck it.
+          # The "text" reaches the session as untrusted informational data; the prompts do not
+          # depend on it.
           curl --fail-with-body --silent --show-error --max-time 30 \
             -X POST "$ROUTINE_FIRE_URL" \
             -H "Authorization: Bearer $ROUTINE_TOKEN" \
