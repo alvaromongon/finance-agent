@@ -51,8 +51,9 @@ a private metric ([ADR-0009](decisions/0009-swing-framework-risk-sizing-and-meas
 
 ### SLI and SLO
 
-A service level indicator is a measured value; an objective is its target. Here the headline SLI
-is the [plan R](#plan-r) of every buy proposal, with a confidence bound, not speed
+A service level indicator (SLI) is what is measured and how; its current value is the measurement,
+and the objective (SLO) is the target for it. Here the headline SLI is the [plan R](#plan-r) of
+every buy proposal, with a confidence bound, not speed
 ([ADR-0014](decisions/0014-decision-quality-slo.md)). Below 30 evaluated proposals its status is
 "insufficient data".
 
