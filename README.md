@@ -26,6 +26,7 @@ ticket already computed. **It never places orders**: you decide and execute at y
   ```
 
 - **SLO**: the quality of its proposals against what actually happened, executed or not, with confidence bounds ([SLO](#slo)). Operational cost: at most one Claude call per escalated signal.
+- **Terms** such as R, plan R, silo or setup are defined in the [glossary](docs/glossary.md).
 - **Quality**: 783 tests, line coverage ≥ 80% enforced in CI (96.8% measured), type-checked lint, CodeQL, Dependabot, dependency audit, and a pre-push hook that runs the same checks ([Quality gates](#quality-gates)).
 
 ## Requirements
@@ -240,15 +241,16 @@ The engine proposes; you decide. Its objective is therefore **the quality of its
 against what actually happened**, not speed ([ADR-0014](docs/decisions/0014-decision-quality-slo.md)).
 A proposal does not need to be executed to be judged: the evaluator replays its plan (entry, stop,
 target) on the following sessions. The SLIs are computed by `npm run decisions:evaluate` from the
-decision log, with no LLM:
+decision log, with no LLM. Results are in [R](docs/glossary.md#r), multiples of the risk taken on
+each trade:
 
-| SLI                                                                                                                       | Target                                                                                                  | Below the minimum sample                                                             |
-| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| **Proposal quality** (headline): plan R of every buy proposal over 60 sessions, executed or not, against the benchmark    | 90% lower bound > 0R                                                                                    | "insufficient data" under 30 proposals, "inconclusive" while the interval contains 0 |
-| Screening lift: ranked candidates minus exploration, excess return at 60 sessions                                         | lower bound > 0                                                                                         | same                                                                                 |
-| Your portfolio against a shadow portfolio holding the benchmark (private)                                                 | real ≥ shadow                                                                                           | always reported                                                                      |
-| Expectancy of the trades you executed from proposals, net R (private)                                                     | lower bound > 0R                                                                                        | same as the headline                                                                 |
-| **Operational**: Claude calls and provider requests per heartbeat, over a 40-ticker watchlist with every provider stubbed | 0 Claude calls on a quiet run; exactly 1 per escalated signal; history requests ≤ tickers + 1 + signals | [`slo-operational.test.ts`](src/tests/slo-operational.test.ts), in CI                |
+| SLI                                                                                                                                               | Target                                                                                                  | Below the minimum sample                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| **Proposal quality** (headline): [plan R](docs/glossary.md#plan-r) of every buy proposal over 60 sessions, executed or not, against the benchmark | 90% lower bound > 0R                                                                                    | "insufficient data" under 30 proposals, "inconclusive" while the interval contains 0 |
+| Screening lift: ranked candidates minus exploration, excess return at 60 sessions                                                                 | lower bound > 0                                                                                         | same                                                                                 |
+| Your portfolio against a shadow portfolio holding the benchmark (private)                                                                         | real ≥ shadow                                                                                           | always reported                                                                      |
+| Expectancy of the trades you executed from proposals, net R (private)                                                                             | lower bound > 0R                                                                                        | same as the headline                                                                 |
+| **Operational**: Claude calls and provider requests per heartbeat, over a 40-ticker watchlist with every provider stubbed                         | 0 Claude calls on a quiet run; exactly 1 per escalated signal; history requests ≤ tickers + 1 + signals | [`slo-operational.test.ts`](src/tests/slo-operational.test.ts), in CI                |
 
 There is no wall-clock target: with stubs on shared CI runners a duration measures neither Yahoo
 nor Claude, and it would be flaky (ADR-0014). The two private SLIs depend on your account and your execution. They stay in your own report.
