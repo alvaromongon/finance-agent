@@ -1,7 +1,8 @@
 // Email alerts. Abstraction over the provider (v1: nodemailer/Gmail SMTP;
 // future: Resend). See routines/execution-analysis.md for the format.
 //
-// Two transports (MAIL_TRANSPORT):
+// Three modes (MAIL_TRANSPORT):
+//   - "none": email switched off; nothing is sent and nothing fails.
 //   - "smtp": direct send (GitHub Actions, local with credentials).
 //   - "outbox": persists the email in logs/outbox/ for the
 //     finance-agent-email-relay workflow to send — required in the Routines
@@ -88,6 +89,8 @@ const MISSING_SMTP =
 export function assertMailConfigured(): void {
   if (!config.mail.requireDelivery()) return;
   const transport = config.mail.transport();
+  // "none" and "outbox" have nothing to validate: the first sends nothing and
+  // the second leaves the real sending to the relay.
   if (transport !== "smtp") return;
   if (!smtpReady()) {
     throw new MailDeliveryError(MISSING_SMTP);
@@ -96,7 +99,7 @@ export function assertMailConfigured(): void {
 
 /**
  * Delivers according to MAIL_TRANSPORT. Returns true if the email went out
- * (smtp) or was persisted in logs/outbox/ (outbox); false only in smtp mode
+ * (smtp), was persisted in logs/outbox/ (outbox) or is switched off (none); false only in smtp mode
  * without credentials ("logs only" mode: the body is dumped to the log).
  * Whoever depends on the email not being lost (e.g. summarizeScreening before
  * deleting results.jsonl) must check the boolean.
@@ -109,6 +112,14 @@ export function assertMailConfigured(): void {
  */
 async function deliver(subject: string, body: string, source: string): Promise<boolean> {
   const transport = config.mail.transport();
+  if (transport === "none") {
+    // Email switched off on purpose (not a delivery failure, even with
+    // MAIL_REQUIRE_DELIVERY=true). Reported as handled so that whoever waits
+    // for the email before cleaning up (screening results, heartbeat digest
+    // markers) does not keep state for an email that will never go out.
+    console.log(`[mailer] Email disabled (MAIL_TRANSPORT=none) — not sent: ${subject}`);
+    return true;
+  }
   if (transport === "outbox") {
     const path = await writeOutboxMessage({ subject, body, source });
     console.log(`[mailer] Email queued in ${path} (the Actions relay will send it)`);
@@ -117,7 +128,7 @@ async function deliver(subject: string, body: string, source: string): Promise<b
   if (transport !== "smtp") {
     // A typo in MAIL_TRANSPORT must not silently fall back to smtp: in the
     // cloud environment that means hanging on a connection timeout.
-    throw new Error(`invalid MAIL_TRANSPORT="${transport}" (values: smtp | outbox)`);
+    throw new Error(`invalid MAIL_TRANSPORT="${transport}" (values: smtp | outbox | none)`);
   }
 
   // "Logs only" mode: without SMTP credentials no email is sent — the body is

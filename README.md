@@ -71,7 +71,8 @@ In GitHub Actions they come from repository variables and secrets.
    - `ANALYST_PROVIDER=api` with `ANTHROPIC_API_KEY`;
    - or `handoff`, to leave the reasoning to a Claude Code session ([below](#reasoner-api-or-handoff)).
 4. **Email.**
-   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `ALERT_EMAIL_TO`. Without them, emails are printed to the log.
+   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `ALERT_EMAIL_TO`. Without them, a local run prints emails to the log; the reusable workflows fail instead, so a lost alert never goes unnoticed.
+   - To run without email, set `MAIL_TRANSPORT=none`: nothing is sent and the run passes. In the reusable workflows, pass `email: false` (default `true`) and omit `smtp-user`, `alert-email-to` and `SMTP_PASS`.
    - From an environment that can't open SMTP, use `MAIL_TRANSPORT=outbox` and run the relay ([ADR-0005](docs/decisions/0005-email-outbox-and-relay.md)).
 5. **Output language.** `OUTPUT_LANGUAGE=en` (default) or `es` for emails, reports and notes. The input format stays in English.
 6. **Broker parameters.** The engine integrates with no broker. Tell it what yours allows and charges:

@@ -34,12 +34,21 @@ on:
         required: false
         type: string
         default: ""
+      email:
+        description: "Send emails. false = email off: nothing is sent and the run passes. true (default) requires smtp-user, alert-email-to and SMTP_PASS, or the run fails"
+        required: false
+        type: boolean
+        default: true
       smtp-user:
-        required: true
+        description: "SMTP account; required while email is on"
+        required: false
         type: string
+        default: ""
       alert-email-to:
-        required: true
+        description: "Recipient of alerts and reports; required while email is on"
+        required: false
         type: string
+        default: ""
       alert-email-from:
         required: false
         type: string
@@ -61,7 +70,8 @@ on:
       ANTHROPIC_API_KEY:
         required: true
       SMTP_PASS:
-        required: true
+        description: "SMTP password; required while email is on"
+        required: false
     outputs:
       changes-artifact:
         description: "Artifact with the patch (changes.patch) of the changes under data-path"
@@ -126,6 +136,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_WEEKLY_MODEL: ${{ inputs.claude-weekly-model }}
           CLAUDE_WEEKLY_EFFORT: ${{ inputs.claude-weekly-effort }}
+          MAIL_TRANSPORT: ${{ inputs.email && 'smtp' || 'none' }}
           MAIL_REQUIRE_DELIVERY: "true"
           SMTP_USER: ${{ inputs.smtp-user }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}

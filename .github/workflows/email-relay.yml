@@ -27,12 +27,21 @@ on:
         required: false
         type: string
         default: "."
+      email:
+        description: "Send emails. false = email off: nothing is sent and the run passes. true (default) requires smtp-user, alert-email-to and SMTP_PASS, or the run fails"
+        required: false
+        type: boolean
+        default: true
       smtp-user:
-        required: true
+        description: "SMTP account; required while email is on"
+        required: false
         type: string
+        default: ""
       alert-email-to:
-        required: true
+        description: "Recipient of alerts and reports; required while email is on"
+        required: false
         type: string
+        default: ""
       alert-email-from:
         required: false
         type: string
@@ -45,7 +54,8 @@ on:
         default: ""
     secrets:
       SMTP_PASS:
-        required: true
+        description: "SMTP password; required while email is on"
+        required: false
     outputs:
       changes-artifact:
         description: "Artifact with the patch (changes.patch) of the changes under data-path"
@@ -62,6 +72,7 @@ jobs:
     env:
       VAULT_PROJECT_DIR: ${{ github.workspace }}/${{ inputs.data-path }}
       OUTPUT_LANGUAGE: ${{ inputs.output-language }}
+      MAIL_TRANSPORT: ${{ inputs.email && 'smtp' || 'none' }}
       MAIL_REQUIRE_DELIVERY: "true"
       SMTP_USER: ${{ inputs.smtp-user }}
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
@@ -104,7 +115,9 @@ jobs:
             echo "No pending results.jsonl — nothing to summarize."
           fi
 
+      # Email off: nothing is sent and the queued files stay where they are.
       - name: Send outbox
+        if: inputs.email
         working-directory: _engine/${{ inputs.engine-dir }}
         run: npm run outbox:send
 

@@ -89,7 +89,8 @@ export const config = {
     analystWebSearch: optional("ANALYST_WEB_SEARCH", "true") === "true",
   },
   mail: {
-    // Outgoing transport: "smtp" (direct send, GitHub Actions) or "outbox"
+    // Outgoing transport: "none" (email switched off: nothing is sent and
+    // nothing fails, even with requireDelivery), "smtp" (direct send, GitHub Actions) or "outbox"
     // (writes the email as a file in logs/outbox/ for the
     // finance-agent-email-relay workflow to send — Routines cloud
     // environments, where the egress proxy only tunnels port 443 and direct
