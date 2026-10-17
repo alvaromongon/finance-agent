@@ -4,3 +4,9 @@
 set -e
 npm audit --audit-level=high --omit=dev
 npm run check
+# Workflows and example callers (CI runs actionlint v1.7.12).
+if command -v actionlint >/dev/null 2>&1; then
+  actionlint .github/workflows/*.yml examples/workflows/*.yml
+else
+  echo "pre-push: actionlint not installed, skipping workflow lint (CI runs it)" >&2
+fi

@@ -1,0 +1,52 @@
+# Example caller: Monday briefing, API mode (evaluates the decision log, then writes the report).
+# Copy to .github/workflows/ in your data repository. See the README, "Reasoner: API or handoff" > "API runner: GitHub Actions".
+name: Finance Agent — Monday briefing
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday morning, UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: finance-agent-monday-briefing
+  cancel-in-progress: false
+
+jobs:
+  monday-briefing:
+    permissions:
+      contents: read
+    uses: alvaromongon/finance-agent/.github/workflows/monday-briefing.yml@v0.1.0
+    with:
+      data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0
+      output-language: en
+      reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
+      reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
+      smtp-user: ${{ vars.SMTP_USER }}
+      alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
+      # To run without email, delete the two lines above and the SMTP_PASS secret
+      # below, and uncomment this line (needs a release newer than v0.1.0):
+      # email: false
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+  commit:
+    needs: monday-briefing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+        with:
+          artifact: ${{ needs.monday-briefing.outputs.changes-artifact }}
+          # What it writes: logs/ (decisions-evaluation.md, <date>-monday-briefing.md),
+          # the refreshed prices in portfolio.md, and the entries it retires from
+          # watchlist.md together with their archived tesis/ notes.
+          # Change the finance-agent/ prefix together with data-path.
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/watchlist.md finance-agent/tesis/
+          message: "chore(logs): Monday briefing"

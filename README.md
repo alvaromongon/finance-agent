@@ -33,7 +33,7 @@ ticket already computed. **It never places orders**: you decide and execute at y
 
 - Node.js ≥ 22 (`.nvmrc`) and npm.
 - To run it for real:
-  - an [Anthropic API key](https://console.anthropic.com/), or Claude Code for [handoff mode](#reasoner-api-or-handoff);
+  - an [Anthropic API key](https://console.anthropic.com/), or Claude Code for [handoff mode](#api-runner-github-actions);
   - an SMTP account (for example Gmail with an app password);
   - a GitHub repository for your data, if you want it scheduled.
 
@@ -118,7 +118,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
@@ -126,10 +126,39 @@ jobs:
           message: "chore(logs): heartbeat EUR"
 ```
 
-The same pattern applies to `monday-briefing.yml`, `screening.yml` and `email-relay.yml`.
+The other flows follow the same pattern; their complete callers are in
+[`examples/workflows/`](examples/workflows) ([below](#api-runner-github-actions)).
 Upgrading the engine means changing the tag.
 
 ### Reasoner: API or handoff
+
+#### API runner: GitHub Actions
+
+The API runner is one way to run the flows, the one the reusable workflows implement: the engine
+calls the Anthropic API itself, on a schedule. Copy the callers you need from
+[`examples/workflows/`](examples/workflows) to `.github/workflows/` in your data repository, set
+`data-path` to where your brain lives, and add the repository variables and secrets of
+[Configuration](#configuration-step-by-step). Each one is pinned to a release tag and has a
+`commit` job that applies the run's patch and commits only the paths that flow writes. Other
+runners are possible, for example a Claude Code routine with `handoff` (below).
+
+| Example                                                         | Triggers                                                                           | Commits                                               |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)       | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`                               |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)       | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`                               |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml) | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `watchlist.md`, `tesis/`     |
+| [`screening.yml`](examples/workflows/screening.yml)             | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md` |
+| [`email-relay.yml`](examples/workflows/email-relay.yml)         | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                               |
+
+The relay is only needed for runners that use `MAIL_TRANSPORT=outbox` (they can't open SMTP); do
+not install it in API mode, where the other flows send their own emails. Its hourly cron costs
+runner minutes even when the outbox is empty, and if `outbox:send` fails after sending some files,
+they are sent again the next hour. It runs one at a time (`concurrency`) and also polls hourly,
+because a push made with the default `GITHUB_TOKEN` does not trigger workflows. To run without
+email, see _Email_ above; the `email` input needs a release newer than `v0.1.0`, so the examples
+carry it commented out.
+
+#### Handoff
 
 With `ANALYST_PROVIDER=handoff`, the engine writes each escalation and its prompts to
 `logs/pending/` instead of calling the API. A Claude Code session, for example a scheduled
@@ -287,6 +316,7 @@ Confidence bounds and per-regime reporting are being added to the evaluator
 | Tests with line coverage ≥ 80%                                    | ✓                            | ✓, with the coverage table in the run summary |
 | CodeQL (JavaScript/TypeScript, Actions)                           | —                            | ✓, also weekly                                |
 | Docker build, demo in the container, Trivy (CRITICAL/HIGH, fixed) | —                            | ✓                                             |
+| Workflow lint (actionlint, incl. `examples/workflows/`)           | ✓ if installed               | ✓                                             |
 | Dependabot (npm, Actions, 7-day cooldown)                         | —                            | ✓                                             |
 
 The hook is enabled by `npm ci` (`prepare` sets `core.hooksPath`).
