@@ -1,0 +1,79 @@
+# Example caller: heartbeat of the EUR silo, handoff mode. The heartbeat leaves its escalations in
+# logs/pending/ and, once they are committed, wakes a Claude Code routine that resolves them.
+# Copy to .github/workflows/ in your data repository instead of heartbeat-eu.yml (same schedule).
+# See docs/routine-runner.md. The email relay (email-relay.yml) is required in this runner.
+name: Finance Agent — heartbeat EUR (handoff)
+
+on:
+  schedule:
+    - cron: "0 17 * * 1-5" # after the European close, UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: finance-agent-heartbeat-eu
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    permissions:
+      contents: read
+    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.1.0
+    with:
+      currency: EUR
+      data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0
+      analyst-provider: handoff
+      output-language: en
+      reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
+      reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
+      smtp-user: ${{ vars.SMTP_USER }}
+      alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
+    secrets:
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+  commit:
+    needs: heartbeat
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+        with:
+          artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
+          paths: finance-agent/logs/ finance-agent/portfolio.md
+          message: "chore(logs): heartbeat EUR"
+
+  wake-routine:
+    # Wakes the routine only when escalations are waiting. If this step fails or is
+    # skipped, the routine's daily schedule picks them up (docs/routine-runner.md).
+    needs: commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7 # after the commit job pushed, so it sees the pending files
+        with:
+          persist-credentials: false
+          sparse-checkout: finance-agent/logs/pending
+      - name: Fire the routine
+        env:
+          ROUTINE_FIRE_URL: ${{ secrets.ROUTINE_FIRE_URL }} # the routine's API trigger URL
+          ROUTINE_TOKEN: ${{ secrets.ROUTINE_TOKEN }} # the token shown once when the trigger is created
+        run: |
+          if ! compgen -G "finance-agent/logs/pending/*.md" > /dev/null; then
+            echo "No pending escalations — not waking the routine."
+            exit 0
+          fi
+          # Headers as documented for routine API triggers when this example was written;
+          # check them against the current Claude Code routines documentation.
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            -X POST "$ROUTINE_FIRE_URL" \
+            -H "Authorization: Bearer $ROUTINE_TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d '{"text": "Heartbeat EUR committed pending escalations."}'

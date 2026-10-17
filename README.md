@@ -140,7 +140,7 @@ calls the Anthropic API itself, on a schedule. Copy the callers you need from
 `data-path` to where your brain lives, and add the repository variables and secrets of
 [Configuration](#configuration-step-by-step). Each one is pinned to a release tag and has a
 `commit` job that applies the run's patch and commits only the paths that flow writes. Other
-runners are possible, for example a Claude Code routine with `handoff` (below).
+runners are possible, for example Claude Code routines with `handoff` (below).
 
 | Example                                                         | Triggers                                                                           | Commits                                               |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------- |
@@ -172,6 +172,12 @@ recording anything ([ADR-0004](docs/decisions/0004-handoff-mode-for-the-reasoner
 | Weekly screening      | `screening:prepare`, `screening:resolve`, `screening:summarize` |
 
 The system prompts live in your brain, under `routines/`.
+
+One runner for this mode is scheduled Claude Code routines: the orchestration prompts, the routine
+environment (variables, network allowlist, engine pinned by a SessionStart hook), how the heartbeat
+wakes the routine and the email relay it requires are in
+[Runner: handoff with Claude Code routines](docs/routine-runner.md). It is an example; other runners
+are possible.
 
 ## Commands
 
