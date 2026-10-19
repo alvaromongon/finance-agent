@@ -150,6 +150,12 @@ evaluated later. It includes decisions not to act (`hold`, rejections) and the u
 flows; every line carries the [rules version](#rules-version). Lines are only appended, never
 rewritten, and the engine is its only writer.
 
+### Lot
+
+The units of one ticker bought in a single entry. A trade is one lot: buying more of a ticker you
+already hold opens a second lot and so a second trade, and its [R](#r) is measured on its own,
+from its own entry price and initial stop. Selling part of a lot leaves the rest of it open.
+
 ### Rules version
 
 The version of the trading rules stamped on every decision, so results can be split by the rules
