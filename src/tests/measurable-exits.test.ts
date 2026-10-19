@@ -265,9 +265,11 @@ describe("measurable exits: the five R tests of spec #27", () => {
     { todo: "needs self-contained exits (#40 and #42)" },
     async () => {
       // The deposit is in 2026-T1, the entry in 2026-T2 and the exit in 2026-T3. The same trade is
-      // narrated without archiving and then archiving one quarter before the exit is recorded
-      // (`decision:record` reads only the live log). Archiving T2 separates the entry from its exit.
-      const archiveBeforeExit = async (quarter: "T1" | "T2", from: string, to: string) => {
+      // narrated without archiving, then archiving each quarter either before the exit is recorded
+      // (`decision:record` reads only the live log; archiving T2 separates the entry from its exit)
+      // or after it (T3 is the exit's own quarter).
+      type Quarter = [quarter: "T1" | "T2" | "T3", from: string, to: string];
+      const archiveQuarter = async (quarter: Quarter[0], from: string, to: string) => {
         const archived: string[] = [];
         const live: string[] = [];
         for (const line of (await readFile(decisionsPath(), "utf8")).split("\n").filter((l) => l !== "")) {
@@ -277,7 +279,7 @@ describe("measurable exits: the five R tests of spec #27", () => {
         await writeFile(join(archiveDir, `decisions-2026-${quarter}.jsonl`), archived.join("\n") + "\n", "utf8");
         await writeFile(decisionsPath(), live.length > 0 ? live.join("\n") + "\n" : "", "utf8");
       };
-      const scenario = async (archive?: [quarter: "T1" | "T2", from: string, to: string]): Promise<string> => {
+      const scenario = async (archive?: { quarter: Quarter; when: "before" | "after" }): Promise<string> => {
         await rm(join(vaultDir, "logs"), { recursive: true, force: true });
         await rm(archiveDir, { recursive: true, force: true });
         await mkdir(join(vaultDir, "logs"), { recursive: true });
@@ -286,20 +288,26 @@ describe("measurable exits: the five R tests of spec #27", () => {
 
         await record({ type: "deposit", currency: "USD", amount: 5000, date: "2026-02-02" });
         await entry(100, 10, 90, "2026-06-15");
-        if (archive) await archiveBeforeExit(...archive);
+        if (archive?.when === "before") await archiveQuarter(...archive.quarter);
         await exit(120, 10, "2026-08-10");
+        if (archive?.when === "after") await archiveQuarter(...archive.quarter);
         return renderDecisionsEvaluation(await evaluate());
       };
 
       const unarchived = await scenario();
-      for (const quarter of [
+      const quarters: Quarter[] = [
         ["T1", "2026-01-01", "2026-03-31"],
         ["T2", "2026-04-01", "2026-06-30"],
-      ] as const) {
-        const archived = await scenario([...quarter]);
-        // The cut board first, so a failure shows the numbers that moved instead of the whole report.
-        assert.equal(extractCutBoard(archived), extractCutBoard(unarchived), `archiving 2026-${quarter[0]}`);
-        assert.equal(archived, unarchived, `archiving 2026-${quarter[0]}`);
+        ["T3", "2026-07-01", "2026-09-30"],
+      ];
+      for (const when of ["before", "after"] as const) {
+        for (const quarter of quarters) {
+          const archived = await scenario({ quarter, when });
+          const label = `archiving 2026-${quarter[0]} ${when} the exit`;
+          // The cut board first, so a failure shows the numbers that moved instead of the whole report.
+          assert.equal(extractCutBoard(archived), extractCutBoard(unarchived), label);
+          assert.equal(archived, unarchived, label);
+        }
       }
     },
   );
