@@ -103,7 +103,7 @@ describe("buildTechnicalsSection", () => {
 // ── computeAssetClassWeights / formatPortfolioWeights ─────────────────
 
 function emptyPortfolio(currency: "EUR" | "USD"): PortfolioSnapshot {
-  return { currency, cash: 0, positions: [], syncedAt: "2026-07-10T00:00:00Z" };
+  return { currency, cash: 0, positions: [], lots: [], syncedAt: "2026-07-10T00:00:00Z" };
 }
 
 function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {}) {

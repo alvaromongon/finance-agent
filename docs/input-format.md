@@ -1,4 +1,4 @@
-# Input format — version 1
+# Input format
 
 The engine reads its state from Markdown files in the project directory
 (`VAULT_PROJECT_DIR`). This document is the contract for those files: their
@@ -16,22 +16,25 @@ schema_version: 1
 ---
 ```
 
-The engine refuses a file without `schema_version` or with a version it does
-not know, naming the file in the error, instead of reading it partially. An
-incompatible change to this format bumps the version and ships with a
-migration script. The `version` in `strategies/base.md` is the version of the
-trading rules, not of this format.
+The version is **per file**: each file below has its own, and a change to one
+file's format does not touch the others. The engine refuses a file without
+`schema_version` or with a version other than the one it reads for that file,
+naming the file and the expected version in the error, instead of reading it
+partially. An incompatible change to a file's format bumps its version and
+ships with a migration script, except where its section says otherwise. The
+`version` in `strategies/base.md` is the version of the trading rules, not of
+this format.
 
-| File                                   | Versioned                  | Parsed parts                                            |
-| -------------------------------------- | -------------------------- | ------------------------------------------------------- |
-| `portfolio.md`                         | yes                        | Frontmatter, `Cash` and `Positions` tables per currency |
-| `watchlist.md`                         | yes                        | First ` ```yaml ` block                                 |
-| `screening-universe.md`                | yes                        | Frontmatter, first ` ```yaml ` block                    |
-| `screening-log.md`                     | yes                        | The table                                               |
-| `tesis/tesis-<slug>.md`                | yes                        | Frontmatter                                             |
-| `logs/<YYYY-MM-DD>-<ticker>.md`        | no (written by the engine) | Frontmatter                                             |
-| `strategies/base.md`                   | no                         | Frontmatter `version` (rules version) and text          |
-| `portfolio-policy.md`, `routines/*.md` | no                         | Text only, passed to the reasoning model                |
+| File                                   | Versioned                  | Version | Parsed parts                                                    |
+| -------------------------------------- | -------------------------- | ------- | --------------------------------------------------------------- |
+| `portfolio.md`                         | yes                        | **2**   | Frontmatter, `Cash`, `Positions` and `Lots` tables per currency |
+| `watchlist.md`                         | yes                        | 1       | First ` ```yaml ` block                                         |
+| `screening-universe.md`                | yes                        | 1       | Frontmatter, first ` ```yaml ` block                            |
+| `screening-log.md`                     | yes                        | 1       | The table                                                       |
+| `tesis/tesis-<slug>.md`                | yes                        | 1       | Frontmatter                                                     |
+| `logs/<YYYY-MM-DD>-<ticker>.md`        | no (written by the engine) | -       | Frontmatter                                                     |
+| `strategies/base.md`                   | no                         | -       | Frontmatter `version` (rules version) and text                  |
+| `portfolio-policy.md`, `routines/*.md` | no                         | -       | Text only, passed to the reasoning model                        |
 
 Files that are only passed to the model as text are not parsed, so they carry
 no `schema_version`.
@@ -53,13 +56,13 @@ notation. `—`, `-` or `TBD` mean "no value".
 
 ## `portfolio.md`
 
-Synced by hand from the broker. One `Cash` and one `Positions` section per
-currency (`EUR`, `USD`), with an em dash, en dash or hyphen between currency
-and section name. A section ends at the next `##` heading or `---` rule.
+Synced by hand from the broker. One `Cash`, one `Positions` and one `Lots`
+section per currency (`EUR`, `USD`), with an em dash, en dash or hyphen between
+currency and section name. A section ends at the next `##` heading or `---` rule.
 
 ```markdown
 ---
-schema_version: 1
+schema_version: 2
 last_manual_sync: 2026-10-05T18:00:00Z
 account_env: demo
 ---
@@ -76,17 +79,28 @@ account_env: demo
 | Ticker | Volume | Avg price | Current price | P/L   | Stop loss |
 | ------ | ------ | --------- | ------------- | ----- | --------- |
 | SAP.DE | 2      | 180,00    | 186,40        | 12,80 | 168,00    |
+
+## EUR — Lots
+
+| Entry id                     | Date       | Units | Entry units | Entry price | Initial stop | Entry costs | Origin  | Rules version | Rules violations |
+| ---------------------------- | ---------- | ----- | ----------- | ----------- | ------------ | ----------- | ------- | ------------- | ---------------- |
+| 20260915-sapde-entry-example | 2026-09-15 | 2     | 2           | 180,00      | 168,00       | —           | sistema | 1.0           | —                |
 ```
 
 Frontmatter:
 
 | Field              | Required | Meaning                                                                                       |
 | ------------------ | -------- | --------------------------------------------------------------------------------------------- |
-| `schema_version`   | yes      | `1`                                                                                           |
+| `schema_version`   | yes      | `2`. A file at `1` (without `Lots`) is refused: there is no reading of v1 and no migration    |
 | `last_manual_sync` | no       | ISO timestamp of the last sync; the engine warns when it is older than `PORTFOLIO_STALE_DAYS` |
 | `account_env`      | no       | `demo` or `real`; recorded with each decision                                                 |
 
-Both sections are required for each currency; a missing one is an error
+The v1 to v2 change is incompatible and ships without a migration script: the
+owner is the only user, and rewrites the file by hand (an owner-approved
+exception to the rule above; see
+[ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)).
+
+The three sections are required for each currency; a missing one is an error
 rather than an empty silo. Cash rows, matched by the first cell
 (case-insensitive); other rows are ignored:
 
@@ -99,17 +113,58 @@ Positions table: the first row is the header and columns are read **by
 name** (case-insensitive), in any order. All six are required; a missing one
 is an error. Extra columns are ignored.
 
-| Column          | Meaning                                   |
-| --------------- | ----------------------------------------- |
-| `Ticker`        | Yahoo Finance symbol                      |
-| `Volume`        | Units held; fractions allowed             |
-| `Avg price`     | Average entry price                       |
-| `Current price` | Rewritten by the engine on each heartbeat |
-| `P/L`           | Rewritten by the engine on each heartbeat |
-| `Stop loss`     | Active stop, or `—`                       |
+| Column          | Meaning                                                     |
+| --------------- | ----------------------------------------------------------- |
+| `Ticker`        | Yahoo Finance symbol                                        |
+| `Volume`        | Units held; fractions allowed. The sum of its lots' `Units` |
+| `Avg price`     | Average entry price                                         |
+| `Current price` | Rewritten by the engine on each heartbeat                   |
+| `P/L`           | Rewritten by the engine on each heartbeat                   |
+| `Stop loss`     | Active stop, or `—`                                         |
 
 Rows whose ticker is empty or `—`, or whose `Volume` or `Avg price` is not a
 number, are skipped.
+
+Lots table: one row per open [lot](glossary.md#lot), the units of one ticker
+bought in a single entry. The first row is the header and columns are read
+**by name** (case-insensitive), in any order. All ten are required; a missing
+one is an error. An empty table (header only, or `—` rows) is a silo with no
+open lots.
+
+| Column             | Meaning                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| `Entry id`         | Id of the `entry` line in the decision log that opened the lot; the lot's ticker comes from it   |
+| `Date`             | Entry date, `YYYY-MM-DD`                                                                         |
+| `Units`            | Units of the lot still open                                                                      |
+| `Entry units`      | Units the entry bought                                                                           |
+| `Entry price`      | Price of the entry                                                                               |
+| `Initial stop`     | Stop at entry, the base of R; `—` if there was none                                              |
+| `Entry costs`      | Costs of the entry in the silo currency; `—` if none                                             |
+| `Origin`           | `sistema` or `propietario`                                                                       |
+| `Rules version`    | `version` of `strategies/base.md` in force at the entry                                          |
+| `Rules violations` | The rules the entry broke, comma-separated (for example `no_stop, overrode_block`); `—` for none |
+
+Rows without an `Entry id`, or whose `Units`, `Entry units` or `Entry price`
+is not a number, or whose `Origin` is not one of the two values, are skipped,
+so they do not count towards their position's `Volume` and the check below
+reports them.
+
+The lots must add up to the positions. The table has no ticker: each lot
+belongs to the ticker of its entry in the decision log
+(`logs/decisions.jsonl` and any archived quarter). A silo is **inconsistent** when:
+
+- a position's `Volume` is not the sum of the `Units` of its lots (a position
+  with no lots, or lots of a ticker with no position row, count too); or
+- a lot's `Entry id` is not an `entry` of that currency in the decision log.
+
+Where portfolio and log are both read, `decision:record` and
+`decisions:evaluate` refuse an inconsistent silo with an error naming the ticker
+or the entry id; fix `Lots` by hand. The heartbeat does not refuse it: it keeps
+watching the positions (stops, `Volume`, `Avg price`) and raises a warning in
+its output and in the digest, because a typo must not switch off the stop
+alerts. A stock split is corrected by scaling `Units`, `Entry units`, `Entry
+price` and `Initial stop` by the same ratio; the check cannot catch a wrong
+ratio.
 
 ## `watchlist.md`
 

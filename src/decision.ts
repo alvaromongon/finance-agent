@@ -13,6 +13,7 @@ import { config } from "./config.js";
 import {
   appendDecisions,
   readAccountEnv,
+  readDecisionHistory,
   readDecisions,
   readPortfolio,
   readRulesVersion,
@@ -37,6 +38,7 @@ import {
   type DecisionOrigin,
 } from "./decisions.js";
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
+import { assertLotsMatch } from "./utils/lots-check.js";
 import { round2 } from "./utils/round.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Recommendation, Signal } from "./types.js";
@@ -133,6 +135,7 @@ export async function recordOwnerDecision(
   today = new Date().toISOString().slice(0, 10),
 ): Promise<Decision> {
   const input = validateOwnerInput(raw);
+  await assertPortfolioLots(input.currency);
   const date = input.date ?? today;
   const [rulesVersion, history, watchlist] = await Promise.all([
     readRulesVersion(),
@@ -250,6 +253,23 @@ export async function recordOwnerDecision(
 
   await appendDecisions([decision]);
   return decision;
+}
+
+/**
+ * Refuses to record on a portfolio whose lots do not match: a `Volume` that is not the sum of its
+ * lots' units, or a lot whose entry is not in the log (ADR-0015). Without a portfolio.md there is
+ * nothing to check; an unreadable one (e.g. the previous format) is refused as everywhere else.
+ */
+async function assertPortfolioLots(currency: Currency): Promise<void> {
+  let portfolio;
+  try {
+    portfolio = await readPortfolio(currency);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  // The whole history, not the live log: the entry of an open lot may sit in an archived quarter.
+  assertLotsMatch(portfolio, await readDecisionHistory());
 }
 
 /**

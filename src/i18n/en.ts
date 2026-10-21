@@ -88,6 +88,7 @@ export const en = {
     subject: (currency: string, sections: string) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
       breaches: "stop crossed",
+      lots: "lots do not match",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -109,6 +110,19 @@ export const en = {
       `After updating the account, reflect the change in \`portfolio.md\``,
       `(guide: \`routines/portfolio-sync.md\`) so the rest of the system stops`,
       `reasoning about a position that no longer exists.`,
+    ],
+    lotsIntro: [
+      `## \`portfolio.md\`: the lots do not match`,
+      ``,
+      `The \`Lots\` table disagrees with \`Positions\` or with the decision log. The heartbeat keeps`,
+      `watching your positions (stops, \`Volume\`, \`Avg price\`), but \`decision:record\` and the`,
+      `evaluation refuse the file until it is fixed:`,
+      ``,
+    ],
+    lotsOutro: [
+      ``,
+      `Fix \`Lots\` by hand so each \`Volume\` is the sum of the \`Units\` of its lots and every`,
+      `\`Entry id\` is an entry of \`logs/decisions.jsonl\` (\`docs/input-format.md\`).`,
     ],
     tightIntro: (minAtr: number) => [
       `## Stops too tight`,

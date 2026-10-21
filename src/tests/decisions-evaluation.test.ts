@@ -67,6 +67,7 @@ const snapshot = (currency: Currency, cash: number): PortfolioSnapshot => ({
   currency,
   cash,
   positions: [],
+  lots: [],
   syncedAt: "2026-09-25",
 });
 

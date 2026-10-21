@@ -27,7 +27,9 @@ parentheses so a code comment that cites it can be found here.
      fails at once (an alert that does not go out is worse than a run that does not run).
   2. Read `portfolio.md` and `watchlist.md`. The tickers watched are the union of open positions and
      watchlist candidates, so a position is watched for risk even without a watchlist entry.
-     With nothing to watch the run ends.
+     With nothing to watch the run ends. It also checks the portfolio's [lots](glossary.md#lot)
+     against the decision log; on a mismatch it does not refuse the file, it keeps watching and puts
+     a warning in the digest (see [Lots](input-format.md#portfoliomd)).
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
@@ -50,7 +52,7 @@ parentheses so a code comment that cites it can be found here.
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
-  12. Send the digest (crossed stops, tight stops, armed setups, escalations) with only what is new
+  12. Send the digest (crossed stops, lots that do not match, tight stops, armed setups, escalations) with only what is new
       since the last send today, and mark it as sent only if the email went out.
 - **Reads / writes**: reads `portfolio.md`, `watchlist.md`, `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md` and the last log of each ticker. Writes `portfolio.md` (prices),
@@ -164,7 +166,9 @@ them. It needs one history request per position with a stop; without ATR the pos
   4. Blocked ticket: write the Markdown log and the decision line with the reasons; send no email.
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
-- **Steps (owner trade)**: validate the input, then fill what the owner need not know: id, rules
+- **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match
+  (a `Volume` that is not the sum of its lots' units, or a lot whose entry is not in the decision
+  history), then fill what the owner need not know: id, rules
   version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
   `overrode_block`. An exit computes `pnl` from the average price still in `portfolio.md` (so record
@@ -264,7 +268,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Steps**:
   1. Read the whole decision history: the live `logs/decisions.jsonl` and any
      `decisions-YYYY-QN.jsonl` in `DECISIONS_ARCHIVE_DIR`, de-duplicated by id and in date order; a
-     line that fails to validate is skipped with a warning.
+     line that fails to validate is skipped with a warning. Check the portfolio's lots against it,
+     and stop if they do not match.
   2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
      its [lot](glossary.md#lot); an exit without one is skipped); simulate each proposal's plan and
      compare it with the silo [benchmark](glossary.md#benchmark) and the
@@ -275,8 +280,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      after each screening evaluation).
 - **Reads / writes**: reads the decision history, market data and `screening-log.md`; writes only
   the files above. It never touches the decision log, `portfolio.md` or the watchlist.
-- **When it fails**: it exits non-zero and writes nothing; "insufficient data" is a status, not a
-  failure.
+- **When it fails**: it exits non-zero and writes nothing, also when the portfolio's lots do not
+  match the decision history; "insufficient data" is a status, not a failure.
 - **Why**: [ADR-0014](decisions/0014-decision-quality-slo.md),
   [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md) §4.
 

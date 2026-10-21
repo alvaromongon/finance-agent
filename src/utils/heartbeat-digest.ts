@@ -27,6 +27,11 @@ export interface HeartbeatDigest {
   /** Tight-stop warning threshold (STOP_MIN_ATR). */
   minAtr: number;
   breaches: StopBreach[];
+  /**
+   * Problems of the portfolio's `Lots` against the decision log (ADR-0015). The run does not
+   * refuse the file: it keeps watching the positions and reports them here.
+   */
+  lotsWarnings: string[];
   tightStops: TightStop[];
   /** The day's armed breakouts (ADR-0013): the only thing actionable without the reasoner. */
   armed: SetupEvaluation[];
@@ -36,13 +41,19 @@ export interface HeartbeatDigest {
 
 /** "Already sent" keys of what the digest deduplicates; crossed stops have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
-  return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
+  return [
+    ...d.lotsWarnings.map(lotsKey),
+    ...d.tightStops.map(tightStopKey),
+    ...d.armed.map(armedKey),
+    ...d.escalated.map(escalatedKey),
+  ];
 }
 
 /** The digest without what was already sent today. Crossed stops always stay. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
+    lotsWarnings: d.lotsWarnings.filter((w) => !sent.has(lotsKey(w))),
     tightStops: d.tightStops.filter((t) => !sent.has(tightStopKey(t))),
     armed: d.armed.filter((a) => !sent.has(armedKey(a))),
     escalated: d.escalated.filter((s) => !sent.has(escalatedKey(s))),
@@ -50,6 +61,7 @@ export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): Heartbea
 }
 
 // Each alert's relevant data: if they change, it is news again.
+const lotsKey = (warning: string) => `lots|${warning}`;
 const tightStopKey = (t: TightStop) => `tight_stop|${t.ticker}|${t.stopLoss}`;
 const armedKey = (a: SetupEvaluation) => `setup_armed|${a.ticker}|${a.setup.pattern}|${a.setup.level}`;
 // Without the price on purpose: a re-escalation by price (cooldown) creates
@@ -67,6 +79,9 @@ export function renderHeartbeatDigest(
   const sections: { label: string; tickers: string[]; lines: string[] }[] = [];
   if (d.breaches.length > 0) {
     sections.push({ label: t.labels.breaches, tickers: d.breaches.map((b) => b.ticker), lines: breachSection(d, m) });
+  }
+  if (d.lotsWarnings.length > 0) {
+    sections.push({ label: t.labels.lots, tickers: [], lines: lotsSection(d, m) });
   }
   if (d.tightStops.length > 0) {
     sections.push({
@@ -88,7 +103,10 @@ export function renderHeartbeatDigest(
   if (sections.length === 0) return null;
 
   // The tickers in the subject, to see them from the notification.
-  const subject = t.subject(d.currency, sections.map((s) => `${s.label}: ${s.tickers.join(", ")}`).join(" · "));
+  const subject = t.subject(
+    d.currency,
+    sections.map((s) => (s.tickers.length > 0 ? `${s.label}: ${s.tickers.join(", ")}` : s.label)).join(" · "),
+  );
   const body = sections.map((s) => s.lines.join("\n")).join("\n\n");
   return { subject, body };
 }
@@ -105,6 +123,11 @@ function breachSection(d: HeartbeatDigest, m: Messages): string[] {
     ),
     ...m.heartbeatDigest.breachOutro,
   ];
+}
+
+function lotsSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [...t.lotsIntro, ...d.lotsWarnings.map((w) => `- ${w}`), ...t.lotsOutro];
 }
 
 function tightStopSection(d: HeartbeatDigest, m: Messages): string[] {

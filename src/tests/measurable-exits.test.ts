@@ -47,10 +47,9 @@ watchlist:
 `;
 
 /**
- * `portfolio.md` in the v2 shape of ADR-0015: the `Positions` table of today plus a
- * `## <CCY> — Lots` table per currency. The Lots column names are a proposal that #41 adopts or
- * changes (and #41 decides whether the frontmatter schema_version changes); only this builder and
- * `parseLots` know them.
+ * `portfolio.md` in the v2 shape of ADR-0015 (#41): the `Positions` table plus a `## <CCY> — Lots`
+ * table per currency, `schema_version: 2`. Lots are read back with the engine's own parser (the
+ * helpers below), so this builder is the only place that knows the Lots columns.
  */
 const LOTS_HEADER = [
   "Entry id",
@@ -62,6 +61,7 @@ const LOTS_HEADER = [
   "Entry costs",
   "Origin",
   "Rules version",
+  "Rules violations",
 ];
 
 function portfolioMd(opts: { positions?: string[]; lots?: string[] } = {}): string {
@@ -83,7 +83,7 @@ ${table(["Ticker", "Volume", "Avg price", "Current price", "P/L", "Stop loss"], 
 ${table(LOTS_HEADER, lots)}
 `;
   return `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: 2026-10-16T18:00:00Z
 account_env: demo
 ---
@@ -109,38 +109,6 @@ function bars(from: string, to: string, close: number): object[] {
   return out;
 }
 
-/** Rows of the `## USD — Lots` table, keyed by its column names. */
-function parseLots(md: string): Record<string, string>[] {
-  const section = md.split(/^## USD — Lots$/m)[1]?.split(/^## /m)[0] ?? "";
-  const rows = section
-    .split("\n")
-    .filter((l) => l.trim().startsWith("|"))
-    .map((l) =>
-      l
-        .trim()
-        .replace(/^\||\|$/g, "")
-        .split("|")
-        .map((c) => c.trim()),
-    )
-    .filter((cells) => !cells.every((c) => /^-+$/.test(c)));
-  const [header, ...data] = rows;
-  return data.map((cells) => Object.fromEntries(header.map((h, i) => [h, cells[i]])));
-}
-
-function positionRow(md: string, ticker: string): string[] | undefined {
-  const section = md.split(/^## USD — Positions$/m)[1]?.split(/^## /m)[0] ?? "";
-  return section
-    .split("\n")
-    .filter((l) => l.trim().startsWith("|") && l.includes(ticker))
-    .map((l) =>
-      l
-        .trim()
-        .replace(/^\||\|$/g, "")
-        .split("|")
-        .map((c) => c.trim()),
-    )[0];
-}
-
 describe("measurable exits: the five R tests of spec #27", () => {
   let root: string;
   let vaultDir: string;
@@ -153,6 +121,34 @@ describe("measurable exits: the five R tests of spec #27", () => {
   let loadEvaluationReport: (tag: string, now?: Date) => Promise<EvaluationReport>;
   let renderDecisionsEvaluation: (report: EvaluationReport) => string;
   let extractCutBoard: (md: string) => string | null;
+  let sectionBody: typeof import("../utils/vault-parser.js").sectionBody;
+  let sectionRange: typeof import("../utils/vault-parser.js").sectionRange;
+  let parseTableRows: typeof import("../utils/vault-parser.js").parseTableRows;
+
+  /**
+   * Rows of the `## USD — <section>` table keyed by column name, read the way the engine reads the
+   * vault: en dash and hyphen headings, CRLF, `---` rules and `:---:` separator rows included.
+   */
+  const usdTable = (md: string, section: "Positions" | "Lots"): Record<string, string>[] => {
+    const [header, ...rows] = parseTableRows(sectionBody(md, "USD", section));
+    return rows.map((cells) => Object.fromEntries(header.map((h, i) => [h, cells[i]])));
+  };
+  const parseLots = (md: string) => usdTable(md, "Lots");
+  /** The USD position row whose Ticker cell is `ticker` (not a row that merely mentions it), as its cells. */
+  const positionRow = (md: string, ticker: string): string[] | undefined => {
+    const [header, ...rows] = parseTableRows(sectionBody(md, "USD", "Positions"));
+    const col = header.indexOf("Ticker");
+    return rows.find((cells) => cells[col] === ticker);
+  };
+  /** `md` with `from` replaced by `to` inside the USD Positions section only; fails if nothing changed. */
+  const corruptPositions = (md: string, from: RegExp, to: string): string => {
+    const range = sectionRange(md, "USD", "Positions");
+    assert.ok(range, "the USD Positions section exists");
+    const corrupted =
+      md.slice(0, range.start) + md.slice(range.start, range.end).replace(from, to) + md.slice(range.end);
+    assert.notEqual(corrupted, md, `the corruption ${from} did not change the portfolio`);
+    return corrupted;
+  };
 
   const decisionsPath = () => join(vaultDir, "logs", "decisions.jsonl");
   const readLog = async (): Promise<Record<string, unknown>[]> =>
@@ -244,6 +240,7 @@ describe("measurable exits: the five R tests of spec #27", () => {
     record = (raw) => recordOwnerDecision(raw, provider, TODAY);
     ({ loadEvaluationReport } = await import("../decisions-evaluation-run.js"));
     ({ renderDecisionsEvaluation, extractCutBoard } = await import("../utils/decisions-evaluation-render.js"));
+    ({ sectionBody, sectionRange, parseTableRows } = await import("../utils/vault-parser.js"));
   });
 
   after(async () => {
@@ -384,9 +381,64 @@ describe("measurable exits: the five R tests of spec #27", () => {
     },
   );
 
+  describe("R5, read side: Lots that do not match fail on read", () => {
+    /** Two entries and a portfolio.md that lists them as lots, the way the redesign leaves it. */
+    const holdTwoLots = async () => {
+      const first = await entry(100, 10, 90, "2026-06-15");
+      const second = await entry(110, 10, 100, "2026-06-22");
+      const lotRow = (d: Decision, price: number, stop: number) =>
+        `| ${d.id} | ${d.date} | 10 | 10 | ${price} | ${stop} | — | sistema | 1.0 | — |`;
+      const md = portfolioMd({
+        positions: ["| TCK | 20 | 105.00 | 100.00 | 0.00 | 90.00 |"],
+        lots: [lotRow(first, 100, 90), lotRow(second, 110, 100)],
+      });
+      await writeFile(join(vaultDir, "portfolio.md"), md, "utf8");
+      return { first, second, md };
+    };
+
+    it("a Volume that is the sum of its lots' units reads, and the lots are the engine's", async () => {
+      const { first, second, md } = await holdTwoLots();
+      assert.deepEqual(
+        parseLots(md).map((l) => [l["Entry id"], l.Units]),
+        [
+          [first.id, "10"],
+          [second.id, "10"],
+        ],
+      );
+      assert.deepEqual(positionRow(md, "TCK")?.slice(0, 3), ["TCK", "20", "105.00"]);
+      await evaluate();
+      await entry(100, 1, 90, "2026-09-01");
+    });
+
+    it("a Volume that is not the sum of its lots' units fails on read, naming the ticker", async () => {
+      const { md } = await holdTwoLots();
+      await writeFile(join(vaultDir, "portfolio.md"), corruptPositions(md, /\| TCK \| 20 \|/, "| TCK | 7 |"), "utf8");
+
+      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /TCK.*Volume/);
+      await assert.rejects(evaluate(), /TCK.*Volume/);
+    });
+
+    it("a lot whose entry id is not in the decision log fails on read, naming the id", async () => {
+      const { first, md } = await holdTwoLots();
+      await writeFile(join(vaultDir, "portfolio.md"), md.replace(first.id, "20260101-tck-entry-ghost"), "utf8");
+
+      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /20260101-tck-entry-ghost/);
+      await assert.rejects(evaluate(), /20260101-tck-entry-ghost/);
+    });
+
+    it("a v1 portfolio.md (no Lots, schema_version: 1) is refused by both", async () => {
+      await holdTwoLots();
+      const v1 = portfolioMd().replace("schema_version: 2", "schema_version: 1");
+      await writeFile(join(vaultDir, "portfolio.md"), v1, "utf8");
+
+      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /portfolio\.md.*schema_version 1/);
+      await assert.rejects(evaluate(), /portfolio\.md.*schema_version 1/);
+    });
+  });
+
   todoTest(
     "R5: a sale that spans two lots writes two exit lines and keeps Lots, Volume and Avg price consistent",
-    "needs the lots written by decision:record (#43)",
+    "needs the lots written by decision:record (#42)",
     async () => {
       // Two entries add two lots: 10 at 100 and 10 at 110 (Volume 20, Avg price 105).
       const first = await entry(100, 10, 90, "2026-06-15");
@@ -414,10 +466,6 @@ describe("measurable exits: the five R tests of spec #27", () => {
       );
       assert.deepEqual(positionRow(md, "TCK")?.slice(0, 3), ["TCK", "5", "110.00"]);
       assertRs(tradeRs(await evaluate()), [3]);
-      // Test 5's other half: a Volume that is not the sum of the lots' units fails on read.
-      await writeFile(join(vaultDir, "portfolio.md"), md.replace(/\| TCK \| 5 \|/, "| TCK | 7 |"), "utf8");
-      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /Volume/);
-      await assert.rejects(evaluate(), /Volume/);
     },
   );
 });

@@ -2,7 +2,8 @@
 // Exported so they can be unit-tested.
 import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownNumber } from "./parse.js";
-import type { Currency, Position } from "../types.js";
+import { DECISION_ORIGINS } from "../decisions.js";
+import type { Currency, Lot, Position } from "../types.js";
 
 export function extractYamlBlock(md: string): string {
   const match = /```ya?ml\n([\s\S]*?)```/.exec(normalizeEol(md));
@@ -18,30 +19,39 @@ export function extractFrontmatter(md: string): Record<string, unknown> | null {
 
 // ─── Input format version (ADR-0001 §6) ─────────────────────────────
 
-/** Input format version this engine understands. See docs/input-format.md. */
+/** Format version of the vault files other than `portfolio.md`, including those the engine writes. */
 export const SCHEMA_VERSION = 1;
 
+/** Format version of `portfolio.md`: v2 adds the `Lots` table (ADR-0015). */
+export const PORTFOLIO_SCHEMA_VERSION = 2;
+
+/** The `schema_version` this engine reads for a vault file: it is per file, not for the whole vault. */
+export function expectedSchemaVersion(file: string): number {
+  return file === "portfolio.md" ? PORTFOLIO_SCHEMA_VERSION : SCHEMA_VERSION;
+}
+
 /**
- * Checks the `schema_version` in a vault file's frontmatter. A file without a
- * version or with an unknown one is rejected instead of being half-read: the
- * format is the contract with whoever uses the engine.
+ * Checks the `schema_version` in a vault file's frontmatter against the version this engine reads
+ * for that file. A file without a version or with another one is rejected instead of being
+ * half-read: the format is the contract with whoever uses the engine.
  */
 export function assertSchemaVersion(md: string, file: string): void {
+  const expected = expectedSchemaVersion(file);
   const version = extractFrontmatter(md)?.schema_version;
-  if (version === SCHEMA_VERSION) return;
+  if (version === expected) return;
   if (version == null) {
     throw new Error(
-      `${file}: schema_version missing from the frontmatter (this engine reads version ${SCHEMA_VERSION}; see docs/input-format.md)`,
+      `${file}: schema_version missing from the frontmatter (this engine reads version ${expected} of this file; see docs/input-format.md)`,
     );
   }
   throw new Error(
-    `${file}: unknown schema_version ${JSON.stringify(version)} (this engine reads version ${SCHEMA_VERSION}; see docs/input-format.md)`,
+    `${file}: unknown schema_version ${JSON.stringify(version)} (this engine reads version ${expected} of this file; see docs/input-format.md)`,
   );
 }
 
 // ─── Portfolio ────────────────────────────────────────────────────────────────
 
-export type PortfolioSection = "Cash" | "Positions";
+export type PortfolioSection = "Cash" | "Positions" | "Lots";
 
 /**
  * Range [start, end) of the body under the `## <CURRENCY> — <kind>` heading
@@ -70,14 +80,14 @@ export function sectionBody(md: string, currency: Currency, kind: PortfolioSecti
 }
 
 /**
- * Checks the silo has the `Cash` and `Positions` sections and the
+ * Checks the silo has the `Cash`, `Positions` and `Lots` sections and the
  * `Available cash` row. Without this, a misspelled heading or row (e.g. from
  * the previous format) would read as an empty silo and the heartbeat would
  * silently stop watching its positions.
  */
 export function assertPortfolioSections(md: string, currency: Currency): void {
   const normalized = normalizeEol(md);
-  for (const kind of ["Cash", "Positions"] as const) {
+  for (const kind of ["Cash", "Positions", "Lots"] as const) {
     if (!sectionRange(normalized, currency, kind)) {
       throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
     }
@@ -312,4 +322,89 @@ export function parsePositions(md: string, currency: Currency): Position[] {
   }
 
   return positions;
+}
+
+// ─── Lots (ADR-0015) ──────────────────────────────────────────────────────────
+
+/** Columns of the lots table (v2 format), by header text. */
+const LOT_COLUMNS = {
+  entryId: "Entry id",
+  date: "Date",
+  units: "Units",
+  entryUnits: "Entry units",
+  entryPrice: "Entry price",
+  initialStop: "Initial stop",
+  entryCosts: "Entry costs",
+  origin: "Origin",
+  rulesVersion: "Rules version",
+  rulesViolations: "Rules violations",
+} as const;
+
+type LotColumn = keyof typeof LOT_COLUMNS;
+
+function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
+  const normalized = header.map((c) => c.trim().toLowerCase());
+  const missing: string[] = [];
+  const indexes = {} as Record<LotColumn, number>;
+  for (const [key, label] of Object.entries(LOT_COLUMNS) as [LotColumn, string][]) {
+    const i = normalized.indexOf(label.toLowerCase());
+    if (i === -1) missing.push(label);
+    indexes[key] = i;
+  }
+  if (missing.length > 0) {
+    throw new Error(`## ${currency} — Lots: columns ${missing.join(", ")} missing from the table header`);
+  }
+  return indexes;
+}
+
+const isPlaceholder = (cell: string): boolean => cell === "" || cell === "—" || cell === "-";
+
+/**
+ * Parses the rows of the `## <CURRENCY> — Lots` table (columns in LOT_COLUMNS, in any order). Skips
+ * placeholder rows and rows that do not read as a lot (no id, units or price that are numbers, ...):
+ * the lot then does not count towards its position's `Volume`, so the check against the decision
+ * log reports the mismatch instead of the row vanishing silently. Cross-checks with the log are
+ * not made here: this parser is pure.
+ */
+export function parseLots(md: string, currency: Currency): Lot[] {
+  const [header, ...rows] = parseTableRows(sectionBody(md, currency, "Lots"));
+  if (!header) return [];
+  const col = lotColumns(header, currency);
+  const lots: Lot[] = [];
+
+  for (const cells of rows) {
+    const cell = (key: LotColumn) => (cells[col[key]] ?? "").trim();
+    const entryId = cell("entryId");
+    if (isPlaceholder(entryId) || /^entry id$/i.test(entryId)) continue;
+
+    const units = parseMarkdownNumber(cell("units"));
+    const entryUnits = parseMarkdownNumber(cell("entryUnits"));
+    const entryPrice = parseMarkdownNumber(cell("entryPrice"));
+    const origin = cell("origin");
+    const rulesVersion = cell("rulesVersion");
+    const date = cell("date");
+    if (units == null || entryUnits == null || entryPrice == null) continue;
+    if (!(DECISION_ORIGINS as readonly string[]).includes(origin) || isPlaceholder(rulesVersion)) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+
+    lots.push({
+      entryId,
+      date,
+      units,
+      entryUnits,
+      entryPrice,
+      initialStop: parseMarkdownNumber(cell("initialStop")),
+      entryCosts: parseMarkdownNumber(cell("entryCosts")),
+      origin: origin as Lot["origin"],
+      rulesVersion,
+      rulesViolations: isPlaceholder(cell("rulesViolations"))
+        ? []
+        : cell("rulesViolations")
+            .split(",")
+            .map((v) => v.trim())
+            .filter((v) => v !== ""),
+    });
+  }
+
+  return lots;
 }

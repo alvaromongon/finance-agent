@@ -85,6 +85,7 @@ export const es: Messages = {
     subject: (currency, sections) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
       breaches: "stop cruzado",
+      lots: "lotes que no cuadran",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -106,6 +107,19 @@ export const es: Messages = {
       `Tras actualizar la cuenta, refleja el cambio en \`portfolio.md\``,
       `(guía: \`routines/portfolio-sync.md\`) para que el resto del sistema deje`,
       `de razonar sobre una posición que ya no existe.`,
+    ],
+    lotsIntro: [
+      `## \`portfolio.md\`: los lotes no cuadran`,
+      ``,
+      `La tabla \`Lots\` no concuerda con \`Positions\` o con el registro de decisiones. El heartbeat sigue`,
+      `vigilando tus posiciones (stops, \`Volume\`, \`Avg price\`), pero \`decision:record\` y la`,
+      `evaluación rechazan el archivo hasta que se corrija:`,
+      ``,
+    ],
+    lotsOutro: [
+      ``,
+      `Corrige \`Lots\` a mano para que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
+      `\`Entry id\` sea una entrada de \`logs/decisions.jsonl\` (\`docs/input-format.md\`).`,
     ],
     tightIntro: (minAtr) => [
       `## Stops demasiado ceñidos`,

@@ -17,6 +17,7 @@ import { bar, extend, uptrend } from "./fixtures/setup-bars.js";
 import type { IMarketDataProvider, HistoricalBar } from "../providers/types.js";
 import type { IAnalystProvider } from "../analyst/types.js";
 import type { Currency, Signal } from "../types.js";
+import { entryLines, lotsSection, type HeldLot } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -41,8 +42,8 @@ watchlist:
 \`\`\`
 `;
 
-const portfolioMd = (positions: string) => `---
-schema_version: 1
+const portfolioMd = (positions: string, held: HeldLot[]) => `---
+schema_version: 2
 last_manual_sync: "2026-10-01"
 ---
 
@@ -57,12 +58,15 @@ last_manual_sync: "2026-10-01"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 ${positions}
-`;
+
+${lotsSection("USD", held)}`;
 
 // MSFT with the stop 0.1 ATR from the price: tight stop and approaching_stop (deferred escalation).
 const MSFT_ROW = "| MSFT | 1 | 492.01 | 501.02 | +9.01 | 500.00 |";
+const MSFT_LOT: HeldLot = { ticker: "MSFT", units: 1, price: 492.01 };
 // CAT already trades below its stop.
 const CAT_ROW = "| CAT | 1 | 218.00 | 216.90 | -1.10 | 213.00 |";
+const CAT_LOT: HeldLot = { ticker: "CAT", units: 1, price: 218 };
 
 // A fifteen-session base right at the high; before() cuts it where it is
 // armed for the first time (see setups-scan.test.ts). The detector is imported
@@ -137,8 +141,14 @@ describe("runHeartbeat", () => {
     await mkdir(join(vaultDir, "strategies"), { recursive: true });
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "1.0"\n---\n`, "utf8");
     await writeFile(join(vaultDir, "watchlist.md"), WATCHLIST_MD, "utf8");
-    await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(MSFT_ROW), "utf8");
+    await setPortfolio(MSFT_ROW, [MSFT_LOT]);
   });
+
+  /** portfolio.md with these position rows and, consistent with them, their lots and the entries in the log. */
+  const setPortfolio = async (rows: string, held: HeldLot[]) => {
+    await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(rows, held), "utf8");
+    await writeFile(join(vaultDir, "logs", "decisions.jsonl"), entryLines("USD", held), "utf8");
+  };
 
   const heartbeat = async (over: Partial<Parameters<typeof runHeartbeat>[1]> = {}) => {
     const log = mock.method(console, "log", () => {});
@@ -146,6 +156,7 @@ describe("runHeartbeat", () => {
     const error = mock.method(console, "error", () => {});
     try {
       await runHeartbeat("USD", { provider, analyst, headlines: async () => [], ...over });
+      return warn.mock.calls.map((c) => String(c.arguments[0]));
     } finally {
       log.mock.restore();
       warn.mock.restore();
@@ -169,6 +180,50 @@ describe("runHeartbeat", () => {
     assert.doesNotMatch(emails[0].subject, /pendiente de análisis/);
   });
 
+  describe("Lots that do not match (ADR-0015): it keeps watching and warns loudly", () => {
+    it("Volume that is not the sum of the units of its lots: the crossed stop still goes out, with the warning", async () => {
+      // CAT trades below its stop; its row says 1 unit and its lot 3.
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, { ...CAT_LOT, units: 3 }]);
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) => w.includes("Lots do not match") && /CAT.*Volume 1/.test(w)),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the position is still watched for risk");
+      assert.match(email.subject, /lotes que no cuadran/);
+      assert.match(email.body, /CAT.*Volume 1/);
+    });
+
+    it("a lot whose entry id is not in the decision log: the tight stop is still found", async () => {
+      await setPortfolio(MSFT_ROW, [{ ...MSFT_LOT, id: "ghost-entry" }]);
+      await writeFile(join(vaultDir, "logs", "decisions.jsonl"), "", "utf8");
+      const warnings = await heartbeat();
+
+      assert.ok(warnings.some((w) => w.includes("ghost-entry")));
+      const [email] = await outbox();
+      assert.match(email.subject, /stop ceñido: MSFT/);
+      assert.match(email.subject, /lotes que no cuadran/);
+    });
+
+    it("a second run the same day does not repeat the warning email", async () => {
+      await setPortfolio(MSFT_ROW, [{ ...MSFT_LOT, units: 2 }]);
+      await heartbeat();
+      await heartbeat();
+      assert.equal((await outbox()).length, 1);
+    });
+
+    it("a consistent portfolio raises no warning and no lots section", async () => {
+      const warnings = await heartbeat();
+      assert.deepEqual(
+        warnings.filter((w) => w.includes("Lots")),
+        [],
+      );
+      assert.doesNotMatch((await outbox())[0].subject, /lotes/);
+    });
+  });
+
   it("a second run with the same state sends nothing (no crossed stops)", async () => {
     await heartbeat();
     await heartbeat();
@@ -177,7 +232,7 @@ describe("runHeartbeat", () => {
   });
 
   it("a crossed stop is repeated on every run, with only what is new", async () => {
-    await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(`${MSFT_ROW}\n${CAT_ROW}`), "utf8");
+    await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
     await heartbeat();
     await heartbeat();
 
@@ -187,7 +242,7 @@ describe("runHeartbeat", () => {
   });
 
   it("on a holiday only the crossed stop goes out: there is no new price to review", async () => {
-    await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(`${MSFT_ROW}\n${CAT_ROW}`), "utf8");
+    await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
     await heartbeat({ lastMarketDate: async () => new Date(Date.now() - 72 * 3_600_000) });
 
     const emails = await outbox();
@@ -197,7 +252,7 @@ describe("runHeartbeat", () => {
   });
 
   it("if the run fails halfway, the crossed stop goes out anyway and the run ends in error", async () => {
-    await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(`${MSFT_ROW}\n${CAT_ROW}`), "utf8");
+    await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
     const failing: IAnalystProvider = {
       escalate: async () => {
         throw new Error("reasoner down");
