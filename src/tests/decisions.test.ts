@@ -377,6 +377,70 @@ describe("twoMonthRuleWarning (art. 33.5.f LIRPF)", () => {
   });
 });
 
+describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
+  const exitLine = (overrides: Partial<Decision> = {}) =>
+    base({ type: "exit", price: 120, amount: 480, source: "portfolio-sync", ...overrides });
+  const snapshot: Partial<Decision> = {
+    entry_price: 100,
+    stop_initial: 90,
+    entry_units: 10,
+    entry_costs: 4,
+    entry_date: "2026-06-15",
+    entry_origin: "sistema",
+    entry_rules_version: "1.0",
+    rule_violations: ["no_stop"],
+  };
+
+  it("accepts an exit with its full snapshot and keeps every field", () => {
+    const d = buildDecision(exitLine(snapshot));
+    assert.equal(d.entry_price, 100);
+    assert.equal(d.entry_units, 10);
+    assert.equal(d.entry_costs, 4);
+    assert.equal(d.entry_date, "2026-06-15");
+    assert.equal(d.entry_origin, "sistema");
+    assert.equal(d.entry_rules_version, "1.0");
+    assert.deepEqual(d.rule_violations, ["no_stop"]);
+  });
+
+  it("an exit without a snapshot still parses (ADR-0006: optional fields, no log migration)", () => {
+    const d = buildDecision(exitLine());
+    assert.ok(!("entry_price" in d));
+  });
+
+  it("the entry costs and the stop are optional in the snapshot", () => {
+    const { entry_costs: _costs, stop_initial: _stop, ...minimal } = snapshot;
+    assert.doesNotThrow(() => buildDecision(exitLine(minimal)));
+  });
+
+  it("a partial snapshot names what is missing", () => {
+    assert.throws(
+      () => buildDecision(exitLine({ entry_price: 100 })),
+      /entry_units is required with the lot snapshot[\s\S]*entry_date is required[\s\S]*entry_origin is required[\s\S]*entry_rules_version is required/,
+    );
+  });
+
+  it("snapshot fields only go in exit", () => {
+    assert.throws(
+      () => buildDecision(base({ type: "entry", price: 100, amount: 100, ...snapshot })),
+      /only goes in exit/,
+    );
+  });
+
+  it("rejects values that cannot be a lot", () => {
+    assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_units: 0 })), /entry_units must be a number > 0/);
+    assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_price: -1 })), /entry_price must be a number > 0/);
+    assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_costs: -1 })), /entry_costs must be a number >= 0/);
+    assert.throws(
+      () => buildDecision(exitLine({ ...snapshot, entry_date: "15/06/2026" })),
+      /entry_date must be YYYY-MM-DD/,
+    );
+    assert.throws(
+      () => buildDecision(exitLine({ ...snapshot, entry_origin: "broker" as never })),
+      /entry_origin must be one of/,
+    );
+  });
+});
+
 describe("validateOwnerInput", () => {
   it("accepts an entry with units instead of an amount", () => {
     assert.doesNotThrow(() =>

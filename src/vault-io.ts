@@ -606,8 +606,9 @@ const decisionArchiveDir = () => config.paths.decisionsArchiveDir();
 
 /**
  * Full log for measuring long periods: the archived quarters
- * (`decisions-AAAA-TN.jsonl`, in order) and then the live file. A decision
- * that appears in both (same id) counts once.
+ * (`decisions-AAAA-TN.jsonl`) and the live file. A decision that appears in
+ * both (same id) counts once. In date order, ties in write order, so archiving
+ * any quarter leaves the history, and everything measured from it, unchanged.
  */
 export async function readDecisionHistory(archiveDir: string | undefined = decisionArchiveDir()): Promise<Decision[]> {
   const archived: Decision[] = [];
@@ -620,11 +621,13 @@ export async function readDecisionHistory(archiveDir: string | undefined = decis
     }
   }
   const seen = new Set<string>();
-  return [...archived, ...(await readDecisions())].filter((d) => {
-    if (seen.has(d.id)) return false;
-    seen.add(d.id);
-    return true;
-  });
+  return [...archived, ...(await readDecisions())]
+    .filter((d) => {
+      if (seen.has(d.id)) return false;
+      seen.add(d.id);
+      return true;
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function parseDecisionLines(raw: string, source: string): Decision[] {

@@ -5,7 +5,7 @@
 // Markdown.
 import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
-import type { Decision, DecisionType } from "../decisions.js";
+import type { Decision, DecisionOrigin, DecisionType } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { CONVICTIONS, CURRENCIES } from "../types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
@@ -216,48 +216,110 @@ export function evaluateDecisions(
 // ─── Closed trades ───────────────────────────────────────────────────────────
 
 export interface ClosedTrade {
-  entry: Decision;
-  exit: Decision;
-  /** Initial stop: the entry's or, if missing, that of the proposal it cites. */
+  ticker: string;
+  currency: Currency;
+  /** Date of the lot's entry and of the exit that consumed its last units. */
+  entryDate: string;
+  exitDate: string;
+  /** Origin and rules version of the entry (ADR-0009 §8), and the rules it broke. */
+  origin: DecisionOrigin;
+  rulesVersion: string;
+  ruleViolations: string[];
+  /** Initial stop of the lot; null if it was not recorded. */
   stop: number | null;
-  /** Realized R net of costs (ADR-0009 §2); null without an initial stop below the entry. */
+  /** Realized R net of costs (ADR-0009 §2), Σ(unitsᵢ / entry units) × Rᵢ; null without an initial stop below the entry. */
   rNet: number | null;
   /** Counts for the cutoff: system entry under C v1 (ADR-0009 §4). */
   counts: boolean;
+  /** The exits that consumed the lot, in log order. */
+  exits: Decision[];
 }
 
-/** An `exit` and the `entry` it cites. An exit without a recorded entry is not a measurable trade. */
+/** Units an exit sold. */
+const exitUnits = (exit: Decision): number => exit.amount! / exit.price!;
+
+/**
+ * Slack, in units, between the units of a lot's exits and its entry units: the amount of an exit
+ * is rounded to the cent, so its units are only known to half a cent of price.
+ */
+const roundingSlack = (exits: readonly Decision[]): number => exits.reduce((sum, e) => sum + 0.005 / e.price!, 1e-9);
+
+/** Key of the lot an exit consumed: its entry, or, without the id, the snapshot itself. */
+const lotKey = (exit: Decision): string =>
+  `${exit.currency}|${exit.ticker}|` +
+  (exit.related_id ??
+    [exit.entry_date, exit.entry_price, exit.entry_units, exit.stop_initial, exit.entry_origin].join("|"));
+
+/**
+ * Closed trades from the exits alone (ADR-0015). A trade is one lot, and counts once: its R is
+ * Σ(unitsᵢ / entry units) × Rᵢ over the exits of the lot, and it is closed when the exits have
+ * consumed all the lot's units; a lot only partly sold is open. An exit without a lot snapshot is
+ * not a measurable trade and is skipped: there is no legacy path through `related_id`.
+ * Trades come in the order their lots close.
+ */
 export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
-  const byId = new Map(decisions.map((d) => [d.id, d] as const));
-  const trades: ClosedTrade[] = [];
-  for (const exit of decisions) {
-    if (exit.type !== "exit" || !exit.related_id) continue;
-    const entry = byId.get(exit.related_id);
-    if (entry?.type !== "entry") continue;
-    const stop =
-      entry.stop_initial ?? (entry.related_id ? byId.get(entry.related_id)?.stop_initial : undefined) ?? null;
-    trades.push({
-      entry,
-      exit,
-      stop,
-      rNet: realizedR(entry, exit, stop),
-      counts: entry.origin === "sistema" && isCv1(entry.rules_version),
+  const lots = new Map<string, { exits: Decision[]; last: number }>();
+  decisions.forEach((d, index) => {
+    if (d.type !== "exit" || !hasLotSnapshot(d)) return;
+    const lot = lots.get(lotKey(d)) ?? { exits: [], last: index };
+    lot.exits.push(d);
+    lot.last = index;
+    lots.set(lotKey(d), lot);
+  });
+
+  return [...lots.values()]
+    .filter(({ exits }) => {
+      const sold = exits.reduce((sum, e) => sum + exitUnits(e), 0);
+      return sold >= exits[0].entry_units! - roundingSlack(exits);
+    })
+    .sort((a, b) => a.last - b.last)
+    .map(({ exits }) => {
+      const first = exits[0];
+      return {
+        ticker: first.ticker!,
+        currency: first.currency,
+        entryDate: first.entry_date!,
+        exitDate: exits.map((e) => e.date).sort()[exits.length - 1],
+        origin: first.entry_origin!,
+        rulesVersion: first.entry_rules_version!,
+        ruleViolations: first.rule_violations ?? [],
+        stop: first.stop_initial ?? null,
+        rNet: tradeR(exits),
+        counts: first.entry_origin === "sistema" && isCv1(first.entry_rules_version!),
+        exits,
+      };
     });
+}
+
+/** The exit carries what a measurement needs of its lot. */
+const hasLotSnapshot = (exit: Decision): boolean =>
+  exit.entry_price != null &&
+  exit.entry_units != null &&
+  exit.entry_origin != null &&
+  exit.price != null &&
+  !!exit.amount;
+
+/** R of a lot: its exits weighted by the units they sold; null if any of them has no R. */
+function tradeR(exits: readonly Decision[]): number | null {
+  let total = 0;
+  for (const exit of exits) {
+    const r = realizedR(exit);
+    if (r == null) return null;
+    total += (exitUnits(exit) / exit.entry_units!) * r;
   }
-  return trades;
+  return total;
 }
 
 /**
- * Net R: (exit − entry − costs per unit) / (entry − initial stop).
- * Costs per unit are the buy's and, if any, the sale's.
+ * Net R of one exit, from the exit alone: (exit − entry − costs per unit) / (entry − initial stop).
+ * Costs per unit are the lot's entry costs spread over its units and, if any, the sale's.
  */
-export function realizedR(entry: Decision, exit: Decision, stop: number | null): number | null {
-  const { price: entryPrice, amount: entryAmount } = entry;
-  const { price: exitPrice, amount: exitAmount } = exit;
-  if (stop == null || entryPrice == null || exitPrice == null || !entryAmount || !exitAmount || !(stop < entryPrice)) {
+export function realizedR(exit: Decision): number | null {
+  const { entry_price: entryPrice, entry_units: entryUnits, stop_initial: stop, price: exitPrice } = exit;
+  if (stop == null || entryPrice == null || !entryUnits || exitPrice == null || !exit.amount || !(stop < entryPrice)) {
     return null;
   }
-  const costPerUnit = (entry.costs ?? 0) / (entryAmount / entryPrice) + (exit.costs ?? 0) / (exitAmount / exitPrice);
+  const costPerUnit = (exit.entry_costs ?? 0) / entryUnits + (exit.costs ?? 0) / exitUnits(exit);
   return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
 }
 
@@ -342,14 +404,25 @@ export interface Grouping {
   groups: Group<DecisionEvaluation>[];
 }
 
-const breaksRules = (d: Decision) => (d.rule_violations?.length ?? 0) > 0;
+/** Origin and rule breaks of a decision or, in a closed trade, of its lot's entry. */
+interface OriginAndRules {
+  origin: DecisionOrigin;
+  breaks: boolean;
+}
+
+const ofDecision = (d: Decision): OriginAndRules => ({
+  origin: d.origin,
+  breaks: (d.rule_violations?.length ?? 0) > 0,
+});
+
+const ofTrade = (t: ClosedTrade): OriginAndRules => ({ origin: t.origin, breaks: t.ruleViolations.length > 0 });
 
 /** Origin (ADR-0009 §8) by whether it breaks a rule. */
-function byOriginAndRules<T>(items: readonly T[], decisionOf: (item: T) => Decision, m: Messages): Group<T>[] {
+function byOriginAndRules<T>(items: readonly T[], traitsOf: (item: T) => OriginAndRules, m: Messages): Group<T>[] {
   return (["sistema", "propietario"] as const).flatMap((origin) =>
     [false, true].map((broke) => ({
       label: m.evaluation.groupings.originRules(origin === "sistema", broke),
-      items: items.filter((i) => decisionOf(i).origin === origin && breaksRules(decisionOf(i)) === broke),
+      items: items.filter((i) => traitsOf(i).origin === origin && traitsOf(i).breaks === broke),
     })),
   );
 }
@@ -374,7 +447,7 @@ export function decisionGroupings(evals: readonly DecisionEvaluation[], m: Messa
     {
       title: t.entriesTitle,
       note: t.entriesNote,
-      groups: byOriginAndRules(ofType("entry"), (e) => e.decision, m),
+      groups: byOriginAndRules(ofType("entry"), (e) => ofDecision(e.decision), m),
     },
     {
       title: t.convictionTitle,
@@ -450,7 +523,7 @@ export function decisionGroupings(evals: readonly DecisionEvaluation[], m: Messa
 export function tradeGroupings(trades: readonly ClosedTrade[], m: Messages = messages()): Group<ClosedTrade>[] {
   return [
     { label: m.evaluation.groupings.cutCounter, items: trades.filter((t) => t.counts) },
-    ...byOriginAndRules(trades, (t) => t.entry, m),
+    ...byOriginAndRules(trades, ofTrade, m),
   ];
 }
 

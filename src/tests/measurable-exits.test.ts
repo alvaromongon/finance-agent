@@ -5,8 +5,12 @@
  * results come from the evaluation report (`loadEvaluationReport`, the one behind
  * `decisions:evaluate`). No test references a type or a function of the redesign.
  *
- * Test 1 is today's behaviour and passes. Tests 2-5 describe the behaviour of the redesign
- * (ADR-0015) and are `todo` until it lands: #40 and #42 turn 2-4 green, #43 turns 5 green.
+ * Tests 1, 2 and the "after" half of 4 pass since #40: the evaluation measures R from the exit
+ * alone. Until `decision:record` writes the exit snapshot (#42) they record their exits with
+ * `exitFromLot`, which appends an exit line carrying the snapshot of its lot, the way #42 will.
+ * The rest describes the behaviour of the redesign (ADR-0015) and is `todo`: the "before" half of
+ * 4 until #42, 3 until #42 and #43, 5 until #43. A `todo` test that starts passing fails the file,
+ * so its mark gets removed in the same PR.
  *
  * Common scenario: ticker TCK in USD, every entry and exit narrated with origin `sistema` and
  * rules version 1.0, so the trades count for the cutoff (C v1). One R of a lot is
@@ -17,6 +21,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { Decision } from "../decisions.js";
 import type { EvaluationReport } from "../utils/decisions-evaluation.js";
 
 /** The clock of every scenario: the Monday after the last bar. */
@@ -140,7 +145,11 @@ describe("measurable exits: the five R tests of spec #27", () => {
   let root: string;
   let vaultDir: string;
   let archiveDir: string;
-  let record: (raw: unknown) => Promise<{ id: string; type: string; related_id?: string }>;
+  let record: (raw: unknown) => Promise<Decision>;
+  let appendDecisions: (decisions: Decision[]) => Promise<void>;
+  let buildDecision: (fields: Omit<Decision, "id">) => Decision;
+  /** Names of the `todo` tests whose body passed: their mark has to go. */
+  const passingTodos: string[] = [];
   let loadEvaluationReport: (tag: string, now?: Date) => Promise<EvaluationReport>;
   let renderDecisionsEvaluation: (report: EvaluationReport) => string;
   let extractCutBoard: (md: string) => string | null;
@@ -155,11 +164,50 @@ describe("measurable exits: the five R tests of spec #27", () => {
 
   const entry = (price: number, units: number, stop: number, date: string) =>
     record({ type: "entry", ticker: "TCK", currency: "USD", price, units, stop, date, origin: "sistema" });
+  /** A sale narrated to `decision:record`, which writes no snapshot until #42. */
   const exit = (price: number, units: number, date: string) =>
     record({ type: "exit", ticker: "TCK", currency: "USD", price, units, date, origin: "sistema" });
+  /** An exit line with the snapshot of `lot` (the entry it consumes), as `decision:record` will write it from #42. */
+  const exitFromLot = async (lot: Decision, price: number, units: number, date: string) =>
+    appendDecisions([
+      buildDecision({
+        date,
+        ticker: lot.ticker,
+        currency: lot.currency,
+        origin: lot.origin,
+        source: "portfolio-sync",
+        type: "exit",
+        price,
+        amount: Math.round(units * price * 100) / 100,
+        rules_version: lot.rules_version,
+        related_id: lot.id,
+        entry_price: lot.price,
+        stop_initial: lot.stop_initial,
+        entry_units: lot.amount! / lot.price!,
+        entry_costs: lot.costs,
+        entry_date: lot.date,
+        entry_origin: lot.origin,
+        entry_rules_version: lot.rules_version,
+        rule_violations: lot.rule_violations,
+      }),
+    ]);
+
+  /** A test of the redesign that cannot pass yet. If it does pass, the file fails: remove the mark. */
+  const todoTest = (name: string, todo: string, body: () => Promise<void>): void => {
+    void it(name, { todo }, async () => {
+      await body();
+      passingTodos.push(name);
+    });
+  };
 
   /** R of every closed trade, ascending: one value per trade, the way the evaluation reports them. */
-  const tradeRs = (report: EvaluationReport): number[] => report.trades.map((t) => t.rNet!).sort((a, b) => a - b);
+  const tradeRs = (report: EvaluationReport): number[] =>
+    report.trades
+      .map((t) => {
+        assert.notEqual(t.rNet, null, `the ${t.ticker} trade closed on ${t.exitDate} has no R`);
+        return t.rNet!;
+      })
+      .sort((a, b) => a - b);
   const assertRs = (actual: number[], expected: number[]) => {
     assert.equal(actual.length, expected.length, `expected ${expected.length} trade(s), got ${JSON.stringify(actual)}`);
     expected.forEach((r, i) => assert.ok(Math.abs(actual[i] - r) < TOLERANCE, `R ${actual[i]} !== ${r}`));
@@ -188,6 +236,8 @@ describe("measurable exits: the five R tests of spec #27", () => {
     mock.method(console, "warn", () => {});
 
     const { recordOwnerDecision } = await import("../decision.js");
+    ({ buildDecision } = await import("../decisions.js"));
+    ({ appendDecisions } = await import("../vault-io.js"));
     const { FixturesProvider } = await import("../providers/fixtures.js");
     const provider = new FixturesProvider(market);
     record = (raw) => recordOwnerDecision(raw, provider, TODAY);
@@ -198,9 +248,11 @@ describe("measurable exits: the five R tests of spec #27", () => {
   after(async () => {
     mock.restoreAll();
     await rm(root, { recursive: true, force: true });
+    assert.deepEqual(passingTodos, [], "these `todo` tests pass now: remove their todo mark");
   });
 
-  beforeEach(async () => {
+  /** An empty vault: no log, no archive, the rules version, the watchlist and an empty portfolio. */
+  const resetVault = async () => {
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
     await rm(archiveDir, { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
@@ -209,12 +261,13 @@ describe("measurable exits: the five R tests of spec #27", () => {
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "1.0"\n---\n`, "utf8");
     await writeFile(join(vaultDir, "watchlist.md"), WATCHLIST_MD, "utf8");
     await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(), "utf8");
-  });
+  };
+  beforeEach(resetVault);
 
   it("R1: one entry and one exit give R = (exit − entry) / (entry − stop), as today", async () => {
     // Buy 10 at 100 with the stop at 90 (1R = 10); sell all 10 at 120: R = (120 − 100) / 10 = +2.
-    await entry(100, 10, 90, "2026-06-15");
-    await exit(120, 10, "2026-08-10");
+    const lot = await entry(100, 10, 90, "2026-06-15");
+    await exitFromLot(lot, 120, 10, "2026-08-10");
 
     const report = await evaluate();
     assertRs(tradeRs(report), [2]);
@@ -223,26 +276,34 @@ describe("measurable exits: the five R tests of spec #27", () => {
     assert.ok(Math.abs(report.board.trades.expectancy! - 2) < TOLERANCE);
   });
 
-  it(
-    "R2: two partial exits of one entry count as one trade, R = Σ(unitsᵢ / entry_units) × Rᵢ",
-    { todo: "needs the exit snapshot of ADR-0015 (#40 and #42)" },
-    async () => {
-      // Buy 10 at 100, stop 90 (1R = 10). Sell 4 at 120 (R = +2) and the other 6 at 105 (R = +0.5).
-      // One trade: R = 4/10 × 2 + 6/10 × 0.5 = 0.8 + 0.3 = +1.1.
-      await entry(100, 10, 90, "2026-06-15");
-      await exit(120, 4, "2026-08-10");
-      await exit(105, 6, "2026-08-17");
+  it("R2: two partial exits of one entry count as one trade, R = Σ(unitsᵢ / entry_units) × Rᵢ", async () => {
+    // Buy 10 at 100, stop 90 (1R = 10). Sell 4 at 120 (R = +2) and the other 6 at 105 (R = +0.5).
+    // One trade: R = 4/10 × 2 + 6/10 × 0.5 = 0.8 + 0.3 = +1.1.
+    const lot = await entry(100, 10, 90, "2026-06-15");
+    await exitFromLot(lot, 120, 4, "2026-08-10");
+    await exitFromLot(lot, 105, 6, "2026-08-17");
 
-      const report = await evaluate();
-      assertRs(tradeRs(report), [1.1]);
-      assert.equal(report.board.trades.total, 1);
-      assert.ok(Math.abs(report.board.trades.expectancy! - 1.1) < TOLERANCE);
-    },
-  );
+    const report = await evaluate();
+    assertRs(tradeRs(report), [1.1]);
+    assert.equal(report.board.trades.total, 1);
+    assert.ok(Math.abs(report.board.trades.expectancy! - 1.1) < TOLERANCE);
+  });
 
-  it(
+  it("R2b: a lot that is only partly sold is open, not a closed trade", async () => {
+    // The 5 units sold of the 10 are not a trade yet; the other 5 close it.
+    const lot = await entry(100, 10, 90, "2026-06-15");
+    await exitFromLot(lot, 120, 5, "2026-08-10");
+    assert.equal((await evaluate()).trades.length, 0);
+    assert.equal((await evaluate()).board.trades.total, 0);
+
+    await exitFromLot(lot, 110, 5, "2026-08-17");
+    // 5/10 × 2 + 5/10 × 1 = +1.5
+    assertRs(tradeRs(await evaluate()), [1.5]);
+  });
+
+  todoTest(
     "R3: two entries and sales that span both lots are matched first in, first out, one R per lot",
-    { todo: "needs lots and FIFO matching (#40, #42 and #43)" },
+    "needs lots and FIFO matching (#42 and #43)",
     async () => {
       // Lot A: buy 10 at 100, stop 90 (1R = 10). Lot B: buy 10 at 110, stop 100 (1R = 10).
       // Sale 1: 15 at 130 takes all of A (R = (130 − 100) / 10 = +3) and 5 of B (R = (130 − 110) / 10 = +2).
@@ -260,61 +321,71 @@ describe("measurable exits: the five R tests of spec #27", () => {
     },
   );
 
-  it(
+  // R4. The deposit is in 2026-T1, the entry in 2026-T2 and the exit in 2026-T3. The same trade is
+  // narrated without archiving, then archiving each quarter either before the exit is recorded
+  // (`decision:record` reads only the live log; archiving T2 separates the entry from its exit)
+  // or after it (T3 is the exit's own quarter).
+  type Quarter = [quarter: "T1" | "T2" | "T3", from: string, to: string];
+  const QUARTERS: Quarter[] = [
+    ["T1", "2026-01-01", "2026-03-31"],
+    ["T2", "2026-04-01", "2026-06-30"],
+    ["T3", "2026-07-01", "2026-09-30"],
+  ];
+  const archiveQuarter = async (quarter: Quarter[0], from: string, to: string) => {
+    const archived: string[] = [];
+    const live: string[] = [];
+    for (const line of (await readFile(decisionsPath(), "utf8")).split("\n").filter((l) => l !== "")) {
+      const date = (JSON.parse(line) as { date: string }).date;
+      (date >= from && date <= to ? archived : live).push(line);
+    }
+    await writeFile(join(archiveDir, `decisions-2026-${quarter}.jsonl`), archived.join("\n") + "\n", "utf8");
+    await writeFile(decisionsPath(), live.length > 0 ? live.join("\n") + "\n" : "", "utf8");
+  };
+  /** The evaluation report of the trade, `recordExit` writing its exit and `archive` archiving a quarter around it. */
+  const scenario = async (
+    recordExit: (lot: Decision) => Promise<unknown>,
+    archive?: { quarter: Quarter; when: "before" | "after" },
+  ): Promise<string> => {
+    await resetVault();
+    await record({ type: "deposit", currency: "USD", amount: 5000, date: "2026-02-02" });
+    const lot = await entry(100, 10, 90, "2026-06-15");
+    if (archive?.when === "before") await archiveQuarter(...archive.quarter);
+    await recordExit(lot);
+    if (archive?.when === "after") await archiveQuarter(...archive.quarter);
+    const report = await evaluate();
+    // Equal reports are only a proof if the trade is in them.
+    assertRs(tradeRs(report), [2]);
+    return renderDecisionsEvaluation(report);
+  };
+  const assertArchivingChangesNothing = async (
+    when: "before" | "after",
+    recordExit: (lot: Decision) => Promise<unknown>,
+  ) => {
+    const unarchived = await scenario(recordExit);
+    for (const quarter of QUARTERS) {
+      const archived = await scenario(recordExit, { quarter, when });
+      const label = `archiving 2026-${quarter[0]} ${when} the exit`;
+      // The cut board first, so a failure shows the numbers that moved instead of the whole report.
+      assert.equal(extractCutBoard(archived), extractCutBoard(unarchived), label);
+      assert.equal(archived, unarchived, label);
+    }
+  };
+
+  it("R4: archiving any quarter after the exit is recorded leaves the decisions:evaluate output unchanged", async () => {
+    await assertArchivingChangesNothing("after", (lot) => exitFromLot(lot, 120, 10, "2026-08-10"));
+  });
+
+  todoTest(
     "R4: archiving any quarter, even one that separates an entry from a later exit, leaves the decisions:evaluate output unchanged",
-    { todo: "needs self-contained exits (#40 and #42)" },
+    "decision:record has to write the exit snapshot without the entry in the live log (#42)",
     async () => {
-      // The deposit is in 2026-T1, the entry in 2026-T2 and the exit in 2026-T3. The same trade is
-      // narrated without archiving, then archiving each quarter either before the exit is recorded
-      // (`decision:record` reads only the live log; archiving T2 separates the entry from its exit)
-      // or after it (T3 is the exit's own quarter).
-      type Quarter = [quarter: "T1" | "T2" | "T3", from: string, to: string];
-      const archiveQuarter = async (quarter: Quarter[0], from: string, to: string) => {
-        const archived: string[] = [];
-        const live: string[] = [];
-        for (const line of (await readFile(decisionsPath(), "utf8")).split("\n").filter((l) => l !== "")) {
-          const date = (JSON.parse(line) as { date: string }).date;
-          (date >= from && date <= to ? archived : live).push(line);
-        }
-        await writeFile(join(archiveDir, `decisions-2026-${quarter}.jsonl`), archived.join("\n") + "\n", "utf8");
-        await writeFile(decisionsPath(), live.length > 0 ? live.join("\n") + "\n" : "", "utf8");
-      };
-      const scenario = async (archive?: { quarter: Quarter; when: "before" | "after" }): Promise<string> => {
-        await rm(join(vaultDir, "logs"), { recursive: true, force: true });
-        await rm(archiveDir, { recursive: true, force: true });
-        await mkdir(join(vaultDir, "logs"), { recursive: true });
-        await mkdir(archiveDir, { recursive: true });
-        await writeFile(join(vaultDir, "portfolio.md"), portfolioMd(), "utf8");
-
-        await record({ type: "deposit", currency: "USD", amount: 5000, date: "2026-02-02" });
-        await entry(100, 10, 90, "2026-06-15");
-        if (archive?.when === "before") await archiveQuarter(...archive.quarter);
-        await exit(120, 10, "2026-08-10");
-        if (archive?.when === "after") await archiveQuarter(...archive.quarter);
-        return renderDecisionsEvaluation(await evaluate());
-      };
-
-      const unarchived = await scenario();
-      const quarters: Quarter[] = [
-        ["T1", "2026-01-01", "2026-03-31"],
-        ["T2", "2026-04-01", "2026-06-30"],
-        ["T3", "2026-07-01", "2026-09-30"],
-      ];
-      for (const when of ["before", "after"] as const) {
-        for (const quarter of quarters) {
-          const archived = await scenario({ quarter, when });
-          const label = `archiving 2026-${quarter[0]} ${when} the exit`;
-          // The cut board first, so a failure shows the numbers that moved instead of the whole report.
-          assert.equal(extractCutBoard(archived), extractCutBoard(unarchived), label);
-          assert.equal(archived, unarchived, label);
-        }
-      }
+      await assertArchivingChangesNothing("before", () => exit(120, 10, "2026-08-10"));
     },
   );
 
-  it(
+  todoTest(
     "R5: a sale that spans two lots writes two exit lines and keeps Lots, Volume and Avg price consistent",
-    { todo: "needs the lots written by decision:record (#43)" },
+    "needs the lots written by decision:record (#43)",
     async () => {
       // Two entries add two lots: 10 at 100 and 10 at 110 (Volume 20, Avg price 105).
       const first = await entry(100, 10, 90, "2026-06-15");
