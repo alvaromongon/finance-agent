@@ -25,11 +25,17 @@ import {
   type EvaluationFramework,
   type EvaluationInput,
 } from "../utils/decisions-evaluation.js";
-import { CUT_BOARD_HEADING, extractCutBoard, renderDecisionsEvaluation } from "../utils/decisions-evaluation-render.js";
+import {
+  CUT_BOARD_HEADING,
+  boardWarnings,
+  extractCutBoard,
+  renderDecisionsEvaluation,
+} from "../utils/decisions-evaluation-render.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { closes, weekdayBars } from "./fixtures/weekday-bars.js";
 import { en } from "../i18n/en.js";
+import { es } from "../i18n/es.js";
 import { SPANISH } from "./fixtures/spanish.js";
 
 function assertClose(actual: number | null | undefined, expected: number, epsilon = 1e-9) {
@@ -528,10 +534,40 @@ describe("unmeasured exits and lots", () => {
     assert.doesNotMatch(board, /sin instantánea/);
   });
 
-  it("both go through the report's one warnings list, next to the silo reconstruction ones", () => {
+  it("both go through the board's one warnings list, as structured data", () => {
     const { report } = withBoard([bare("DDD"), lotExit({ ticker: "OVR", amount: 1440 })]);
-    const unmeasured = report.board.warnings.find((g) => g.title.includes("sin medir"))!;
-    assert.equal(unmeasured.lines.length, 2);
+    const unmeasured = report.board.warnings.filter((w) => w.kind !== "reconstruction");
+    assert.deepEqual(unmeasured[0], { kind: "exitsWithoutSnapshot", count: 1 });
+    assert.deepEqual(unmeasured[1], {
+      kind: "oversoldLots",
+      lots: [{ currency: "USD", ticker: "OVR", lotId: "lot-a" }],
+    });
+  });
+
+  it("the silo reconstruction warnings travel in the same list, rendered in the renderer's language", () => {
+    const board = buildCutBoard({ ...INPUT, bars: new Map() });
+    const siloLines = board.silos.flatMap((s) => s.warnings);
+    assert.ok(siloLines.length > 0, "without bars the silos cannot be reconstructed");
+    assert.deepEqual(board.warnings, [{ kind: "reconstruction", lines: siloLines }]);
+    assert.equal(boardWarnings(board, en)[0].title, en.evaluation.reconstructionMismatch);
+    assert.equal(boardWarnings(board, es)[0].title, es.evaluation.reconstructionMismatch);
+  });
+
+  it("the warnings are put into words by the renderer, in its language", () => {
+    const { report } = withBoard([bare("DDD"), lotExit({ ticker: "OVR", amount: 1440 })]);
+    const english = extractCutBoard(renderDecisionsEvaluation(report, en))!;
+    assert.match(english, /Some exits and lots were not measured/);
+    assert.match(english, /1 exit without a lot snapshot/);
+    assert.match(english, /OVR, lot lot-a/);
+    const spanish = boardWarnings(report.board, es).find((g) => g.title === es.evaluation.unmeasured.title);
+    assert.equal(spanish?.lines.length, 2, "the two unmeasured kinds share one heading");
+  });
+
+  it("an exit with no ticker is counted without a snapshot, never shown as undefined", () => {
+    const noTicker = { ...lotExit({ amount: 1200 }), ticker: undefined } as unknown as Decision;
+    const measured = measureTrades([noTicker]);
+    assert.equal(measured.unmeasured.exitsWithoutSnapshot, 1);
+    assert.deepEqual(measured.unmeasured.oversold, []);
   });
 
   it("a clean log reports nothing and its numbers do not change", () => {
@@ -539,6 +575,7 @@ describe("unmeasured exits and lots", () => {
     assert.deepEqual(measured.unmeasured, { exitsWithoutSnapshot: 0, oversold: [] });
     const { report, board } = withBoard([...INPUT.decisions]);
     assert.deepEqual(report.board.warnings, []);
+    assert.deepEqual(boardWarnings(report.board), []);
     assert.doesNotMatch(board, /sin medir/);
     assert.equal(report.board.trades.total, 1);
     assertClose(report.board.trades.expectancy, 1.96);
