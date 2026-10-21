@@ -139,8 +139,8 @@ function tradesSection(trades: readonly ClosedTrade[], m: Messages): string[] {
     ...t.tradesHeader,
     ...trades.map(
       (tr) =>
-        `| ${tr.entry.date} | ${tr.exit.date} | ${tr.entry.ticker} | ${tr.entry.currency} | ${tr.entry.origin}${tr.counts ? " ✓" : ""} | ` +
-        `${tr.entry.rules_version} | ${tr.entry.rule_violations?.join(", ") || "—"} | ${opt(tr.stop, fmtMoney)} | ${opt(tr.rNet, fmtR)} |`,
+        `| ${tr.entryDate} | ${tr.exitDate} | ${tr.ticker} | ${tr.currency} | ${tr.origin}${tr.counts ? " ✓" : ""} | ` +
+        `${tr.rulesVersion} | ${tr.ruleViolations.join(", ") || "—"} | ${opt(tr.stop, fmtMoney)} | ${opt(tr.rNet, fmtR)} |`,
     ),
     "",
     t.countsLegend,

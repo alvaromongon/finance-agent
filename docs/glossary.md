@@ -15,6 +15,11 @@ distance from the entry to the initial stop. A result in R is
 Example: buy at 100 with the stop at 95, so 1R = 5. Selling at 110 is **+2R**; the stop being hit
 is **−1R**; selling at 102.5 is **+0.5R**.
 
+When a [lot](#lot) is sold in several parts, the trade has one R: the R of each sale weighted by
+the share of the lot it sold, `Σ (units sold in the sale / units in the lot) × R of the sale`.
+Example: a lot of 10 units bought at 100 with the stop at 90 (1R = 10); 4 units sold at 120 (+2R)
+and the other 6 at 105 (+0.5R) give 4/10 × 2 + 6/10 × 0.5 = **+1.1R**, the R of that one trade.
+
 R makes results comparable across trades and independent of money: +2R means the same with any
 account size, which is why results can be published without amounts. With a 2:1
 [reward:risk](#rewardrisk-rr), winning 40% of the time averages 0.4 × 2R − 0.6 × 1R = +0.2R per
@@ -154,7 +159,11 @@ rewritten, and the engine is its only writer.
 
 The units of one ticker bought in a single entry. A trade is one lot: buying more of a ticker you
 already hold opens a second lot and so a second trade, and its [R](#r) is measured on its own,
-from its own entry price and initial stop. Selling part of a lot leaves the rest of it open.
+from its own entry price and initial stop. Selling part of a lot leaves the rest of it open: a
+trade is closed, and counts in the results, when its lot is fully consumed, that is, when the
+units of its sales add up to the units of the entry. A lot only partly sold is an open position,
+not a closed trade. A lot whose sales add up to more than
+the units of the entry is inconsistent data and is not measured.
 
 ### Rules version
 

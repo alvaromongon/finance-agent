@@ -277,6 +277,14 @@ const exit = decision({
   amount: 1200,
   related_id: entry.id,
   rules_version: "1.0",
+  // The snapshot of the lot (ADR-0015): the proposal's stop is resolved into `stop_initial`.
+  entry_price: 100,
+  stop_initial: 90,
+  entry_units: 10,
+  entry_costs: 4,
+  entry_date: "2026-09-02",
+  entry_origin: "sistema",
+  entry_rules_version: "1.0",
 });
 const ownerEntry = decision({
   type: "entry",
@@ -297,14 +305,40 @@ const ownerExit = decision({
   price: 95,
   amount: 475,
   related_id: ownerEntry.id,
+  entry_price: 100,
+  stop_initial: 95,
+  entry_units: 5,
+  entry_date: "2026-09-03",
+  entry_origin: "propietario",
+  entry_rules_version: "0.4",
+  rule_violations: ["entry_above_zone"],
 });
 
+/** One exit of a lot: the snapshot of a 10-unit lot bought at 100 with the stop at 90, no costs. */
+const lotExit = (fields: Partial<Decision> = {}): Decision =>
+  decision({
+    type: "exit",
+    source: "portfolio-sync",
+    ticker: "LOT",
+    date: "2026-09-10",
+    price: 120,
+    amount: 480,
+    related_id: "lot-a",
+    entry_price: 100,
+    stop_initial: 90,
+    entry_units: 10,
+    entry_date: "2026-08-03",
+    entry_origin: "sistema",
+    entry_rules_version: "1.0",
+    ...fields,
+  });
+
 describe("closedTrades", () => {
-  it("R net of costs, with the proposal's stop if the entry does not carry its own", () => {
-    const trades = closedTrades([proposal, entry, ownerEntry, ownerExit, exit]);
-    // In exit order: the owner's closed first.
+  it("R net of costs, measured from the exit alone: the entry and the proposal are not in the log", () => {
+    const trades = closedTrades([ownerExit, exit]);
+    // In the order the lots close: the owner's first.
     assert.deepEqual(
-      trades.map((t) => t.entry.ticker),
+      trades.map((t) => t.ticker),
       ["BBB", "AAA"],
     );
     const [owner, system] = trades;
@@ -312,26 +346,123 @@ describe("closedTrades", () => {
     // (120 − 100 − 0.40 tax per unit) / 10
     assertClose(system.rNet, 1.96);
     assert.equal(system.counts, true);
+    assert.equal(system.entryDate, "2026-09-02");
+    assert.equal(system.exitDate, "2026-09-20");
     assertClose(owner.rNet, -1);
     assert.equal(owner.counts, false, "owner's and before C v1: it does not count for the cutoff");
+    assert.deepEqual(owner.ruleViolations, ["entry_above_zone"]);
   });
 
-  it("without an initial stop R is not made up, and an exit without an entry is not a trade", () => {
-    const noStop = decision({ type: "entry", source: "portfolio-sync", ticker: "CCC", amount: 100 });
+  it("counts for the cutoff from the origin and rules version of the snapshot, not of the exit", () => {
+    const [t] = closedTrades([lotExit({ amount: 1200, origin: "propietario", rules_version: "0.1" })]);
+    assert.equal(t.counts, true);
+    const [owner] = closedTrades([lotExit({ amount: 1200, entry_origin: "propietario" })]);
+    assert.equal(owner.counts, false);
+    const [early] = closedTrades([lotExit({ amount: 1200, entry_rules_version: "0.9" })]);
+    assert.equal(early.counts, false);
+  });
+
+  it("without an initial stop R is not made up, and an exit without a snapshot is not a trade", () => {
     const trades = closedTrades([
-      noStop,
+      lotExit({ ticker: "CCC", amount: 1200, stop_initial: undefined }),
+      // Legacy exits cite their entry but carry no snapshot: no legacy path, they are skipped.
       decision({
         type: "exit",
         source: "portfolio-sync",
-        ticker: "CCC",
+        ticker: "DDD",
         price: 110,
         amount: 110,
-        related_id: noStop.id,
+        related_id: entry.id,
       }),
-      decision({ type: "exit", source: "portfolio-sync", ticker: "DDD", price: 110, amount: 110 }),
+      decision({ type: "exit", source: "portfolio-sync", ticker: "EEE", price: 110, amount: 110 }),
     ]);
     assert.equal(trades.length, 1);
+    assert.equal(trades[0].ticker, "CCC");
     assert.equal(trades[0].rNet, null);
+  });
+
+  it("two partial exits of one lot are one trade: R = Σ(unitsᵢ / entry_units) × Rᵢ", () => {
+    // 4 units at 120 (R = +2) and 6 at 105 (R = +0.5): 4/10 × 2 + 6/10 × 0.5 = 1.1.
+    const trades = closedTrades([
+      lotExit({ date: "2026-09-10", price: 120, amount: 480 }),
+      lotExit({ date: "2026-09-17", price: 105, amount: 630 }),
+    ]);
+    assert.equal(trades.length, 1);
+    assertClose(trades[0].rNet, 1.1);
+    assert.equal(trades[0].exitDate, "2026-09-17", "the trade closes with its last exit");
+    assert.equal(trades[0].exits.length, 2);
+  });
+
+  it("a lot that is not fully consumed is open, not a closed trade", () => {
+    // 5 of 10 units sold.
+    assert.deepEqual(closedTrades([lotExit({ price: 120, amount: 600 })]), []);
+    // The same lot closes with the second exit.
+    assert.equal(closedTrades([lotExit({ amount: 600 }), lotExit({ amount: 600 })]).length, 1);
+  });
+
+  it("units rounded to the cent of the amount still close the lot", () => {
+    // 10 units sold as 3.333333 + 6.666667 at 30.07: amounts rounded to cents.
+    const part = (units: number) => Math.round(units * 30.07 * 100) / 100;
+    const trades = closedTrades([
+      lotExit({ entry_price: 30, stop_initial: 28, price: 30.07, amount: part(3.333333) }),
+      lotExit({ entry_price: 30, stop_initial: 28, price: 30.07, amount: part(6.666667) }),
+    ]);
+    assert.equal(trades.length, 1);
+  });
+
+  it("two lots of one ticker are two trades, each with its own R", () => {
+    const trades = closedTrades([
+      lotExit({ related_id: "lot-a", amount: 1200 }),
+      lotExit({ related_id: "lot-b", entry_price: 110, stop_initial: 100, price: 120, amount: 1200 }),
+    ]);
+    assert.equal(trades.length, 2);
+    assertClose(trades[0].rNet, 2);
+    assertClose(trades[1].rNet, 1);
+  });
+
+  it("two lots with identical snapshots are two trades: the lot is its entry id", () => {
+    // Two same-day buys at the same price and stop, each fully sold.
+    const trades = closedTrades([
+      lotExit({ related_id: "lot-a", amount: 1200 }),
+      lotExit({ related_id: "lot-b", amount: 1200 }),
+    ]);
+    assert.equal(trades.length, 2);
+    assertClose(trades[0].rNet, 2);
+    assertClose(trades[1].rNet, 2);
+  });
+
+  it("an exit without an entry id is not measurable: the snapshot does not identify a lot", () => {
+    assert.deepEqual(closedTrades([{ ...lotExit({ amount: 1200 }), related_id: undefined }]), []);
+  });
+
+  it("a lot whose exits sell more than its units is not measured", () => {
+    // 12 units sold of a 10-unit lot (a wrong entry_units, or exits of another lot): R would be 1.2x.
+    assert.deepEqual(closedTrades([lotExit({ amount: 1440 })]), []);
+    assert.deepEqual(closedTrades([lotExit({ amount: 600 }), lotExit({ amount: 840 })]), []);
+  });
+
+  it("the rounding already inside entry_units does not keep a full exit from closing the lot", () => {
+    // Entry of 10.01 at 10.006 → 1.0004 units; the full sale is 1 unit at 100 (amount 100).
+    const trades = closedTrades([
+      lotExit({ entry_price: 10.006, stop_initial: 9, entry_units: 10.01 / 10.006, price: 100, amount: 100 }),
+    ]);
+    assert.equal(trades.length, 1);
+  });
+
+  it("entry_costs of an exit are its share of the lot's entry costs: R is the same as spread over the lot", () => {
+    // Lot of 10 units with 4 of entry costs: 4 units sold carry 1.6, the last 6 carry the remaining 2.4.
+    const trades = closedTrades([
+      lotExit({ price: 120, amount: 480, entry_costs: 1.6 }),
+      lotExit({ price: 105, amount: 630, entry_costs: 2.4 }),
+    ]);
+    // 4/10 × (20 − 0.4) / 10 + 6/10 × (5 − 0.4) / 10
+    assertClose(trades[0].rNet, 0.4 * 1.96 + 0.6 * 0.46);
+  });
+
+  it("the costs of the sale are subtracted per unit sold", () => {
+    const withCosts = closedTrades([lotExit({ amount: 1200, costs: 10 })]);
+    // (120 − 100 − 1 per unit) / 10
+    assertClose(withCosts[0].rNet, 1.9);
   });
 
   it("the counter starts with the first entry under C v1", () => {
@@ -546,6 +677,12 @@ describe("renderDecisionsEvaluation", () => {
   it("carries closed trades, aggregates and per-decision detail", () => {
     assert.match(md, /\| Contador del corte \(sistema, C v1\) \| 1 \| 1 \| \+1\.96R \| 1\/1 \|/);
     assert.match(md, /\| Propietario, incumpliendo reglas \| 1 \| 1 \| -1\.00R \| 0\/1 \|/);
+    // Entry date, rules version and rule breaks come from the exit's snapshot.
+    assert.match(
+      md,
+      /\| 2026-09-03 \| 2026-09-10 \| BBB \| USD \| propietario \| 0\.4 \| entry_above_zone \| 95\.00 \| -1\.00R \|/,
+    );
+    assert.match(md, /\| 2026-09-02 \| 2026-09-20 \| AAA \| USD \| sistema ✓ \| 1\.0 \| — \| 90\.00 \| \+1\.96R \|/);
     assert.match(md, /### Elegibles frente a bloqueadas/);
     assert.match(md, /\| 2026-09-01 \| AAA \| buy_proposal \| sistema \| — \| 1\.0 \| 100\.00 \|/);
   });

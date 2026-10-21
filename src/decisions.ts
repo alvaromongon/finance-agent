@@ -93,7 +93,7 @@ export interface Decision {
   costs?: number;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
   pnl?: number;
-  /** Stop at entry: the base of R. */
+  /** Stop at entry: the base of R. In an `exit`, the one of its lot (part of the lot snapshot). */
   stop_initial?: number;
   /** `adjust_stop`: stop level after the adjustment. */
   stop?: number;
@@ -124,9 +124,29 @@ export interface Decision {
   assumptions?: string[];
   /** `version` of strategies/base.md in force when deciding. */
   rules_version: string;
-  /** Rules an owner trade breaks. */
+  /** Rules an owner trade breaks. In an `exit`, the ones its lot's entry broke (part of the lot snapshot). */
   rule_violations?: string[];
-  /** Related decision (e.g. the proposal behind an entry). */
+  /**
+   * Lot snapshot of an `exit` (ADR-0015): what the evaluation needs of the entry whose lot the exit
+   * consumes, so realized R is computed from the exit alone, with no join that archiving can break.
+   * With `stop_initial` and `rule_violations` above, all optional (ADR-0006): an exit without it
+   * parses, and the evaluation skips it. Snapshot: entry price.
+   */
+  entry_price?: number;
+  /** Snapshot: units of the whole lot at entry (`amount / price` of the entry). */
+  entry_units?: number;
+  /**
+   * Snapshot: this exit's share of the lot's entry costs, in the silo currency: pro rata to the units
+   * it sold, the remainder on the last exit of the lot, so the exits add up to the lot's costs.
+   */
+  entry_costs?: number;
+  /** Snapshot: date of the entry, YYYY-MM-DD. */
+  entry_date?: string;
+  /** Snapshot: origin of the entry (ADR-0009 §8). */
+  entry_origin?: DecisionOrigin;
+  /** Snapshot: `rules_version` in force at the entry; the one a trade counts under. */
+  entry_rules_version?: string;
+  /** Related decision (e.g. the proposal behind an entry; in an `exit`, the entry of its lot). */
   related_id?: string;
   /** Linked Markdown log, relative to the data directory (VAULT_PROJECT_DIR). */
   log_link?: string;
@@ -168,9 +188,21 @@ const KNOWN_FIELDS = new Set<string>([
   "assumptions",
   "rules_version",
   "rule_violations",
+  "entry_price",
+  "entry_units",
+  "entry_costs",
+  "entry_date",
+  "entry_origin",
+  "entry_rules_version",
   "related_id",
   "log_link",
 ]);
+
+/** The lot snapshot of an `exit` that the evaluation cannot do without. */
+const REQUIRED_SNAPSHOT = ["entry_price", "entry_units", "entry_date", "entry_origin", "entry_rules_version"] as const;
+const SNAPSHOT_FIELDS = [...REQUIRED_SNAPSHOT, "entry_costs"] as const;
+/** What a snapshot needs on top, but which an exit may carry without one: `related_id` is the lot's entry id. */
+const SNAPSHOT_LOT_ID = "related_id";
 
 /** Required numeric fields per type; the rest are optional. */
 const REQUIRED_NUMBERS: Partial<Record<DecisionType, readonly (keyof Decision)[]>> = {
@@ -238,14 +270,27 @@ export function validateDecision(raw: unknown): Decision {
     errors.push("ticker must be a non-empty string");
   }
 
-  for (const field of ["price", "amount", "fx_rate", "stop_initial", "stop", "target", "atr14"] as const) {
+  for (const field of [
+    "price",
+    "amount",
+    "fx_rate",
+    "stop_initial",
+    "stop",
+    "target",
+    "atr14",
+    "entry_price",
+    "entry_units",
+  ] as const) {
     const v = raw[field];
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
       errors.push(`${field} must be a number > 0; got: ${JSON.stringify(v)}`);
     }
   }
-  if (raw.costs != null && (typeof raw.costs !== "number" || !Number.isFinite(raw.costs) || raw.costs < 0)) {
-    errors.push(`costs must be a number >= 0; got: ${JSON.stringify(raw.costs)}`);
+  for (const field of ["costs", "entry_costs"] as const) {
+    const v = raw[field];
+    if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
+      errors.push(`${field} must be a number >= 0; got: ${JSON.stringify(v)}`);
+    }
   }
   if (raw.pnl != null) {
     if (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl))
@@ -254,6 +299,21 @@ export function validateDecision(raw: unknown): Decision {
   }
   for (const field of REQUIRED_NUMBERS[type] ?? []) {
     if (raw[field] == null) errors.push(`${field} is required in ${type}`);
+  }
+
+  if (SNAPSHOT_FIELDS.some((f) => raw[f] != null)) {
+    if (type !== "exit") errors.push("the lot snapshot (entry_*) only goes in exit");
+    else {
+      // All or nothing: half a snapshot would be measured as a different trade.
+      for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
+        if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
+      }
+    }
+    if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
+      errors.push(`entry_date must be YYYY-MM-DD; got: ${JSON.stringify(raw.entry_date)}`);
+    }
+    if (raw.entry_origin != null) oneOf("entry_origin", DECISION_ORIGINS);
+    if (raw.entry_rules_version != null) nonEmpty("entry_rules_version");
   }
 
   if (raw.horizon != null) oneOf("horizon", HORIZONS);

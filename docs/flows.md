@@ -263,9 +263,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   `decisions:chart`, `screening:outcomes`. No LLM.
 - **Steps**:
   1. Read the whole decision history: the live `logs/decisions.jsonl` and any
-     `decisions-YYYY-QN.jsonl` in `DECISIONS_ARCHIVE_DIR`, de-duplicated by id; a line that fails to
-     validate is skipped with a warning.
-  2. Pair each exit with the entry it cites and compute net R; simulate each proposal's plan and
+     `decisions-YYYY-QN.jsonl` in `DECISIONS_ARCHIVE_DIR`, de-duplicated by id and in date order; a
+     line that fails to validate is skipped with a warning.
+  2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
+     its [lot](glossary.md#lot); an exit without one is skipped); simulate each proposal's plan and
      compare it with the silo [benchmark](glossary.md#benchmark) and the
      [shadow portfolio](glossary.md#shadow-portfolio).
   3. `decisions:evaluate` writes `logs/decisions-evaluation.md` (the cutoff board, expectancy,
