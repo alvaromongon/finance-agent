@@ -95,9 +95,8 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
   if (trades.withR > 0 && trades.withR < MIN_SAMPLE) {
     lines.push(...t.tradesSmallSample(MIN_SAMPLE), "");
   }
-  const warnings = board.silos.flatMap((s) => s.warnings);
-  if (warnings.length > 0) {
-    lines.push(t.reconstructionMismatch, ...warnings.map((w) => `> - ${w}`), "");
+  for (const group of board.warnings) {
+    lines.push(group.title, ...group.lines.map((l) => `> - ${l}`), "");
   }
   return lines;
 }

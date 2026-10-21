@@ -20,6 +20,7 @@ import {
   excursion,
   groupStats,
   isCv1,
+  measureTrades,
   type BuyPlan,
   type EvaluationFramework,
   type EvaluationInput,
@@ -492,6 +493,57 @@ const INPUT: EvaluationInput = {
   eurUsd: 1.25,
   framework: FRAMEWORK,
 };
+
+describe("unmeasured exits and lots", () => {
+  const bare = (ticker: string) =>
+    decision({ type: "exit", source: "portfolio-sync", ticker, price: 110, amount: 110, related_id: "gone" });
+  const withBoard = (decisions: Decision[]) => {
+    const report = buildEvaluationReport({ ...INPUT, decisions });
+    return { report, board: extractCutBoard(renderDecisionsEvaluation(report))! };
+  };
+
+  it("counts the exits without a lot snapshot: two bare exits are 2, not one line each", () => {
+    const measured = measureTrades([bare("DDD"), lotExit({ amount: 1200 }), bare("EEE")]);
+    assert.equal(measured.unmeasured.exitsWithoutSnapshot, 2);
+    assert.equal(measured.trades.length, 1, "the measurable lot is still measured");
+
+    const { board } = withBoard([bare("DDD"), lotExit({ amount: 1200 }), bare("EEE")]);
+    assert.match(board, /Salidas y lotes sin medir\n> - 2 salidas sin instantánea del lote/);
+    assert.equal(board.match(/sin instantánea/g)?.length, 1);
+  });
+
+  it("names an oversold lot by ticker and entry id, and a measured trade stays measured", () => {
+    // Lot-a is a clean 10-unit lot; lot-b sells 12 units of a 10-unit lot.
+    const decisions = [lotExit({ amount: 1200 }), lotExit({ ticker: "OVR", related_id: "lot-b", amount: 1440 })];
+    const measured = measureTrades(decisions);
+    assert.deepEqual(measured.unmeasured.oversold, [{ currency: "USD", ticker: "OVR", lotId: "lot-b" }]);
+    assert.equal(measured.unmeasured.exitsWithoutSnapshot, 0);
+    assert.deepEqual(
+      measured.trades.map((t) => t.ticker),
+      ["LOT"],
+    );
+
+    const { board } = withBoard(decisions);
+    assert.match(board, /> - OVR, lote lot-b: sus ventas suman más unidades que la compra/);
+    assert.doesNotMatch(board, /sin instantánea/);
+  });
+
+  it("both go through the report's one warnings list, next to the silo reconstruction ones", () => {
+    const { report } = withBoard([bare("DDD"), lotExit({ ticker: "OVR", amount: 1440 })]);
+    const unmeasured = report.board.warnings.find((g) => g.title.includes("sin medir"))!;
+    assert.equal(unmeasured.lines.length, 2);
+  });
+
+  it("a clean log reports nothing and its numbers do not change", () => {
+    const measured = measureTrades(INPUT.decisions);
+    assert.deepEqual(measured.unmeasured, { exitsWithoutSnapshot: 0, oversold: [] });
+    const { report, board } = withBoard([...INPUT.decisions]);
+    assert.deepEqual(report.board.warnings, []);
+    assert.doesNotMatch(board, /sin medir/);
+    assert.equal(report.board.trades.total, 1);
+    assertClose(report.board.trades.expectancy, 1.96);
+  });
+});
 
 describe("buildCutBoard", () => {
   it("counts the system trades under C v1 and compares real and shadow portfolios in EUR", () => {

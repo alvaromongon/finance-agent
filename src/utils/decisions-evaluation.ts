@@ -257,23 +257,52 @@ const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${ex
  * Trades come in the order their lots close.
  */
 export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
+  return measureTrades(decisions).trades;
+}
+
+/** What the measurement left out, so the report can say it instead of dropping it silently. */
+export interface UnmeasuredLots {
+  /** Exits without a lot snapshot: not a measurable trade. */
+  exitsWithoutSnapshot: number;
+  /** Lots whose sales add up to more than their entry units (plus the rounding slack). */
+  oversold: { currency: Currency; ticker: string; lotId: string }[];
+}
+
+export interface MeasuredTrades {
+  trades: ClosedTrade[];
+  unmeasured: UnmeasuredLots;
+}
+
+/** `closedTrades` plus the exits and lots that were skipped, and why. */
+export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
+  const unmeasured: UnmeasuredLots = { exitsWithoutSnapshot: 0, oversold: [] };
   const lots = new Map<string, { exits: Decision[]; last: number }>();
   decisions.forEach((d, index) => {
-    if (d.type !== "exit" || !hasLotSnapshot(d)) return;
+    if (d.type !== "exit") return;
+    if (!hasLotSnapshot(d)) {
+      unmeasured.exitsWithoutSnapshot++;
+      return;
+    }
     const lot = lots.get(lotKey(d)) ?? { exits: [], last: index };
     lot.exits.push(d);
     lot.last = index;
     lots.set(lotKey(d), lot);
   });
 
-  return [...lots.values()]
+  const trades = [...lots.values()]
     .filter(({ exits }) => {
       const sold = exits.reduce((sum, e) => sum + exitUnits(e), 0);
       const units = exits[0].entry_units!;
       const slack = roundingSlack(exits);
-      // Closed when fully consumed. Selling more than the lot is inconsistent data (a wrong
-      // entry_units, or exits of another lot under the same entry id): not measured, not inflated.
-      return sold >= units - slack && sold <= units + slack;
+      // Selling more than the lot is inconsistent data (a wrong entry_units, or exits of another
+      // lot under the same entry id): not measured, not inflated, and reported.
+      if (sold > units + slack) {
+        const { currency, ticker, related_id } = exits[0];
+        unmeasured.oversold.push({ currency, ticker: ticker!, lotId: related_id! });
+        return false;
+      }
+      // Closed when fully consumed.
+      return sold >= units - slack;
     })
     .sort((a, b) => a.last - b.last)
     .map(({ exits }) => {
@@ -292,6 +321,7 @@ export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
         exits,
       };
     });
+  return { trades, unmeasured };
 }
 
 /** The exit carries what a measurement needs of its lot. */
@@ -550,6 +580,12 @@ function compareVersions(a: string, b: string): number {
 
 // ─── Cutoff criterion table ──────────────────────────────────────────────────
 
+/** One kind of warning of the report: its heading and one line per case. */
+export interface WarningGroup {
+  title: string;
+  lines: string[];
+}
+
 export interface CutBoard {
   /** Rules version in force (strategies/base.md). */
   rulesVersion: string;
@@ -562,6 +598,8 @@ export interface CutBoard {
   /** System entries under C v1 still open. */
   open: number;
   silos: SiloPerformance[];
+  /** What the report flags: each group a heading key and its lines (silo reconstruction, unmeasured lots). */
+  warnings: WarningGroup[];
   /** The two real portfolios and the two shadows, in EUR at the day's rate. */
   totalEur: { real: number; shadow: number } | null;
   framework: EvaluationFramework;
@@ -594,7 +632,12 @@ export interface EvaluationInput {
  * rehearsal from the first decision in the log: so the reconstruction is
  * tested before it counts, and does not start on counter day never seen before.
  */
-export function buildCutBoard(input: EvaluationInput, trades = closedTrades(input.decisions)): CutBoard {
+export function buildCutBoard(
+  input: EvaluationInput,
+  measured: MeasuredTrades = measureTrades(input.decisions),
+  m: Messages = messages(),
+): CutBoard {
+  const { trades, unmeasured } = measured;
   const framework = input.framework ?? configuredFramework();
   const start = counterStart(input.decisions);
   const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
@@ -621,6 +664,18 @@ export function buildCutBoard(input: EvaluationInput, trades = closedTrades(inpu
       ? { real: eur.real + usd.real / rate, shadow: eur.shadow + usd.shadow / rate }
       : null;
 
+  const w = m.evaluation.unmeasured;
+  const warnings: WarningGroup[] = [
+    { title: m.evaluation.reconstructionMismatch, lines: silos.flatMap((s) => s.warnings) },
+    {
+      title: w.title,
+      lines: [
+        ...(unmeasured.exitsWithoutSnapshot > 0 ? [w.exitsWithoutSnapshot(unmeasured.exitsWithoutSnapshot)] : []),
+        ...unmeasured.oversold.map((l) => w.oversoldLot(l.ticker, l.lotId)),
+      ],
+    },
+  ].filter((g) => g.lines.length > 0);
+
   return {
     rulesVersion: input.rulesVersion,
     counterStart: start,
@@ -628,6 +683,7 @@ export function buildCutBoard(input: EvaluationInput, trades = closedTrades(inpu
     trades: tradeStats(trades.filter((t) => t.counts)),
     open: openEntries(input.decisions).filter((d) => d.origin === "sistema" && isCv1(d.rules_version)).length,
     silos,
+    warnings,
     totalEur,
     framework,
   };
@@ -644,15 +700,15 @@ export interface EvaluationReport {
 }
 
 export function buildEvaluationReport(input: EvaluationInput): EvaluationReport {
-  const trades = closedTrades(input.decisions);
+  const measured = measureTrades(input.decisions);
   const dates = input.decisions.map((d) => d.date).sort();
   return {
     asOf: input.asOf,
     decisions: input.decisions.length,
     span: dates.length > 0 ? [dates[0], dates[dates.length - 1]] : null,
-    board: buildCutBoard(input, trades),
+    board: buildCutBoard(input, measured),
     evaluations: evaluateDecisions(input.decisions, input.bars, input.framework ?? configuredFramework()),
-    trades,
+    trades: measured.trades,
   };
 }
 

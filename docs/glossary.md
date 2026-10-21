@@ -163,7 +163,8 @@ from its own entry price and initial stop. Selling part of a lot leaves the rest
 trade is closed, and counts in the results, when its lot is fully consumed, that is, when the
 units of its sales add up to the units of the entry. A lot only partly sold is an open position,
 not a closed trade. A lot whose sales add up to more than
-the units of the entry is inconsistent data and is not measured.
+the units of the entry is inconsistent data: it is not measured, and the evaluation report names it.
+An exit that carries no snapshot of its lot is not measured either, and the report says how many.
 
 ### Rules version
 

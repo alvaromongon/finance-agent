@@ -230,6 +230,13 @@ export const en = {
       `> With fewer than ${min} trades, the expectancy describes, it does not decide.`,
     ],
     reconstructionMismatch: "> [!warning] The silo reconstruction does not add up",
+    unmeasured: {
+      title: "> [!warning] Some exits and lots were not measured",
+      exitsWithoutSnapshot: (n: number) =>
+        `${n} ${n === 1 ? "exit" : "exits"} without a lot snapshot, left out of the closed trades.`,
+      oversoldLot: (ticker: string, lotId: string) =>
+        `${ticker}, lot ${lotId}: its sales add up to more units than the entry bought (inconsistent data); not measured.`,
+    },
     stopAt: (atr: number, horizon: string) => `${atr} ATR in ${horizon}`,
     howToRead: (o: { horizons: string; stops: string; minRewardRisk: number; planWindow: number }) => [
       "## How to read it",
