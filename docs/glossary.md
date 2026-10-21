@@ -162,7 +162,8 @@ already hold opens a second lot and so a second trade, and its [R](#r) is measur
 from its own entry price and initial stop. Selling part of a lot leaves the rest of it open: a
 trade is closed, and counts in the results, when its lot is fully consumed, that is, when the
 units of its sales add up to the units of the entry. A lot only partly sold is an open position,
-not a closed trade.
+not a closed trade. A lot whose sales add up to more than
+the units of the entry is inconsistent data and is not measured.
 
 ### Rules version
 

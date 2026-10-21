@@ -184,7 +184,8 @@ describe("measurable exits: the five R tests of spec #27", () => {
         entry_price: lot.price,
         stop_initial: lot.stop_initial,
         entry_units: lot.amount! / lot.price!,
-        entry_costs: lot.costs,
+        // This exit's share of the lot's entry costs, pro rata to the units it sold.
+        entry_costs: lot.costs == null ? undefined : (lot.costs * units) / (lot.amount! / lot.price!),
         entry_date: lot.date,
         entry_origin: lot.origin,
         entry_rules_version: lot.rules_version,

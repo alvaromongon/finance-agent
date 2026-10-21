@@ -381,6 +381,7 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
   const exitLine = (overrides: Partial<Decision> = {}) =>
     base({ type: "exit", price: 120, amount: 480, source: "portfolio-sync", ...overrides });
   const snapshot: Partial<Decision> = {
+    related_id: "entry-1",
     entry_price: 100,
     stop_initial: 90,
     entry_units: 10,
@@ -417,6 +418,15 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
       () => buildDecision(exitLine({ entry_price: 100 })),
       /entry_units is required with the lot snapshot[\s\S]*entry_date is required[\s\S]*entry_origin is required[\s\S]*entry_rules_version is required/,
     );
+  });
+
+  it("the snapshot needs the entry id: it is what identifies the lot", () => {
+    const { related_id: _id, ...noId } = snapshot;
+    assert.throws(() => buildDecision(exitLine(noId)), /related_id is required with the lot snapshot/);
+  });
+
+  it("an exit that only cites an entry (no snapshot) still parses", () => {
+    assert.doesNotThrow(() => buildDecision(exitLine({ related_id: "entry-1" })));
   });
 
   it("snapshot fields only go in exit", () => {

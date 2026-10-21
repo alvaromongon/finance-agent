@@ -135,7 +135,10 @@ export interface Decision {
   entry_price?: number;
   /** Snapshot: units of the whole lot at entry (`amount / price` of the entry). */
   entry_units?: number;
-  /** Snapshot: costs of the whole entry, in the silo currency. */
+  /**
+   * Snapshot: this exit's share of the lot's entry costs, in the silo currency: pro rata to the units
+   * it sold, the remainder on the last exit of the lot, so the exits add up to the lot's costs.
+   */
   entry_costs?: number;
   /** Snapshot: date of the entry, YYYY-MM-DD. */
   entry_date?: string;
@@ -198,6 +201,8 @@ const KNOWN_FIELDS = new Set<string>([
 /** The lot snapshot of an `exit` that the evaluation cannot do without. */
 const REQUIRED_SNAPSHOT = ["entry_price", "entry_units", "entry_date", "entry_origin", "entry_rules_version"] as const;
 const SNAPSHOT_FIELDS = [...REQUIRED_SNAPSHOT, "entry_costs"] as const;
+/** What a snapshot needs on top, but which an exit may carry without one: `related_id` is the lot's entry id. */
+const SNAPSHOT_LOT_ID = "related_id";
 
 /** Required numeric fields per type; the rest are optional. */
 const REQUIRED_NUMBERS: Partial<Record<DecisionType, readonly (keyof Decision)[]>> = {
@@ -300,7 +305,7 @@ export function validateDecision(raw: unknown): Decision {
     if (type !== "exit") errors.push("the lot snapshot (entry_*) only goes in exit");
     else {
       // All or nothing: half a snapshot would be measured as a different trade.
-      for (const field of REQUIRED_SNAPSHOT) {
+      for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
         if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
       }
     }

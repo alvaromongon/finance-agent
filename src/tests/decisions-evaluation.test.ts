@@ -420,6 +420,45 @@ describe("closedTrades", () => {
     assertClose(trades[1].rNet, 1);
   });
 
+  it("two lots with identical snapshots are two trades: the lot is its entry id", () => {
+    // Two same-day buys at the same price and stop, each fully sold.
+    const trades = closedTrades([
+      lotExit({ related_id: "lot-a", amount: 1200 }),
+      lotExit({ related_id: "lot-b", amount: 1200 }),
+    ]);
+    assert.equal(trades.length, 2);
+    assertClose(trades[0].rNet, 2);
+    assertClose(trades[1].rNet, 2);
+  });
+
+  it("an exit without an entry id is not measurable: the snapshot does not identify a lot", () => {
+    assert.deepEqual(closedTrades([{ ...lotExit({ amount: 1200 }), related_id: undefined }]), []);
+  });
+
+  it("a lot whose exits sell more than its units is not measured", () => {
+    // 12 units sold of a 10-unit lot (a wrong entry_units, or exits of another lot): R would be 1.2x.
+    assert.deepEqual(closedTrades([lotExit({ amount: 1440 })]), []);
+    assert.deepEqual(closedTrades([lotExit({ amount: 600 }), lotExit({ amount: 840 })]), []);
+  });
+
+  it("the rounding already inside entry_units does not keep a full exit from closing the lot", () => {
+    // Entry of 10.01 at 10.006 → 1.0004 units; the full sale is 1 unit at 100 (amount 100).
+    const trades = closedTrades([
+      lotExit({ entry_price: 10.006, stop_initial: 9, entry_units: 10.01 / 10.006, price: 100, amount: 100 }),
+    ]);
+    assert.equal(trades.length, 1);
+  });
+
+  it("entry_costs of an exit are its share of the lot's entry costs: R is the same as spread over the lot", () => {
+    // Lot of 10 units with 4 of entry costs: 4 units sold carry 1.6, the last 6 carry the remaining 2.4.
+    const trades = closedTrades([
+      lotExit({ price: 120, amount: 480, entry_costs: 1.6 }),
+      lotExit({ price: 105, amount: 630, entry_costs: 2.4 }),
+    ]);
+    // 4/10 × (20 − 0.4) / 10 + 6/10 × (5 − 0.4) / 10
+    assertClose(trades[0].rNet, 0.4 * 1.96 + 0.6 * 0.46);
+  });
+
   it("the costs of the sale are subtracted per unit sold", () => {
     const withCosts = closedTrades([lotExit({ amount: 1200, costs: 10 })]);
     // (120 − 100 − 1 per unit) / 10

@@ -239,16 +239,15 @@ export interface ClosedTrade {
 const exitUnits = (exit: Decision): number => exit.amount! / exit.price!;
 
 /**
- * Slack, in units, between the units of a lot's exits and its entry units: the amount of an exit
- * is rounded to the cent, so its units are only known to half a cent of price.
+ * Slack, in units, between the units of a lot's exits and its entry units: the amount of each exit
+ * is rounded to the cent (so its units are only known to half a cent of price), and so was the
+ * amount of the entry that `entry_units` comes from (half a cent of the entry price).
  */
-const roundingSlack = (exits: readonly Decision[]): number => exits.reduce((sum, e) => sum + 0.005 / e.price!, 1e-9);
+const roundingSlack = (exits: readonly Decision[]): number =>
+  exits.reduce((sum, e) => sum + 0.005 / e.price!, 1e-9) + 0.005 / exits[0].entry_price!;
 
-/** Key of the lot an exit consumed: its entry, or, without the id, the snapshot itself. */
-const lotKey = (exit: Decision): string =>
-  `${exit.currency}|${exit.ticker}|` +
-  (exit.related_id ??
-    [exit.entry_date, exit.entry_price, exit.entry_units, exit.stop_initial, exit.entry_origin].join("|"));
+/** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
+const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
 
 /**
  * Closed trades from the exits alone (ADR-0015). A trade is one lot, and counts once: its R is
@@ -270,7 +269,11 @@ export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
   return [...lots.values()]
     .filter(({ exits }) => {
       const sold = exits.reduce((sum, e) => sum + exitUnits(e), 0);
-      return sold >= exits[0].entry_units! - roundingSlack(exits);
+      const units = exits[0].entry_units!;
+      const slack = roundingSlack(exits);
+      // Closed when fully consumed. Selling more than the lot is inconsistent data (a wrong
+      // entry_units, or exits of another lot under the same entry id): not measured, not inflated.
+      return sold >= units - slack && sold <= units + slack;
     })
     .sort((a, b) => a.last - b.last)
     .map(({ exits }) => {
@@ -293,6 +296,7 @@ export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
 
 /** The exit carries what a measurement needs of its lot. */
 const hasLotSnapshot = (exit: Decision): boolean =>
+  !!exit.related_id &&
   exit.entry_price != null &&
   exit.entry_units != null &&
   exit.entry_origin != null &&
@@ -312,14 +316,15 @@ function tradeR(exits: readonly Decision[]): number | null {
 
 /**
  * Net R of one exit, from the exit alone: (exit − entry − costs per unit) / (entry − initial stop).
- * Costs per unit are the lot's entry costs spread over its units and, if any, the sale's.
+ * Costs per unit are this exit's share of the lot's entry costs (`entry_costs`, pro rata to the
+ * units sold) spread over the units it sold and, if any, the sale's own.
  */
 export function realizedR(exit: Decision): number | null {
   const { entry_price: entryPrice, entry_units: entryUnits, stop_initial: stop, price: exitPrice } = exit;
   if (stop == null || entryPrice == null || !entryUnits || exitPrice == null || !exit.amount || !(stop < entryPrice)) {
     return null;
   }
-  const costPerUnit = (exit.entry_costs ?? 0) / entryUnits + (exit.costs ?? 0) / exitUnits(exit);
+  const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / exitUnits(exit);
   return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
 }
 
