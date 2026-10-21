@@ -451,6 +451,54 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
   });
 });
 
+describe("validateDecision: lot_units_left of an exit (#52)", () => {
+  const exitLine = (overrides: Partial<Decision> = {}) =>
+    base({
+      type: "exit",
+      price: 120,
+      amount: 480,
+      source: "portfolio-sync",
+      related_id: "entry-1",
+      entry_price: 100,
+      stop_initial: 90,
+      entry_units: 10,
+      entry_date: "2026-06-15",
+      entry_origin: "sistema",
+      entry_rules_version: "1.0",
+      ...overrides,
+    });
+
+  it("keeps the units the lot has left after the exit, 0 when the exit used it up", () => {
+    assert.equal(buildDecision(exitLine({ lot_units_left: 6 })).lot_units_left, 6);
+    assert.equal(buildDecision(exitLine({ lot_units_left: 0 })).lot_units_left, 0);
+  });
+
+  it("is optional: an exit with the snapshot but without it still parses", () => {
+    assert.ok(!("lot_units_left" in buildDecision(exitLine())));
+  });
+
+  it("is a finite number >= 0", () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "6" as never]) {
+      assert.throws(
+        () => buildDecision(exitLine({ lot_units_left: bad })),
+        /lot_units_left must be a number >= 0/,
+        String(bad),
+      );
+    }
+  });
+
+  it("only goes with the lot snapshot, and only in an exit", () => {
+    assert.throws(
+      () => buildDecision(base({ type: "exit", price: 120, amount: 480, lot_units_left: 3 })),
+      /lot_units_left only goes with the lot snapshot/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "entry", price: 100, amount: 100, lot_units_left: 3 })),
+      /lot_units_left only goes with the lot snapshot/,
+    );
+  });
+});
+
 describe("validateOwnerInput", () => {
   it("accepts an entry with units instead of an amount", () => {
     assert.doesNotThrow(() =>

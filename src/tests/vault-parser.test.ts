@@ -17,8 +17,8 @@ import {
 // ─── Test Markdown ────────────────────────────────────────────────────────────
 
 const LOTS_HEADER =
-  "| Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |\n" +
-  "|---|---|---|---|---|---|---|---|---|---|";
+  "| Ticker | Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |\n" +
+  "|---|---|---|---|---|---|---|---|---|---|---|";
 
 const PORTFOLIO_MD = `---
 schema_version: 2
@@ -44,9 +44,9 @@ last_manual_sync: 2026-06-27
 ## EUR — Lots
 
 ${LOTS_HEADER}
-| def-1 | 2026-05-04 | 1 | 1 | 46,80 | 41,50 | 1,50 | sistema | 1.0 | — |
-| ibe-1 | 2026-06-01 | 4 | 6 | 12,50 | — | — | propietario | 1.0 | no_stop, overrode_block |
-| ibe-2 | 2026-06-15 | 6 | 6 | 12,50 | 11,00 | — | sistema | 1.1 | — |
+| DEF.MI | def-1 | 2026-05-04 | 1 | 1 | 46,80 | 41,50 | 1,50 | sistema | 1.0 | — |
+| IBE.MC | ibe-1 | 2026-06-01 | 4 | 6 | 12,50 | — | — | propietario | 1.0 | no_stop, overrode_block |
+| IBE.MC | ibe-2 | 2026-06-15 | 6 | 6 | 12,50 | 11,00 | — | sistema | 1.1 | — |
 
 ## USD — Cash
 
@@ -63,7 +63,7 @@ ${LOTS_HEADER}
 ## USD — Lots
 
 ${LOTS_HEADER}
-| xom-1 | 2026-04-01 | 5 | 5 | 130.00 | 120.00 | 2.00 | sistema | 1.0 | — |
+| XOM | xom-1 | 2026-04-01 | 5 | 5 | 130.00 | 120.00 | 2.00 | sistema | 1.0 | — |
 `;
 
 const WATCHLIST_MD = `# Watchlist
@@ -406,6 +406,7 @@ describe("assertSchemaVersion", () => {
 describe("parseLots", () => {
   it("parses the lots of a silo into typed fields", () => {
     assert.deepEqual(parseLots(PORTFOLIO_MD, "EUR")[0], {
+      ticker: "DEF.MI",
       entryId: "def-1",
       date: "2026-05-04",
       units: 1,
@@ -439,17 +440,17 @@ describe("parseLots", () => {
 
   it("reads the columns by their header, in any order", () => {
     const swapped = PORTFOLIO_MD.replaceAll(
-      "| Entry id | Date | Units | Entry units |",
-      "| Date | Entry id | Entry units | Units |",
-    ).replace("| xom-1 | 2026-04-01 | 5 | 5 |", "| 2026-04-01 | xom-1 | 8 | 5 |");
+      "| Ticker | Entry id | Date | Units | Entry units |",
+      "| Date | Entry units | Units | Entry id | Ticker |",
+    ).replace("| XOM | xom-1 | 2026-04-01 | 5 | 5 |", "| 2026-04-01 | 8 | 5 | xom-1 | XOM |");
     const lot = parseLots(swapped, "USD").find((l) => l.entryId === "xom-1");
     assert.deepEqual([lot?.units, lot?.entryUnits], [5, 8]);
   });
 
   it("skips placeholder rows and rows whose Units is not a number", () => {
     const md = PORTFOLIO_MD.replace(
-      "| xom-1 |",
-      "| — | — | — | — | — | — | — | — | — | — |\n| xom-0 | 2026-03-01 | TBD | 5 | 1 | 1 | — | sistema | 1.0 | — |\n| xom-1 |",
+      "| XOM | xom-1 |",
+      "| — | — | — | — | — | — | — | — | — | — | — |\n| XOM | xom-0 | 2026-03-01 | TBD | 5 | 1 | 1 | — | sistema | 1.0 | — |\n| XOM | xom-1 |",
     );
     assert.deepEqual(
       parseLots(md, "USD").map((l) => l.entryId),
@@ -459,8 +460,8 @@ describe("parseLots", () => {
 
   it("reads en dash headings, CRLF and `:---:` separator rows as the rest of the vault does", () => {
     const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD – Lots").replace(
-      /\|---\|---\|---\|---\|---\|---\|---\|---\|---\|---\|/g,
-      "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
+      /\|---\|---\|---\|---\|---\|---\|---\|---\|---\|---\|---\|/g,
+      "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
     );
     assert.equal(parseLots(md.replace(/\n/g, "\r\n"), "USD").length, 1);
   });
@@ -468,6 +469,16 @@ describe("parseLots", () => {
   it("throws, naming the section and the column, if a required column is missing", () => {
     const md = PORTFOLIO_MD.replaceAll("| Initial stop |", "| Stop |");
     assert.throws(() => parseLots(md, "USD"), /## USD — Lots.*Initial stop/);
+  });
+
+  it("throws, naming the section and the column, if the Ticker column is missing (#52)", () => {
+    const md = PORTFOLIO_MD.replaceAll("| Ticker | Entry id |", "| Entry id |").replace("| XOM | xom-1 |", "| xom-1 |");
+    assert.throws(() => parseLots(md, "USD"), /## USD — Lots.*Ticker/);
+  });
+
+  it("skips a row with no ticker, so it does not count towards any Volume", () => {
+    const md = PORTFOLIO_MD.replace("| XOM | xom-1 |", "| — | xom-1 |");
+    assert.deepEqual(parseLots(md, "USD"), []);
   });
 
   it("returns an empty array when the section has no table", () => {

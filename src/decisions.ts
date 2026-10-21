@@ -142,6 +142,11 @@ export interface Decision {
   entry_costs?: number;
   /** Snapshot: date of the entry, YYYY-MM-DD. */
   entry_date?: string;
+  /**
+   * Units the lot has left after this exit, 0 when the exit used it up (#52): a lot is closed when its
+   * last exit has 0. Part of the snapshot; an exit with the snapshot but without it is not measured.
+   */
+  lot_units_left?: number;
   /** Snapshot: origin of the entry (ADR-0009 §8). */
   entry_origin?: DecisionOrigin;
   /** Snapshot: `rules_version` in force at the entry; the one a trade counts under. */
@@ -194,6 +199,7 @@ const KNOWN_FIELDS = new Set<string>([
   "entry_date",
   "entry_origin",
   "entry_rules_version",
+  "lot_units_left",
   "related_id",
   "log_link",
 ]);
@@ -286,7 +292,7 @@ export function validateDecision(raw: unknown): Decision {
       errors.push(`${field} must be a number > 0; got: ${JSON.stringify(v)}`);
     }
   }
-  for (const field of ["costs", "entry_costs"] as const) {
+  for (const field of ["costs", "entry_costs", "lot_units_left"] as const) {
     const v = raw[field];
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
       errors.push(`${field} must be a number >= 0; got: ${JSON.stringify(v)}`);
@@ -314,6 +320,10 @@ export function validateDecision(raw: unknown): Decision {
     }
     if (raw.entry_origin != null) oneOf("entry_origin", DECISION_ORIGINS);
     if (raw.entry_rules_version != null) nonEmpty("entry_rules_version");
+  }
+
+  if (raw.lot_units_left != null && !(type === "exit" && SNAPSHOT_FIELDS.some((f) => raw[f] != null))) {
+    errors.push("lot_units_left only goes with the lot snapshot of an exit");
   }
 
   if (raw.horizon != null) oneOf("horizon", HORIZONS);

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
+import { lotsSection } from "./fixtures/lots.js";
 
 const TODAY = "2026-09-14";
 
@@ -31,6 +32,30 @@ watchlist:
 \`\`\`
 `;
 
+/** An empty portfolio in the v2 shape: an entry adds its lot to it, a sale consumes the lots (#42). */
+const PORTFOLIO_MD = `---
+schema_version: 2
+last_manual_sync: 2026-09-10T18:00:00Z
+account_env: demo
+---
+
+${["EUR", "USD"]
+  .map(
+    (c) => `## ${c} — Cash
+
+| Item | Value |
+|---|---|
+| Available cash | 1000.00 |
+
+## ${c} — Positions
+
+| Ticker | Volume | Avg price | Current price | P/L | Stop loss |
+|---|---|---|---|---|---|
+
+${lotsSection(c as "EUR" | "USD")}`,
+  )
+  .join("\n")}`;
+
 /** 30 sessions up to 12-Sep with a daily range of 20: ATR14 = 20. */
 function bars(): HistoricalBar[] {
   return Array.from({ length: 30 }, (_, i) => {
@@ -46,7 +71,7 @@ const fakeProvider = {
 
 describe("decision:record (recordOwnerDecision)", () => {
   let vaultDir: string;
-  let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision>;
+  let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision[]>;
   let proposal: Decision;
 
   const decisionsPath = () => join(vaultDir, "logs", "decisions.jsonl");
@@ -55,7 +80,9 @@ describe("decision:record (recordOwnerDecision)", () => {
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));
-  const record = (raw: unknown) => recordOwnerDecision(raw, fakeProvider, TODAY);
+  const recordAll = (raw: unknown) => recordOwnerDecision(raw, fakeProvider, TODAY);
+  /** The decision a trade records; a sale that spans several lots records one per lot (`recordAll`). */
+  const record = async (raw: unknown) => (await recordAll(raw))[0];
 
   before(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "finance-agent-decision-record-"));
@@ -87,6 +114,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "0.2"\n---\n`, "utf8");
     await writeFile(join(vaultDir, "watchlist.md"), WATCHLIST_MD, "utf8");
     await writeFile(decisionsPath(), JSON.stringify(proposal) + "\n", "utf8");
+    await writeFile(join(vaultDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
   });
 
   it("an entry after a system proposal is the system's and cites it", async () => {
@@ -131,6 +159,31 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.equal(exit.related_id, entry.id);
     assert.equal(exit.origin, "sistema");
     assert.equal(exit.amount, 530);
+  });
+
+  it("a sale that spans two lots records one exit per lot, each citing its own entry", async () => {
+    const first = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
+    const second = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 520, units: 2, stop: 460 });
+
+    const exits = await recordAll({ type: "exit", ticker: "ADBE", currency: "USD", price: 540, units: 3 });
+    assert.deepEqual(
+      exits.map((e) => [e.related_id, e.amount, e.lot_units_left]),
+      [
+        [first.id, 1080, 0],
+        [second.id, 540, 1],
+      ],
+    );
+    assert.equal((await readLines()).filter((d) => d.type === "exit").length, 2);
+  });
+
+  it("an exit refuses related_id: a sale consumes the lots first in, first out, and nothing is written", async () => {
+    const entry = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
+    const before = await readFile(decisionsPath(), "utf8");
+    await assert.rejects(
+      () => record({ type: "exit", ticker: "ADBE", currency: "USD", price: 540, units: 1, related_id: entry.id }),
+      /related_id does not apply to an exit/,
+    );
+    assert.equal(await readFile(decisionsPath(), "utf8"), before);
   });
 
   it("an entry after an engine block is the owner's, cites it and flags it as broken", async () => {

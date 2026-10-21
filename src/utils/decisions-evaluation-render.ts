@@ -41,26 +41,55 @@ function smallSampleWarning(sizes: readonly number[], m: Messages): string[] {
   return [...m.evaluation.groupsSmallSample(MIN_SAMPLE), ""];
 }
 
-/** The board's warnings in words: one heading and its lines per kind, in the language of `m`. */
+/** Skipped exits named one by one in the board; the rest are only counted (until #44 every real exit is skipped). */
+const SKIPPED_EXITS_SHOWN = 10;
+
+/**
+ * The board's warnings in words: one heading and its lines per group, in the language of `m`. The
+ * group is decided by the kind of the warning, never by comparing the translated headings: the
+ * unmeasured exits and lots (every kind but the silo reconstruction) share one heading.
+ */
 export function boardWarnings(board: CutBoard, m: Messages = messages()): { title: string; lines: string[] }[] {
   const t = m.evaluation;
-  const groups = board.warnings.map((w) => {
+  const groups = board.warnings.map((w): { group: "reconstruction" | "unmeasured"; title: string; lines: string[] } => {
     switch (w.kind) {
       case "reconstruction":
-        return { title: t.reconstructionMismatch, lines: w.lines };
-      case "exitsWithoutSnapshot":
-        return { title: t.unmeasured.title, lines: [t.unmeasured.exitsWithoutSnapshot(w.count)] };
+        return { group: "reconstruction", title: t.reconstructionMismatch, lines: w.lines };
+      case "exitsWithoutSnapshot": {
+        const shown = w.exits.slice(0, SKIPPED_EXITS_SHOWN);
+        const rest = w.exits.length - shown.length;
+        return {
+          group: "unmeasured",
+          title: t.unmeasured.title,
+          lines: [
+            t.unmeasured.exitsWithoutSnapshot(w.exits.length),
+            ...shown.map((e) => t.unmeasured.skippedExit(e.ticker ?? "—", e.date, e.lotId)),
+            ...(rest > 0 ? [t.unmeasured.moreSkippedExits(rest)] : []),
+          ],
+        };
+      }
       case "oversoldLots":
-        return { title: t.unmeasured.title, lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)) };
+        return {
+          group: "unmeasured",
+          title: t.unmeasured.title,
+          lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)),
+        };
+      case "inconsistentLots":
+        return {
+          group: "unmeasured",
+          title: t.unmeasured.title,
+          lines: w.lots.map((l) => t.unmeasured.inconsistentLot(l.ticker, l.lotId, l.reason)),
+        };
     }
   });
-  // Both unmeasured kinds sit under one heading.
-  return groups.reduce<{ title: string; lines: string[] }[]>((merged, g) => {
-    const same = merged.find((x) => x.title === g.title);
-    if (same) same.lines.push(...g.lines);
-    else merged.push({ title: g.title, lines: [...g.lines] });
-    return merged;
-  }, []);
+  return groups
+    .reduce<{ group: string; title: string; lines: string[] }[]>((merged, g) => {
+      const same = merged.find((x) => x.group === g.group);
+      if (same) same.lines.push(...g.lines);
+      else merged.push({ group: g.group, title: g.title, lines: [...g.lines] });
+      return merged;
+    }, [])
+    .map(({ title, lines }) => ({ title, lines }));
 }
 
 function cutBoardSection(board: CutBoard, m: Messages): string[] {

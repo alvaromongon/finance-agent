@@ -140,6 +140,16 @@ export async function readPortfolio(currency: Currency): Promise<PortfolioSnapsh
   };
 }
 
+/** `portfolio.md` as text, for the writer of the lots; throws `ENOENT` if the file does not exist. */
+export async function readPortfolioText(): Promise<string> {
+  return readTextFile(join(projectDir(), "portfolio.md"));
+}
+
+/** Replaces `portfolio.md` with `text`: `decision:record` rewrites the `Lots` and `Positions` tables (ADR-0015). */
+export async function writePortfolioText(text: string): Promise<void> {
+  await writeFile(join(projectDir(), "portfolio.md"), text, "utf8");
+}
+
 // ─── Portfolio auto-update ────────────────────────────────────────────────────
 
 /**

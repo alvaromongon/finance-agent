@@ -236,6 +236,15 @@ export const en = {
         `${n} ${n === 1 ? "exit" : "exits"} without a lot snapshot, left out of the closed trades.`,
       oversoldLot: (ticker: string, lotId: string) =>
         `${ticker}, lot ${lotId}: its sales add up to more units than the entry bought (inconsistent data); not measured.`,
+      skippedExit: (ticker: string, date: string, lotId?: string) =>
+        `${ticker}, ${date}${lotId ? `, lot ${lotId}` : ""}`,
+      moreSkippedExits: (n: number) => `… and ${n} more.`,
+      inconsistentLot: (ticker: string, lotId: string, reason: "units_left" | "snapshot") =>
+        `${ticker}, lot ${lotId}: ${
+          reason === "units_left"
+            ? "the units left after each of its exits do not follow what the exits sold"
+            : "its exits disagree on the data of the entry"
+        } (inconsistent data); not measured.`,
     },
     stopAt: (atr: number, horizon: string) => `${atr} ATR in ${horizon}`,
     howToRead: (o: { horizons: string; stops: string; minRewardRisk: number; planWindow: number }) => [

@@ -8,7 +8,7 @@ account_env: demo
 
 Fictitious portfolio for the demo. Prices are synthetic (`examples/market/`).
 Format: `docs/input-format.md`. Each `Volume` is the sum of the `Units` of its lots, and each lot's
-`Entry id` is an entry of `logs/decisions.jsonl`.
+`Entry id` is an entry of `logs/decisions.jsonl`, of the lot's `Ticker`.
 
 ## EUR — Cash
 
@@ -24,9 +24,9 @@ Format: `docs/input-format.md`. Each `Volume` is the sum of the `Units` of its l
 
 ## EUR — Lots
 
-| Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
-|---|---|---|---|---|---|---|---|---|---|
-| 20260915-sapde-entry-example | 2026-09-15 | 2 | 2 | 180,00 | 168,00 | — | sistema | 1.0 | — |
+| Ticker | Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
+|---|---|---|---|---|---|---|---|---|---|---|
+| SAP.DE | 20260915-sapde-entry-example | 2026-09-15 | 2 | 2 | 180,00 | 168,00 | — | sistema | 1.0 | — |
 
 ## USD — Cash
 
@@ -42,6 +42,6 @@ Format: `docs/input-format.md`. Each `Volume` is the sum of the `Units` of its l
 
 ## USD — Lots
 
-| Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
-|---|---|---|---|---|---|---|---|---|---|
-| 20260916-ko-entry-example | 2026-09-16 | 5 | 5 | 62.00 | 58.00 | — | sistema | 1.0 | — |
+| Ticker | Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
+|---|---|---|---|---|---|---|---|---|---|---|
+| KO | 20260916-ko-entry-example | 2026-09-16 | 5 | 5 | 62.00 | 58.00 | — | sistema | 1.0 | — |

@@ -33,10 +33,19 @@ An `exit` stored only its half of the trade and pointed to its entry through `re
 
 Chosen option: "lots in `portfolio.md`, written by the engine", because it is the only one where both the open state and each closed trade are readable without scanning or joining the log, and it keeps one source of truth for what is owned.
 
-- `portfolio.md` gets a required `Lots` table per currency, in a new, incompatible version of its format. Each row carries what an exit's snapshot needs: entry id, date, units left, entry units, entry price, initial stop, entry costs, origin and rules version.
-- `decision:record` is the only writer: an entry adds a lot; a sale consumes lots FIFO, writes one exit per lot consumed (costs allocated pro rata to units) and recomputes `Volume` and `Avg price` in `Positions`. It appends to the log first and rewrites the portfolio second, and both changes go in one commit.
+- `portfolio.md` gets a required `Lots` table per currency, in a new, incompatible version of its format. Each row carries what an exit's snapshot needs: ticker, entry id, date, units left, entry units, entry price, initial stop, entry costs, origin, rules version and rules violations. The ticker is in the row so that `Volume` can be checked against the lots from `portfolio.md` alone.
+- `decision:record` is the only writer: an entry adds a lot; a sale consumes lots FIFO, writes one exit per lot consumed and recomputes `Volume` and `Avg price` in `Positions`. It appends to the log first and rewrites the portfolio second, and both changes go in one commit. A lot that a sale uses up is removed from `Lots`; its history lives in its exit lines.
+- Each exit carries the snapshot of its lot, in optional fields of the decision log: `related_id` (the entry id of the lot, never the latest open entry), `entry_price`, `entry_units`, `entry_costs` (the exit's share of the lot's entry costs, pro rata to the units sold, the remainder on the last exit of the lot, so the shares add up exactly to the lot's costs), `entry_date`, `entry_origin`, `entry_rules_version`, `stop_initial`, `rule_violations`, and `lot_units_left`.
+- A lot is closed when its last exit has `lot_units_left` = 0, the units the lot has left after that exit. The writer knows exactly when a lot is used up, so the evaluation does not infer it. Inferring it by summing the units of the exits against a rounding slack was rejected: on a low-priced asset the slack can exceed a real unsold remainder (100 units at 0.02 with 99 sold at 0.01 read as closed), exits of one lot that disagree go unnoticed, and the sum depends on float arithmetic. The evaluation also checks that, across a lot's exits in date order, `lot_units_left` falls by the units each exit sold (within cent rounding) and never below 0, and that the exits agree on the rest of the snapshot; a lot that fails is not measured and the report names it.
 - A trade is one lot (one entry): its R is Σ(unitsᵢ / entry_units) × Rᵢ over the exits that consumed it. Scale-ins are separate trades.
-- The owner reconciles `Volume` against the broker. A mismatch (split, partial fill, recording mistake) is fixed by editing `Lots` by hand in a correction commit. When `Volume` differs from the sum of its lots' units, or a lot's entry id is not in the log, `decision:record` and the evaluation refuse the file. The heartbeat keeps watching the positions for risk and raises a loud warning, because a typo must never switch off stop alerts. A split is corrected by scaling units, entry price and stop by the same ratio; the check cannot catch a wrong ratio.
+- The owner reconciles `Volume` against the broker. A mismatch (split, partial fill, recording mistake) is fixed by editing `Lots` by hand in a correction commit. `decision:record` and the evaluation, which read the whole decision log, refuse the file when:
+  - `Volume` differs from the sum of its lots' units;
+  - a lot has more units than its entry bought, or two rows share an entry id;
+  - a lot's entry id is not in the log, its ticker is not its entry's, or its snapshot of the entry (price, units, initial stop, date, origin, rules version, rules violations) differs from the entry's;
+  - an entry in the log is still open and has no lot, where an entry is open until an exit citing it has `lot_units_left` = 0 (an entry cited by an exit with no `lot_units_left` was closed before this contract and is not checked);
+  - a lot is still in `Lots` although an exit used it up.
+
+  The heartbeat does not read the log: it checks `Volume` against the lots from `portfolio.md` alone, keeps watching the positions for risk and raises a loud warning, because a typo must never switch off stop alerts. A split is corrected by scaling units, entry price and stop by the same ratio; the check cannot catch a wrong ratio.
 
 **What we give up**:
 
@@ -58,7 +67,7 @@ Chosen option: "lots in `portfolio.md`, written by the engine", because it is th
 - Good: archiving a quarter can never strand data a measurement needs.
 - Good: the owner no longer has to record a sale before touching its row, because the engine updates the row.
 - Bad: two writers now touch `portfolio.md`. The heartbeat rewrites prices and `decision:record` rewrites lots and positions, so a heartbeat run in flight while the owner records a trade can conflict on rebase. The decision log avoids this by merging appended lines, but a Markdown table cannot. The conflict is visible, not silent: each writer commits and rebases. Moving prices to a file only the heartbeat writes would remove the conflict; it is left out until a conflict actually happens.
-- Bad: `decision:record` writes two files. If it stops between the log and the portfolio, the exit exists but the lot does not shrink. On the next read the lot check fails and the owner fixes `Lots` by hand.
+- Bad: `decision:record` writes two files. If it stops between the log and the portfolio, the exit exists but the lot does not shrink. When the sale used the lot up, the next read refuses the file (the lot is still there although an exit used it up) and the owner fixes `Lots` by hand. When the lot only shrank, the units left in `Lots` are not compared with the last exit's `lot_units_left` (a split correction would trip that comparison), so the owner has to notice.
 - Bad: a hand correction of `Lots` is not traced in the log, only in git history.
 - Bad: rewriting the previous format by hand can carry a transcription mistake into R. Open positions are re-recorded as entries with their original date, so each lot has a real entry id, and the result is checked once against a broker statement.
 
@@ -70,7 +79,8 @@ Engine tests with hand-calculated expectations:
 - two partial exits of one entry;
 - FIFO across two lots;
 - archiving any quarter leaves the evaluation unchanged;
-- a sale spanning two lots keeps `Lots` and `Positions` consistent, and a mismatch fails on read.
+- a sale spanning two lots keeps `Lots` and `Positions` consistent, and a mismatch fails on read;
+- a lot sold in two partial sales and then a sale across two lots gives each exit its own lot's entry id, and the entry costs of one lot add up across its exits.
 
 **Success measure**: those tests pass in CI, and on the owner's real log single-lot trades keep their R (a human check once the change is complete).
 
