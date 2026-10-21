@@ -271,7 +271,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      line that fails to validate is skipped with a warning. Check the portfolio's lots against it,
      and stop if they do not match.
   2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
-     its [lot](glossary.md#lot); an exit without one is skipped); simulate each proposal's plan and
+     its [lot](glossary.md#lot)); an exit without one, and an oversold lot, are not measured but are
+     reported (how many, and which lots) in the cutoff board and on the console; simulate each proposal's plan and
      compare it with the silo [benchmark](glossary.md#benchmark) and the
      [shadow portfolio](glossary.md#shadow-portfolio).
   3. `decisions:evaluate` writes `logs/decisions-evaluation.md` (the cutoff board, expectancy,

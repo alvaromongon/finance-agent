@@ -41,6 +41,28 @@ function smallSampleWarning(sizes: readonly number[], m: Messages): string[] {
   return [...m.evaluation.groupsSmallSample(MIN_SAMPLE), ""];
 }
 
+/** The board's warnings in words: one heading and its lines per kind, in the language of `m`. */
+export function boardWarnings(board: CutBoard, m: Messages = messages()): { title: string; lines: string[] }[] {
+  const t = m.evaluation;
+  const groups = board.warnings.map((w) => {
+    switch (w.kind) {
+      case "reconstruction":
+        return { title: t.reconstructionMismatch, lines: w.lines };
+      case "exitsWithoutSnapshot":
+        return { title: t.unmeasured.title, lines: [t.unmeasured.exitsWithoutSnapshot(w.count)] };
+      case "oversoldLots":
+        return { title: t.unmeasured.title, lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)) };
+    }
+  });
+  // Both unmeasured kinds sit under one heading.
+  return groups.reduce<{ title: string; lines: string[] }[]>((merged, g) => {
+    const same = merged.find((x) => x.title === g.title);
+    if (same) same.lines.push(...g.lines);
+    else merged.push({ title: g.title, lines: [...g.lines] });
+    return merged;
+  }, []);
+}
+
 function cutBoardSection(board: CutBoard, m: Messages): string[] {
   const t = m.evaluation;
   const { framework: f, trades } = board;
@@ -95,9 +117,8 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
   if (trades.withR > 0 && trades.withR < MIN_SAMPLE) {
     lines.push(...t.tradesSmallSample(MIN_SAMPLE), "");
   }
-  const warnings = board.silos.flatMap((s) => s.warnings);
-  if (warnings.length > 0) {
-    lines.push(t.reconstructionMismatch, ...warnings.map((w) => `> - ${w}`), "");
+  for (const group of boardWarnings(board, m)) {
+    lines.push(group.title, ...group.lines.map((l) => `> - ${l}`), "");
   }
   return lines;
 }

@@ -226,6 +226,13 @@ export const es: Messages = {
       `> Con menos de ${min} operaciones, la esperanza describe, no decide.`,
     ],
     reconstructionMismatch: "> [!warning] La reconstrucción de los silos no cuadra",
+    unmeasured: {
+      title: "> [!warning] Salidas y lotes sin medir",
+      exitsWithoutSnapshot: (n) =>
+        `${n} ${n === 1 ? "salida" : "salidas"} sin instantánea del lote, fuera de las operaciones cerradas.`,
+      oversoldLot: (ticker, lotId) =>
+        `${ticker}, lote ${lotId}: sus ventas suman más unidades que la compra (datos incoherentes); no se mide.`,
+    },
     stopAt: (atr, horizon) => `${atr} ATR en ${horizon}`,
     howToRead: (o) => [
       "## Cómo leerlo",

@@ -6,6 +6,7 @@
 import { createMarketDataProvider } from "./providers/factory.js";
 import { readDecisionHistory, readPortfolio, readRulesVersion } from "./vault-io.js";
 import { closeOnOrBefore, historyRangeCovering, loadClosedBars } from "./utils/forward-returns.js";
+import { boardWarnings } from "./utils/decisions-evaluation-render.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { buildEvaluationReport, evaluationSymbols, type EvaluationReport } from "./utils/decisions-evaluation.js";
 
@@ -38,6 +39,8 @@ export async function loadEvaluationReport(tag: string, now = new Date()): Promi
   const eurUsd = closeOnOrBefore(bars.get(EUR_USD_TICKER) ?? [], today)?.close ?? null;
 
   const report = buildEvaluationReport({ decisions, portfolios, bars, asOf: today, rulesVersion, eurUsd });
-  for (const w of report.board.silos.flatMap((s) => s.warnings)) console.warn(`${tag} ⚠ ${w}`);
+  for (const group of boardWarnings(report.board)) {
+    for (const line of group.lines) console.warn(`${tag} ⚠ ${line}`);
+  }
   return report;
 }

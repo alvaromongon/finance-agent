@@ -287,6 +287,37 @@ describe("measurable exits: the five R tests of spec #27", () => {
     assert.ok(Math.abs(report.board.trades.expectancy! - 1.1) < TOLERANCE);
   });
 
+  it("the run prints what the evaluation did not measure: exits without a snapshot and oversold lots", async () => {
+    // A clean lot, an oversold one (12 of 10 units sold) and a sale narrated without a snapshot.
+    const clean = await entry(100, 10, 90, "2026-06-15");
+    await exitFromLot(clean, 120, 10, "2026-08-10");
+    const over = await record({
+      type: "entry",
+      ticker: "OVR",
+      currency: "USD",
+      price: 50,
+      units: 10,
+      stop: 45,
+      date: "2026-06-15",
+      origin: "sistema",
+    });
+    await exitFromLot(over, 60, 12, "2026-08-10");
+    await exit(110, 1, "2026-08-11");
+
+    const warn = console.warn as unknown as { mock: { calls: { arguments: unknown[] }[] } };
+    const before = warn.mock.calls.length;
+    await evaluate();
+    const printed = warn.mock.calls.slice(before).map((c) => String(c.arguments[0]));
+    assert.ok(
+      printed.some((l) => l.includes("1 exit without a lot snapshot")),
+      JSON.stringify(printed),
+    );
+    assert.ok(
+      printed.some((l) => l.includes("OVR, lot ")),
+      JSON.stringify(printed),
+    );
+  });
+
   it("R2b: a lot that is only partly sold is open, not a closed trade", async () => {
     // The 5 units sold of the 10 are not a trade yet; the other 5 close it.
     const lot = await entry(100, 10, 90, "2026-06-15");

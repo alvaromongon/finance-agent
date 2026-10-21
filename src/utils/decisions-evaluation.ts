@@ -253,33 +253,71 @@ const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${ex
  * Closed trades from the exits alone (ADR-0015). A trade is one lot, and counts once: its R is
  * Σ(unitsᵢ / entry units) × Rᵢ over the exits of the lot, and it is closed when the exits have
  * consumed all the lot's units; a lot only partly sold is open. An exit without a lot snapshot is
- * not a measurable trade and is skipped: there is no legacy path through `related_id`.
- * Trades come in the order their lots close.
+ * not a measurable trade: there is no legacy path through `related_id`. It is left out here and
+ * reported by `measureTrades`, as is an oversold lot. Trades come in the order their lots close.
  */
 export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
-  const lots = new Map<string, { exits: Decision[]; last: number }>();
+  return measureTrades(decisions).trades;
+}
+
+/** What the measurement left out, so the report can say it instead of dropping it silently. */
+export interface UnmeasuredLots {
+  /** Exits without a lot snapshot: not a measurable trade. */
+  exitsWithoutSnapshot: number;
+  /** Lots whose sales add up to more than their entry units (plus the rounding slack). */
+  oversold: OversoldLot[];
+}
+
+export interface OversoldLot {
+  currency: Currency;
+  ticker: string;
+  lotId: string;
+}
+
+export interface MeasuredTrades {
+  trades: ClosedTrade[];
+  unmeasured: UnmeasuredLots;
+}
+
+/**
+ * `closedTrades` plus what it left out, so the report can say it: the exits without a lot snapshot
+ * (counted) and the oversold lots (named). Everything else is measured or, while partly sold, open.
+ */
+export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
+  const unmeasured: UnmeasuredLots = { exitsWithoutSnapshot: 0, oversold: [] };
+  const lots = new Map<string, { exits: LotExit[]; last: number }>();
   decisions.forEach((d, index) => {
-    if (d.type !== "exit" || !hasLotSnapshot(d)) return;
+    if (d.type !== "exit") return;
+    if (!hasLotSnapshot(d)) {
+      unmeasured.exitsWithoutSnapshot++;
+      return;
+    }
     const lot = lots.get(lotKey(d)) ?? { exits: [], last: index };
     lot.exits.push(d);
     lot.last = index;
     lots.set(lotKey(d), lot);
   });
 
-  return [...lots.values()]
+  const trades = [...lots.values()]
     .filter(({ exits }) => {
       const sold = exits.reduce((sum, e) => sum + exitUnits(e), 0);
       const units = exits[0].entry_units!;
       const slack = roundingSlack(exits);
-      // Closed when fully consumed. Selling more than the lot is inconsistent data (a wrong
-      // entry_units, or exits of another lot under the same entry id): not measured, not inflated.
-      return sold >= units - slack && sold <= units + slack;
+      // Selling more than the lot is inconsistent data (a wrong entry_units, or exits of another
+      // lot under the same entry id): not measured, not inflated, and reported.
+      if (sold > units + slack) {
+        const { currency, ticker, related_id } = exits[0];
+        unmeasured.oversold.push({ currency, ticker, lotId: related_id });
+        return false;
+      }
+      // Closed when fully consumed.
+      return sold >= units - slack;
     })
     .sort((a, b) => a.last - b.last)
     .map(({ exits }) => {
       const first = exits[0];
       return {
-        ticker: first.ticker!,
+        ticker: first.ticker,
         currency: first.currency,
         entryDate: first.entry_date!,
         exitDate: exits.map((e) => e.date).sort()[exits.length - 1],
@@ -292,10 +330,15 @@ export function closedTrades(decisions: readonly Decision[]): ClosedTrade[] {
         exits,
       };
     });
+  return { trades, unmeasured };
 }
 
+/** An exit that names its lot (ticker and entry id), so it can be reported by name. */
+type LotExit = Decision & { ticker: string; related_id: string };
+
 /** The exit carries what a measurement needs of its lot. */
-const hasLotSnapshot = (exit: Decision): boolean =>
+const hasLotSnapshot = (exit: Decision): exit is LotExit =>
+  !!exit.ticker &&
   !!exit.related_id &&
   exit.entry_price != null &&
   exit.entry_units != null &&
@@ -550,6 +593,15 @@ function compareVersions(a: string, b: string): number {
 
 // ─── Cutoff criterion table ──────────────────────────────────────────────────
 
+/**
+ * One warning of the board, as data: the renderer puts it into words (in its language), and the
+ * run prints the same words to the console. The silo reconstruction lines are already text.
+ */
+export type BoardWarning =
+  | { kind: "reconstruction"; lines: string[] }
+  | { kind: "exitsWithoutSnapshot"; count: number }
+  | { kind: "oversoldLots"; lots: OversoldLot[] };
+
 export interface CutBoard {
   /** Rules version in force (strategies/base.md). */
   rulesVersion: string;
@@ -562,6 +614,8 @@ export interface CutBoard {
   /** System entries under C v1 still open. */
   open: number;
   silos: SiloPerformance[];
+  /** What the report flags, the only warnings channel: silo reconstruction and unmeasured exits and lots. */
+  warnings: BoardWarning[];
   /** The two real portfolios and the two shadows, in EUR at the day's rate. */
   totalEur: { real: number; shadow: number } | null;
   framework: EvaluationFramework;
@@ -594,7 +648,11 @@ export interface EvaluationInput {
  * rehearsal from the first decision in the log: so the reconstruction is
  * tested before it counts, and does not start on counter day never seen before.
  */
-export function buildCutBoard(input: EvaluationInput, trades = closedTrades(input.decisions)): CutBoard {
+export function buildCutBoard(
+  input: EvaluationInput,
+  measured: MeasuredTrades = measureTrades(input.decisions),
+): CutBoard {
+  const { trades, unmeasured } = measured;
   const framework = input.framework ?? configuredFramework();
   const start = counterStart(input.decisions);
   const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
@@ -621,6 +679,14 @@ export function buildCutBoard(input: EvaluationInput, trades = closedTrades(inpu
       ? { real: eur.real + usd.real / rate, shadow: eur.shadow + usd.shadow / rate }
       : null;
 
+  const siloLines = silos.flatMap((s) => s.warnings);
+  const warnings: BoardWarning[] = [];
+  if (siloLines.length > 0) warnings.push({ kind: "reconstruction", lines: siloLines });
+  if (unmeasured.exitsWithoutSnapshot > 0) {
+    warnings.push({ kind: "exitsWithoutSnapshot", count: unmeasured.exitsWithoutSnapshot });
+  }
+  if (unmeasured.oversold.length > 0) warnings.push({ kind: "oversoldLots", lots: unmeasured.oversold });
+
   return {
     rulesVersion: input.rulesVersion,
     counterStart: start,
@@ -628,6 +694,7 @@ export function buildCutBoard(input: EvaluationInput, trades = closedTrades(inpu
     trades: tradeStats(trades.filter((t) => t.counts)),
     open: openEntries(input.decisions).filter((d) => d.origin === "sistema" && isCv1(d.rules_version)).length,
     silos,
+    warnings,
     totalEur,
     framework,
   };
@@ -644,15 +711,15 @@ export interface EvaluationReport {
 }
 
 export function buildEvaluationReport(input: EvaluationInput): EvaluationReport {
-  const trades = closedTrades(input.decisions);
+  const measured = measureTrades(input.decisions);
   const dates = input.decisions.map((d) => d.date).sort();
   return {
     asOf: input.asOf,
     decisions: input.decisions.length,
     span: dates.length > 0 ? [dates[0], dates[dates.length - 1]] : null,
-    board: buildCutBoard(input, trades),
+    board: buildCutBoard(input, measured),
     evaluations: evaluateDecisions(input.decisions, input.bars, input.framework ?? configuredFramework()),
-    trades,
+    trades: measured.trades,
   };
 }
 
