@@ -38,6 +38,7 @@ const snapshot = (currency: Currency, cash: number, positions: Position[] = []):
   currency,
   cash,
   positions,
+  lots: [],
   syncedAt: "2026-09-10",
 });
 

@@ -6,6 +6,7 @@
 import { createMarketDataProvider } from "./providers/factory.js";
 import { readDecisionHistory, readPortfolio, readRulesVersion } from "./vault-io.js";
 import { closeOnOrBefore, historyRangeCovering, loadClosedBars } from "./utils/forward-returns.js";
+import { assertLotsMatch } from "./utils/lots-check.js";
 import { buildEvaluationReport, evaluationSymbols, type EvaluationReport } from "./utils/decisions-evaluation.js";
 
 // Same pair as the Monday Briefing: dollars per euro.
@@ -22,6 +23,9 @@ export async function loadEvaluationReport(tag: string, now = new Date()): Promi
     readRulesVersion(),
   ]);
   const portfolios = { EUR: eur, USD: usd };
+  // A Volume that is not the sum of its lots, or a lot without an entry in the log, would give wrong R.
+  assertLotsMatch(eur, decisions);
+  assertLotsMatch(usd, decisions);
 
   const earliest = decisions.map((d) => d.date).sort()[0] ?? today;
   const range = historyRangeCovering(earliest, today);

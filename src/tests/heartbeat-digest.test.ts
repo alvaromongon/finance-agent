@@ -54,7 +54,7 @@ const firstArmed = Array.from({ length: 16 }, (_, i) => base.slice(0, run.length
 )!;
 const { notices } = await scanSetups({
   watchlist: [{ ticker: "BO", name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
-  portfolio: { currency: "USD", cash: 1000, positions: [], syncedAt: "2026-09-24T00:00:00Z" },
+  portfolio: { currency: "USD", cash: 1000, positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
   provider: { getHistorical: async () => firstArmed },
   date: "2026-09-24",
   rulesVersion: "0.7",
@@ -71,6 +71,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   syncedAt: "2026-09-02T14:10:00Z",
   minAtr: 2,
   breaches: [],
+  lotsWarnings: [],
   tightStops: [],
   armed: [],
   escalated: [],

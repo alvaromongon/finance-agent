@@ -17,6 +17,7 @@ import {
   isBlockedLog,
   isPositionPlaceholder,
   parseCash,
+  parseLots,
   parseTableRows,
   parseTotalCash,
   parsePositions,
@@ -134,6 +135,7 @@ export async function readPortfolio(currency: Currency): Promise<PortfolioSnapsh
     cash: parseCash(raw, currency),
     ...(totalCash != null ? { totalCash } : {}),
     positions: parsePositions(raw, currency),
+    lots: parseLots(raw, currency),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
 }

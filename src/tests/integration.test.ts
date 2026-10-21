@@ -37,12 +37,13 @@ import type {
 } from "../types.js";
 import type { TicketValidation } from "../risk.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { lotId, lotsSection } from "./fixtures/lots.js";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 /** portfolio.md with EUR balance, one EUR position and an empty USD balance. */
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-06-27"
 ---
 
@@ -59,6 +60,7 @@ last_manual_sync: "2026-06-27"
 | TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |
 | — | — | — | — | — | — |
 
+${lotsSection("EUR", [{ ticker: "TEST.EU", units: 10, price: 45, stop: 42 }])}
 ## USD — Cash
 
 | Item | Value |
@@ -70,7 +72,8 @@ last_manual_sync: "2026-06-27"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
-`;
+
+${lotsSection("USD")}`;
 
 /** watchlist.md with one EUR asset (in buy range) and one USD asset. */
 const WATCHLIST_MD = `---
@@ -225,12 +228,49 @@ describe("Integration — engine", () => {
 
   describe("vault-io — input format v1", () => {
     it("readPortfolio rejects a portfolio without schema_version", async () => {
-      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace("schema_version: 1\n", ""), "utf8");
+      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace("schema_version: 2\n", ""), "utf8");
       try {
         await assert.rejects(readPortfolio("EUR"), /portfolio\.md.*schema_version/);
       } finally {
         await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
       }
+    });
+
+    it("readPortfolio rejects a v1 portfolio, naming the file and the version it reads", async () => {
+      await writeFile(
+        join(tempDir, "portfolio.md"),
+        PORTFOLIO_MD.replace("schema_version: 2", "schema_version: 1"),
+        "utf8",
+      );
+      try {
+        await assert.rejects(readPortfolio("EUR"), /portfolio\.md.*schema_version 1.*version 2/);
+      } finally {
+        await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
+      }
+    });
+
+    it("readPortfolio rejects a v2 portfolio without the Lots section of the currency", async () => {
+      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes"), "utf8");
+      try {
+        await assert.rejects(readPortfolio("USD"), /portfolio\.md.*## USD — Lots/);
+        // Each currency is checked on its own, as Cash and Positions are.
+        assert.equal((await readPortfolio("EUR")).currency, "EUR");
+      } finally {
+        await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
+      }
+    });
+
+    it("readPortfolio returns the open lots of the silo next to its positions", async () => {
+      const eur = await readPortfolio("EUR");
+      assert.deepEqual(
+        eur.lots.map((l) => [l.entryId, l.units, l.entryPrice, l.initialStop]),
+        [[lotId("TEST.EU"), 10, 45, 42]],
+      );
+      assert.deepEqual((await readPortfolio("USD")).lots, []);
+    });
+
+    it("every other vault file stays at schema_version 1, including the ones the engine writes", async () => {
+      assert.equal((await readWatchlist("EUR")).length, 1, "watchlist.md v1 is read");
     });
 
     it("readPortfolio rejects a section with the previous heading instead of reading the silo as empty", async () => {
@@ -300,6 +340,16 @@ describe("Integration — engine", () => {
       await writeFile(join(tempDir, "portfolio.md"), broken, "utf8");
       await assert.rejects(updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]])), /Avg price/);
       assert.equal(await readFile(join(tempDir, "portfolio.md"), "utf8"), broken);
+    });
+
+    it("keeps rewriting only Current price and P/L: the Lots table is left as it was", async () => {
+      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.equal(
+        updated.slice(updated.indexOf("## EUR — Lots")),
+        PORTFOLIO_MD.slice(PORTFOLIO_MD.indexOf("## EUR — Lots")),
+      );
+      assert.match(updated, /^schema_version: 2$/m);
     });
 
     it("updates Current price and P/L in portfolio.md", async () => {

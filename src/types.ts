@@ -1,4 +1,5 @@
 // Shared types of the Finance Agent.
+import type { DecisionOrigin } from "./decisions.js";
 
 export type Currency = "EUR" | "USD";
 export type Horizon = "short" | "medium";
@@ -57,6 +58,30 @@ export interface Position {
   stopLoss: number | null;
 }
 
+/**
+ * The open units of one entry (ADR-0015), one row of the `Lots` table of portfolio.md. The table
+ * has no ticker: the lot's entry in the decision log says which position it belongs to.
+ */
+export interface Lot {
+  /** Id of the `entry` decision that opened the lot. */
+  entryId: string;
+  /** Entry date, YYYY-MM-DD. */
+  date: string;
+  /** Units still open. */
+  units: number;
+  /** Units the entry bought. */
+  entryUnits: number;
+  entryPrice: number;
+  /** Stop at entry, the base of R; `null` if the entry had none. */
+  initialStop: number | null;
+  /** Entry costs in the silo currency; `null` if none were recorded. */
+  entryCosts: number | null;
+  origin: DecisionOrigin;
+  rulesVersion: string;
+  /** Rules the entry broke; empty for none. */
+  rulesViolations: string[];
+}
+
 /** Portfolio snapshot per currency. */
 export interface PortfolioSnapshot {
   currency: Currency;
@@ -69,6 +94,8 @@ export interface PortfolioSnapshot {
    */
   totalCash?: number;
   positions: Position[];
+  /** Open lots of the silo; `Volume` of each position is the sum of its lots' units. */
+  lots: Lot[];
   syncedAt: string; // ISO timestamp
 }
 

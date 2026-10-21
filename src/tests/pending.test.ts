@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { lotsSection } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -31,7 +32,7 @@ watchlist:
 `;
 
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-07-10"
 ---
 
@@ -46,7 +47,8 @@ last_manual_sync: "2026-07-10"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
-`;
+
+${lotsSection("USD")}`;
 
 const STRATEGY_MD = `---
 title: Estrategia Base
@@ -554,7 +556,14 @@ describe("pending.ts", () => {
         "| — | — | — | — | — | — |",
         "| ORPHAN | 4 | 100.00 | 105.00 | 20.00 | 95.00 |",
       );
-      await writeFile(join(vaultDir, "portfolio.md"), orphanPortfolio, "utf8");
+      await writeFile(
+        join(vaultDir, "portfolio.md"),
+        orphanPortfolio.replace(
+          lotsSection("USD"),
+          lotsSection("USD", [{ ticker: "ORPHAN", units: 4, price: 100, stop: 95 }]),
+        ),
+        "utf8",
+      );
 
       const rec = { ...validRecommendation(), ticker: "ORPHAN", action: "HOLD" };
 

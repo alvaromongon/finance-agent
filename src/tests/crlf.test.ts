@@ -17,6 +17,7 @@ import {
   sectionBody,
   parseCash,
   parsePositions,
+  parseLots,
   parseTableRows,
   extractRetireList,
   extractPlanSummary,
@@ -24,7 +25,7 @@ import {
 } from "../utils/vault-parser.js";
 
 const PORTFOLIO_LF = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: 2026-09-12T12:05:00Z
 ---
 
@@ -51,6 +52,12 @@ last_manual_sync: 2026-09-12T12:05:00Z
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | HAL | 10 | 37.00 | 35,80 | -12,00 | 34.00 |
+
+## USD — Lots
+
+| Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 20260901-hal-entry-x | 2026-09-01 | 10 | 10 | 37.00 | 34.00 | — | sistema | 1.0 | — |
 `;
 
 const WATCHLIST_LF = `---
@@ -129,6 +136,14 @@ describe("vault parsers with CRLF", () => {
     assert.equal(hal.volume, 10);
     assert.equal(hal.avgPrice, 37);
     assert.equal(hal.stopLoss, 34);
+  });
+
+  it("parseLots reads the lots, with `:---:` separator rows", () => {
+    assert.deepEqual(parseLots(crlf(PORTFOLIO_LF), "EUR"), []);
+    const [lot] = parseLots(crlf(PORTFOLIO_LF), "USD");
+    assert.equal(lot.entryId, "20260901-hal-entry-x");
+    assert.equal(lot.units, 10);
+    assert.equal(lot.initialStop, 34);
   });
 
   it("extractRetireList reads the removal list", () => {

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { HistoricalBar } from "../providers/types.js";
 import { extend, uptrend } from "./fixtures/setup-bars.js";
+import { lotsSection } from "./fixtures/lots.js";
 
 const UNIVERSE_MD = `---
 schema_version: 1
@@ -66,7 +67,7 @@ watchlist:
 `;
 
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-07-10"
 ---
 
@@ -82,6 +83,7 @@ last_manual_sync: "2026-07-10"
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
 
+${lotsSection("EUR")}
 ## USD — Cash
 
 | Item | Value |
@@ -93,7 +95,8 @@ last_manual_sync: "2026-07-10"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
-`;
+
+${lotsSection("USD")}`;
 
 // AAPL recently analyzed as `not_interesting` with a future nextReview → excluded.
 const SCREENING_LOG_MD = `---

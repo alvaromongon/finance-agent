@@ -11,12 +11,17 @@ import {
   isBlockedLog,
   assertSchemaVersion,
   assertPortfolioSections,
+  parseLots,
 } from "../utils/vault-parser.js";
 
 // ─── Test Markdown ────────────────────────────────────────────────────────────
 
+const LOTS_HEADER =
+  "| Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |\n" +
+  "|---|---|---|---|---|---|---|---|---|---|";
+
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: 2026-06-27
 ---
 
@@ -36,6 +41,13 @@ last_manual_sync: 2026-06-27
 | IBE.MC | 10 | 12,50 | 13,00 | 5,00 | — |
 | — | — | — | — | — | — |
 
+## EUR — Lots
+
+${LOTS_HEADER}
+| def-1 | 2026-05-04 | 1 | 1 | 46,80 | 41,50 | 1,50 | sistema | 1.0 | — |
+| ibe-1 | 2026-06-01 | 4 | 6 | 12,50 | — | — | propietario | 1.0 | no_stop, overrode_block |
+| ibe-2 | 2026-06-15 | 6 | 6 | 12,50 | 11,00 | — | sistema | 1.1 | — |
+
 ## USD — Cash
 
 | Item | Value |
@@ -47,6 +59,11 @@ last_manual_sync: 2026-06-27
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | XOM | 5 | 130.00 | 138.00 | 40.00 | 120.00 |
+
+## USD — Lots
+
+${LOTS_HEADER}
+| xom-1 | 2026-04-01 | 5 | 5 | 130.00 | 120.00 | 2.00 | sistema | 1.0 | — |
 `;
 
 const WATCHLIST_MD = `# Watchlist
@@ -295,7 +312,7 @@ describe("assertPortfolioSections", () => {
   });
 
   it("accepts Available cash without a number (TBD): it is 0, but the row exists", () => {
-    const md = `## EUR — Cash\n\n| Item | Value |\n|---|---|\n| Available cash | TBD |\n\n## EUR — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n`;
+    const md = `## EUR — Cash\n\n| Item | Value |\n|---|---|\n| Available cash | TBD |\n\n## EUR — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n\n## EUR — Lots\n`;
     assert.doesNotThrow(() => {
       assertPortfolioSections(md, "EUR");
     });
@@ -315,6 +332,20 @@ describe("assertPortfolioSections", () => {
     }, /portfolio\.md.*## USD — Cash/);
   });
 
+  it("accepts a silo whose Lots section is empty", () => {
+    const md = PORTFOLIO_MD.replace(/^\| xom-1 .*\n/m, "");
+    assert.doesNotThrow(() => {
+      assertPortfolioSections(md, "USD");
+    });
+  });
+
+  it("rejects a v2 silo without a Lots section", () => {
+    const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes");
+    assert.throws(() => {
+      assertPortfolioSections(md, "USD");
+    }, /portfolio\.md.*## USD — Lots/);
+  });
+
   it("rejects a Cash section without the Available cash row", () => {
     const md = PORTFOLIO_MD.replace("| Available cash | 3,24 € |", "| Saldo disponible | 3,24 € |");
     assert.throws(() => {
@@ -326,10 +357,18 @@ describe("assertPortfolioSections", () => {
 // ─── assertSchemaVersion ──────────────────────────────────────────────────────
 
 describe("assertSchemaVersion", () => {
-  it("accepts schema_version: 1", () => {
+  it("accepts schema_version: 2 in portfolio.md", () => {
     assert.doesNotThrow(() => {
       assertSchemaVersion(PORTFOLIO_MD, "portfolio.md");
     });
+  });
+
+  it("accepts schema_version: 1 in every other vault file", () => {
+    for (const file of ["watchlist.md", "screening-log.md", "screening-universe.md", "tesis/tesis-x.md"]) {
+      assert.doesNotThrow(() => {
+        assertSchemaVersion("---\nschema_version: 1\n---\n", file);
+      }, file);
+    }
   });
 
   it("rejects a file without schema_version, naming the file", () => {
@@ -341,9 +380,97 @@ describe("assertSchemaVersion", () => {
     }, /watchlist\.md.*schema_version/);
   });
 
-  it("rejects an unknown version", () => {
+  it("rejects a v1 portfolio.md, naming the file and the version it expects", () => {
     assert.throws(() => {
-      assertSchemaVersion("---\nschema_version: 2\n---\n", "portfolio.md");
-    }, /portfolio\.md.*schema_version 2.*1/);
+      assertSchemaVersion("---\nschema_version: 1\n---\n", "portfolio.md");
+    }, /portfolio\.md.*schema_version 1.*version 2/);
+  });
+
+  it("rejects a v2 file other than portfolio.md: the version is per file", () => {
+    for (const file of ["watchlist.md", "screening-log.md", "tesis/tesis-x.md"]) {
+      assert.throws(() => {
+        assertSchemaVersion("---\nschema_version: 2\n---\n", file);
+      }, /schema_version 2.*version 1/);
+    }
+  });
+
+  it("a portfolio.md without schema_version says it expects version 2", () => {
+    assert.throws(() => {
+      assertSchemaVersion("---\nid: x\n---\n", "portfolio.md");
+    }, /portfolio\.md.*schema_version missing.*version 2/);
+  });
+});
+
+// ─── parseLots ────────────────────────────────────────────────────────────────
+
+describe("parseLots", () => {
+  it("parses the lots of a silo into typed fields", () => {
+    assert.deepEqual(parseLots(PORTFOLIO_MD, "EUR")[0], {
+      entryId: "def-1",
+      date: "2026-05-04",
+      units: 1,
+      entryUnits: 1,
+      entryPrice: 46.8,
+      initialStop: 41.5,
+      entryCosts: 1.5,
+      origin: "sistema",
+      rulesVersion: "1.0",
+      rulesViolations: [],
+    });
+  });
+
+  it("reads — as no stop, no costs and no violations, and a comma list as several violations", () => {
+    const lot = parseLots(PORTFOLIO_MD, "EUR")[1];
+    assert.equal(lot.initialStop, null);
+    assert.equal(lot.entryCosts, null);
+    assert.deepEqual(lot.rulesViolations, ["no_stop", "overrode_block"]);
+  });
+
+  it("reads only the lots of the asked silo", () => {
+    assert.deepEqual(
+      parseLots(PORTFOLIO_MD, "EUR").map((l) => l.entryId),
+      ["def-1", "ibe-1", "ibe-2"],
+    );
+    assert.deepEqual(
+      parseLots(PORTFOLIO_MD, "USD").map((l) => l.entryId),
+      ["xom-1"],
+    );
+  });
+
+  it("reads the columns by their header, in any order", () => {
+    const swapped = PORTFOLIO_MD.replaceAll(
+      "| Entry id | Date | Units | Entry units |",
+      "| Date | Entry id | Entry units | Units |",
+    ).replace("| xom-1 | 2026-04-01 | 5 | 5 |", "| 2026-04-01 | xom-1 | 8 | 5 |");
+    const lot = parseLots(swapped, "USD").find((l) => l.entryId === "xom-1");
+    assert.deepEqual([lot?.units, lot?.entryUnits], [5, 8]);
+  });
+
+  it("skips placeholder rows and rows whose Units is not a number", () => {
+    const md = PORTFOLIO_MD.replace(
+      "| xom-1 |",
+      "| — | — | — | — | — | — | — | — | — | — |\n| xom-0 | 2026-03-01 | TBD | 5 | 1 | 1 | — | sistema | 1.0 | — |\n| xom-1 |",
+    );
+    assert.deepEqual(
+      parseLots(md, "USD").map((l) => l.entryId),
+      ["xom-1"],
+    );
+  });
+
+  it("reads en dash headings, CRLF and `:---:` separator rows as the rest of the vault does", () => {
+    const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD – Lots").replace(
+      /\|---\|---\|---\|---\|---\|---\|---\|---\|---\|---\|/g,
+      "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
+    );
+    assert.equal(parseLots(md.replace(/\n/g, "\r\n"), "USD").length, 1);
+  });
+
+  it("throws, naming the section and the column, if a required column is missing", () => {
+    const md = PORTFOLIO_MD.replaceAll("| Initial stop |", "| Stop |");
+    assert.throws(() => parseLots(md, "USD"), /## USD — Lots.*Initial stop/);
+  });
+
+  it("returns an empty array when the section has no table", () => {
+    assert.deepEqual(parseLots("## USD — Lots\n\nnothing\n", "USD"), []);
   });
 });

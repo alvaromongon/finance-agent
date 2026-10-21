@@ -16,6 +16,7 @@ const emptyPortfolio = (): PortfolioSnapshot => ({
   currency: "EUR",
   cash: 1000,
   positions: [],
+  lots: [],
   syncedAt: "2026-01-01T00:00:00Z",
 });
 
@@ -108,6 +109,7 @@ describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
         stopLoss,
       } satisfies Position,
     ],
+    lots: [],
     syncedAt: "2026-06-27T17:00:00Z",
   });
 
@@ -250,6 +252,7 @@ describe("evaluateSignals — portfolio ∪ watchlist union", () => {
         { ticker: "A", currency: "EUR", volume: 1, avgPrice: 10, currentPrice: 10, pl: 0, stopLoss: 9 },
         { ticker: "B", currency: "EUR", volume: 1, avgPrice: 20, currentPrice: 20, pl: 0, stopLoss: 19 },
       ],
+      lots: [],
       syncedAt: "2026-01-01T00:00:00Z",
     };
     const prices = new Map([

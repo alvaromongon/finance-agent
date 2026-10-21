@@ -39,6 +39,7 @@ const portfolio = (positions: PortfolioSnapshot["positions"] = []): PortfolioSna
   currency: "USD",
   cash: 1000,
   positions,
+  lots: [],
   syncedAt: "2026-09-24T00:00:00Z",
 });
 const held = {

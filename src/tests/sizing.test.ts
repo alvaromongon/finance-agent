@@ -41,6 +41,7 @@ describe("siloValue", () => {
   const portfolio: PortfolioSnapshot = {
     currency: "USD",
     cash: 500,
+    lots: [],
     syncedAt: "2026-09-14",
     positions: [
       { ticker: "ADBE", currency: "USD", volume: 2, avgPrice: 480, currentPrice: 500, pl: 40, stopLoss: 450 },
