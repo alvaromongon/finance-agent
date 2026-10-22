@@ -10,6 +10,7 @@ import type { HistoricalBar } from "../providers/types.js";
 import { CONVICTIONS, CURRENCIES } from "../types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { suggestStop } from "./atr-stop.js";
+import { splitRatio } from "./lots-check.js";
 import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
 import { siloPerformance, type SiloPerformance } from "./silo-performance.js";
 
@@ -247,6 +248,9 @@ const exitUnits = (exit: Decision): number => exit.units ?? exit.amount! / exit.
  */
 const exitSlack = (exit: Decision): number => (exit.units != null ? 1e-8 : 0.01 / exit.price! + 1e-9);
 
+/** Tolerance of the units of a snapshot when it is compared with another by a split ratio: float noise. */
+const SPLIT_UNITS_TOLERANCE = 1e-8;
+
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
 
@@ -372,31 +376,51 @@ const byDate = (a: Decision, b: Decision): number => a.date.localeCompare(b.date
  * lowest, which is the order they were written in whatever their dates. They must agree on the snapshot of the lot, must not
  * sell more than it had, and each must take `lot_units_left` down by the units it sold (within cent
  * rounding); then the lot is closed when its last exit left 0 and open otherwise.
+ *
+ * A split corrected in `Lots` between two exits scales the snapshot of the later ones: `entry_units` × r,
+ * `entry_price` and `stop_initial` ÷ r, by one common ratio (the rule of `lots-check`). Exits whose
+ * snapshot differs from the first only by such a ratio still agree; their units and `lot_units_left`
+ * are rescaled by 1 / r to the scale of the first before the checks. Any other difference disagrees.
  */
 function judgeLot(written: readonly LotExit[]): LotVerdict {
-  const exits = [...written].sort((a, b) => b.lot_units_left - a.lot_units_left);
-  const first = exits[0];
+  const reference = written[0];
+  const shape = (e: Decision) => ({ units: e.entry_units!, price: e.entry_price!, stop: e.stop_initial });
   const violations = (e: Decision) => [...(e.rule_violations ?? [])].sort().join(",");
+  // The scale of each exit's units against the reference's: 1 for an identical snapshot, r for a split of it.
+  const scaleOf = (e: LotExit): number | null =>
+    e.entry_price === reference.entry_price &&
+    e.entry_units === reference.entry_units &&
+    e.stop_initial === reference.stop_initial
+      ? 1
+      : splitRatio(shape(e), shape(reference), SPLIT_UNITS_TOLERANCE);
   const agrees = (e: Decision) =>
-    e.entry_price === first.entry_price &&
-    e.entry_units === first.entry_units &&
-    e.stop_initial === first.stop_initial &&
-    e.entry_date === first.entry_date &&
-    e.entry_origin === first.entry_origin &&
-    e.entry_rules_version === first.entry_rules_version &&
-    violations(e) === violations(first);
-  if (!exits.every(agrees)) return "snapshot";
+    e.entry_date === reference.entry_date &&
+    e.entry_origin === reference.entry_origin &&
+    e.entry_rules_version === reference.entry_rules_version &&
+    violations(e) === violations(reference);
+
+  const scaled: { units: number; left: number; slack: number }[] = [];
+  for (const e of written) {
+    const r = scaleOf(e);
+    if (r === null || !agrees(e)) return "snapshot";
+    scaled.push({
+      units: exitUnits(e) / r,
+      left: e.lot_units_left === 0 ? 0 : e.lot_units_left / r,
+      slack: exitSlack(e) / r,
+    });
+  }
+  const exits = scaled.sort((a, b) => b.left - a.left);
 
   // Selling more than the lot is inconsistent data (a wrong entry_units, or exits of another lot):
   // not measured, not inflated, and reported.
-  const sold = exits.reduce((sum, e) => sum + exitUnits(e), 0);
-  const slack = exits.reduce((sum, e) => sum + exitSlack(e), 0);
-  if (sold > first.entry_units! + slack) return "oversold";
+  const sold = exits.reduce((sum, e) => sum + e.units, 0);
+  const slack = exits.reduce((sum, e) => sum + e.slack, 0);
+  if (sold > reference.entry_units! + slack) return "oversold";
 
-  let before = first.entry_units!;
+  let before = reference.entry_units!;
   for (const e of exits) {
-    if (Math.abs(before - e.lot_units_left - exitUnits(e)) > exitSlack(e)) return "units_left";
-    before = e.lot_units_left;
+    if (Math.abs(before - e.left - e.units) > e.slack) return "units_left";
+    before = e.left;
   }
   return before === 0 ? "closed" : "open";
 }

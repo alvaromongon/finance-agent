@@ -177,23 +177,38 @@ export function assertLotsMatch(portfolio: PortfolioSnapshot, decisions: readonl
   }
 }
 
+/** The three columns of a lot (or of an exit's snapshot of it) that a stock split scales. */
+export interface SplitShape {
+  units: number;
+  price: number;
+  stop: number | null | undefined;
+}
+
 /**
  * A stock split corrects a lot by hand: `Entry units` × r, `Entry price` ÷ r and `Initial stop` ÷ r, for
- * one ratio r > 0 (B2 of PR #56). True when the three columns differ from the entry in the log by one
- * common r (within the tolerances) and are not simply equal to it; anything else, a wrong ratio, only
- * the units or only the price scaled, is a difference the caller reports. r comes from the units; the
- * price and stop must follow it. An entry known only by its amount has imprecise units, so its price
- * tolerance grows by that relative error.
+ * one ratio r > 0 (B2 of PR #56). Returns r when `scaled` differs from `original` by one such common r
+ * (within the tolerances) and is not simply equal to it; null for anything else, a wrong ratio, only
+ * the units or only the price scaled. r comes from the units; the price and stop must follow it.
+ * `unitsTolerance` is the imprecision of the units of `original`: an entry known only by its amount
+ * has imprecise units, so its price tolerance grows by that relative error.
  */
-function isSplitOf(lot: Lot, entry: Decision, logUnits: number | null, unitsTolerance: number): boolean {
-  if (logUnits === null || !(logUnits > 0) || entry.price == null || !(lot.entryUnits > 0)) return false;
-  if (Math.abs(lot.entryUnits - logUnits) <= unitsTolerance) return false;
-  const r = lot.entryUnits / logUnits;
-  const relative = unitsTolerance / logUnits;
-  const scaled = (lotValue: number | null, logValue: number | null | undefined): boolean => {
-    if (lotValue === null || logValue == null) return lotValue === null && logValue == null;
-    const expected = logValue / r;
-    return Math.abs(lotValue - expected) <= PRICE_TOLERANCE + expected * relative;
+export function splitRatio(scaled: SplitShape, original: SplitShape, unitsTolerance: number): number | null {
+  if (!(original.units > 0) || !(scaled.units > 0)) return null;
+  if (Math.abs(scaled.units - original.units) <= unitsTolerance) return null;
+  const r = scaled.units / original.units;
+  const relative = unitsTolerance / original.units;
+  const follows = (scaledValue: number | null | undefined, originalValue: number | null | undefined): boolean => {
+    if (scaledValue == null || originalValue == null) return scaledValue == null && originalValue == null;
+    const expected = originalValue / r;
+    return Math.abs(scaledValue - expected) <= PRICE_TOLERANCE + expected * relative;
   };
-  return scaled(lot.entryPrice, entry.price) && scaled(lot.initialStop, entry.stop_initial);
+  return follows(scaled.price, original.price) && follows(scaled.stop, original.stop) ? r : null;
+}
+
+function isSplitOf(lot: Lot, entry: Decision, logUnits: number | null, unitsTolerance: number): boolean {
+  if (logUnits === null || entry.price == null) return false;
+  const lotShape = { units: lot.entryUnits, price: lot.entryPrice, stop: lot.initialStop };
+  return (
+    splitRatio(lotShape, { units: logUnits, price: entry.price, stop: entry.stop_initial }, unitsTolerance) !== null
+  );
 }

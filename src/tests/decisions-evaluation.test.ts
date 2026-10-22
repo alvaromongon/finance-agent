@@ -640,6 +640,83 @@ describe("closedTrades", () => {
       }
     });
 
+    it("a split between exits (one common ratio on units, price and stop) is not a disagreement; R is the unsplit trade's", () => {
+      // 5 of 10 sold at 120 (+2R); a 2:1 split corrects the lot to 20 units at 50 with the stop at 45;
+      // the remaining 10 units go at 60 (+2R): the trade is +2R, as if it had never split.
+      const measured = measureTrades([
+        lotExit({ date: "2026-09-10", units: 5, amount: 600, lot_units_left: 5 }),
+        lotExit({
+          date: "2026-09-17",
+          units: 10,
+          price: 60,
+          amount: 600,
+          lot_units_left: 0,
+          entry_units: 20,
+          entry_price: 50,
+          stop_initial: 45,
+        }),
+      ]);
+      assert.deepEqual(measured.unmeasured.inconsistent, []);
+      assert.equal(measured.trades.length, 1);
+      assertClose(measured.trades[0].rNet, 2);
+    });
+
+    it("a split between exits that leaves the lot partly sold keeps the exits in the order they were written", () => {
+      // 5 of 10 sold (5 left); split 2:1 (10 left of 20 → the lot has 10 units); then 4 more (6 left).
+      const measured = measureTrades([
+        lotExit({ date: "2026-09-10", units: 5, amount: 600, lot_units_left: 5 }),
+        lotExit({
+          date: "2026-09-17",
+          units: 4,
+          price: 60,
+          amount: 240,
+          lot_units_left: 6,
+          entry_units: 20,
+          entry_price: 50,
+          stop_initial: 45,
+        }),
+        lotExit({
+          date: "2026-09-18",
+          units: 6,
+          price: 60,
+          amount: 360,
+          lot_units_left: 0,
+          entry_units: 20,
+          entry_price: 50,
+          stop_initial: 45,
+        }),
+      ]);
+      assert.deepEqual(measured.unmeasured.inconsistent, []);
+      assert.equal(measured.trades.length, 1);
+    });
+
+    it("exits whose units, price and stop differ by different ratios are still reported", () => {
+      // Units × 2 but price ÷ 3: not a split.
+      for (const change of [
+        { entry_units: 20, entry_price: 100 / 3, stop_initial: 30 },
+        { entry_units: 20, entry_price: 50, stop_initial: 90 },
+        { entry_units: 20, entry_price: 100, stop_initial: 90 },
+      ] satisfies Partial<Decision>[]) {
+        const measured = measureTrades([
+          lotExit({ units: 5, amount: 600, lot_units_left: 5 }),
+          lotExit({ units: 10, amount: 1200, lot_units_left: 0, ...change }),
+        ]);
+        assert.deepEqual(measured.trades, [], JSON.stringify(change));
+        assert.deepEqual(
+          measured.unmeasured.inconsistent,
+          [{ currency: "USD", ticker: "LOT", lotId: "lot-a", reason: "snapshot" }],
+          JSON.stringify(change),
+        );
+      }
+    });
+
+    it("a lot with a tiny exit amount (a sub-cent share) is still an exit with a snapshot", () => {
+      const measured = measureTrades([
+        fullExit({ units: 10, price: 0.0004, amount: 0.004, entry_price: 0.0003, stop_initial: 0.0002 }),
+      ]);
+      assert.equal(measured.trades.length, 1);
+    });
+
     it("the entry costs differ between exits by design and are not a disagreement", () => {
       const measured = measureTrades([
         lotExit({ amount: 480, lot_units_left: 6, entry_costs: 1.6 }),
