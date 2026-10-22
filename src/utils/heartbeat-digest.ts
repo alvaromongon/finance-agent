@@ -28,8 +28,9 @@ export interface HeartbeatDigest {
   minAtr: number;
   breaches: StopBreach[];
   /**
-   * Problems of the portfolio's `Lots` against the decision log (ADR-0015). The run does not
-   * refuse the file: it keeps watching the positions and reports them here.
+   * Problems of the portfolio's `Lots` (ADR-0015): a table that does not read, or a `Volume` that is not
+   * the sum of its lots. The run does not refuse the file: it keeps watching the positions and reports
+   * them here, in every digest while they last (not deduplicated).
    */
   lotsWarnings: string[];
   tightStops: TightStop[];
@@ -39,21 +40,15 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops and lots warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
-  return [
-    ...d.lotsWarnings.map(lotsKey),
-    ...d.tightStops.map(tightStopKey),
-    ...d.armed.map(armedKey),
-    ...d.escalated.map(escalatedKey),
-  ];
+  return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
 }
 
-/** The digest without what was already sent today. Crossed stops always stay. */
+/** The digest without what was already sent today. Crossed stops and lots warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
-    lotsWarnings: d.lotsWarnings.filter((w) => !sent.has(lotsKey(w))),
     tightStops: d.tightStops.filter((t) => !sent.has(tightStopKey(t))),
     armed: d.armed.filter((a) => !sent.has(armedKey(a))),
     escalated: d.escalated.filter((s) => !sent.has(escalatedKey(s))),
@@ -61,7 +56,6 @@ export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): Heartbea
 }
 
 // Each alert's relevant data: if they change, it is news again.
-const lotsKey = (warning: string) => `lots|${warning}`;
 const tightStopKey = (t: TightStop) => `tight_stop|${t.ticker}|${t.stopLoss}`;
 const armedKey = (a: SetupEvaluation) => `setup_armed|${a.ticker}|${a.setup.pattern}|${a.setup.level}`;
 // Without the price on purpose: a re-escalation by price (cooldown) creates

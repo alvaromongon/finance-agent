@@ -191,7 +191,14 @@ and the entry id; fix `Lots` by hand. The heartbeat does not read the decision
 log: it only checks `Volume` against the lots, and it does not refuse the file
 either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises
 a warning in its output and in the digest, because a typo must not switch off
-the stop alerts.
+the stop alerts. That includes a `Lots` table that does not read (a misspelled or
+missing column in its header) and a `Lots` section that is missing (a misspelled
+heading, or a deleted empty section): the warning names `portfolio.md` and the
+section (`## USD — Lots`), and the lots count as empty for that run. A missing
+`Cash` or `Positions` section still stops the heartbeat, as every other problem of
+the file. `decision:record`, `decisions:evaluate` and `pending:resolve` keep the
+strict reader: they refuse a `Lots` table or section that does not read. The
+warning is not deduplicated: it is in every digest while the problem lasts.
 
 A stock split is corrected by hand, in a correction commit, by scaling the lot
 by one ratio r > 0: `Units` and `Entry units` × r, `Entry price` and

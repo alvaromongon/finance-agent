@@ -187,7 +187,7 @@ describe("runHeartbeat", () => {
       const warnings = await heartbeat();
 
       assert.ok(
-        warnings.some((w) => w.includes("Lots do not match") && /CAT.*Volume 1/.test(w)),
+        warnings.some((w) => w.includes("WARNING, Lots:") && /CAT.*Volume 1/.test(w)),
         `warnings: ${JSON.stringify(warnings)}`,
       );
       const [email] = await outbox();
@@ -222,11 +222,91 @@ describe("runHeartbeat", () => {
       );
     });
 
-    it("a second run the same day does not repeat the warning email", async () => {
+    it("the warning is not deduplicated: a second run the same day with the same mismatch repeats it", async () => {
       await setPortfolio(MSFT_ROW, [{ ...MSFT_LOT, units: 2 }]);
       await heartbeat();
       await heartbeat();
-      assert.equal((await outbox()).length, 1);
+
+      const emails = await outbox();
+      assert.equal(emails.length, 2, "a lots warning alone still produces a digest, every run");
+      for (const email of emails) {
+        assert.match(email.subject, /lotes que no cuadran/);
+        assert.match(email.body, /MSFT.*Volume 1/);
+      }
+      assert.doesNotMatch(emails[1].subject, /stop ceñido/, "what is deduplicated still is");
+    });
+
+    describe("a Lots table that does not read", () => {
+      const brokenHeader = async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        const path = join(vaultDir, "portfolio.md");
+        const text = await readFile(path, "utf8");
+        await writeFile(path, text.replace("| Entry units |", "| Entry unitz |"), "utf8");
+      };
+
+      it("does not stop the heartbeat: the crossed stop goes out with the lots warning naming file and section", async () => {
+        await brokenHeader();
+        const warnings = await heartbeat();
+
+        assert.ok(
+          warnings.some((w) => w.includes("portfolio.md") && w.includes("USD — Lots")),
+          `warnings: ${JSON.stringify(warnings)}`,
+        );
+        const [email] = await outbox();
+        assert.match(email.subject, /stop cruzado: CAT/);
+        assert.match(email.subject, /lotes que no cuadran/);
+        assert.match(email.body, /portfolio\.md: ## USD — Lots: columns Entry units missing/);
+      });
+
+      it("two consecutive runs with the same mismatch both include the warning", async () => {
+        await brokenHeader();
+        await heartbeat();
+        await heartbeat();
+
+        const emails = await outbox();
+        assert.equal(emails.length, 2);
+        for (const email of emails) assert.match(email.body, /Entry units missing/);
+      });
+
+      for (const [name, edit] of [
+        ["a misspelled Lots heading", (text: string) => text.replace("## USD — Lots", "## USD — Lot")],
+        ["a deleted Lots section", (text: string) => text.slice(0, text.indexOf("## USD — Lots"))],
+      ] as const) {
+        it(`${name} is a lots warning naming file and section, and the crossed stop still goes out`, async () => {
+          await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+          const path = join(vaultDir, "portfolio.md");
+          const text = await readFile(path, "utf8");
+          const edited = edit(text);
+          assert.notEqual(edited, text, "the edit changed the portfolio");
+          await writeFile(path, edited, "utf8");
+
+          const warnings = await heartbeat();
+
+          assert.ok(
+            warnings.some(
+              (w) => w.includes("WARNING, Lots:") && w.includes("portfolio.md") && w.includes("## USD — Lots"),
+            ),
+            `warnings: ${JSON.stringify(warnings)}`,
+          );
+          const [email] = await outbox();
+          assert.match(email.subject, /stop cruzado: CAT/);
+          assert.match(email.body, /portfolio\.md: missing section "## USD — Lots"/);
+        });
+      }
+
+      it("a missing Cash section still stops the run", async () => {
+        await brokenHeader();
+        const path = join(vaultDir, "portfolio.md");
+        await writeFile(path, (await readFile(path, "utf8")).replace("## USD — Cash", "## USD — Cashh"), "utf8");
+        await assert.rejects(heartbeat(), /missing section "## USD — Cash"/);
+      });
+
+      it("a Positions table that does not read still stops the run", async () => {
+        await brokenHeader();
+        const path = join(vaultDir, "portfolio.md");
+        await writeFile(path, (await readFile(path, "utf8")).replace("| Volume |", "| Volumez |"), "utf8");
+        await assert.rejects(heartbeat(), /Positions: columns Volume missing/);
+      });
     });
 
     it("a consistent portfolio raises no warning and no lots section", async () => {

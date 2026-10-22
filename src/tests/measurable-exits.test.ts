@@ -284,6 +284,26 @@ describe("measurable exits: the five R tests of spec #27", () => {
   };
   beforeEach(resetVault);
 
+  describe("decisions:evaluate refuses a Lots table that does not read (only the heartbeat tolerates it, ADR-0015)", () => {
+    for (const [name, from, to, message] of [
+      ["a misspelled column in the header", "| Entry units |", "| Entry unitz |", /Entry units missing/],
+      ["a misspelled Lots heading", "## USD — Lots", "## USD — Lot", /missing section "## USD — Lots"/],
+    ] as const) {
+      it(name, async () => {
+        const text = portfolioMd().replaceAll(from, to);
+        assert.notEqual(text, portfolioMd());
+        await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+        await assert.rejects(evaluate(), message);
+      });
+    }
+
+    it("a deleted Lots section", async () => {
+      const full = portfolioMd();
+      await writeFile(join(vaultDir, "portfolio.md"), full.slice(0, full.indexOf("## USD — Lots")), "utf8");
+      await assert.rejects(evaluate(), /missing section "## USD — Lots"/);
+    });
+  });
+
   it("R1: one entry and one exit give R = (exit − entry) / (entry − stop), as today", async () => {
     // Buy 10 at 100 with the stop at 90 (1R = 10); sell all 10 at 120: R = (120 − 100) / 10 = +2.
     await entry(100, 10, 90, "2026-06-15");

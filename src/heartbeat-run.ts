@@ -16,7 +16,7 @@ import {
   listLogFiles,
   readDecisions,
   readHeartbeatSent,
-  readPortfolio,
+  readPortfolioTolerantOfLots,
   readRulesVersion,
   readWatchlist,
   updatePortfolioPrices,
@@ -35,7 +35,7 @@ import { scanSetups } from "./utils/setups/scan.js";
 import { digestKeys, onlyNew, renderHeartbeatDigest, type HeartbeatDigest } from "./utils/heartbeat-digest.js";
 import type { IMarketDataProvider } from "./providers/types.js";
 import type { IAnalystProvider } from "./analyst/types.js";
-import type { Currency, Signal } from "./types.js";
+import type { Currency, PortfolioSnapshot, Signal } from "./types.js";
 
 export interface HeartbeatDeps {
   provider: IMarketDataProvider;
@@ -98,16 +98,18 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const portfolio = await readPortfolio(currency);
+  const { portfolio, lotsProblem } = await readPortfolioTolerantOfLots(currency);
   digest.syncedAt = portfolio.syncedAt;
 
   // 1a. Volume against the lots (ADR-0015), from portfolio.md alone: each lot names its ticker, so the
   // alerting path does not read the decision log. The checks that need the log run where it is read
   // (decision:record and the evaluation). Unlike them, the heartbeat never refuses the file for a
   // mismatch: a typo in Lots must not switch off the stop alerts. It keeps watching the positions and
-  // says so loudly, in the log and in the email.
-  digest.lotsWarnings = volumeMismatches(portfolio);
-  for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots do not match: ${w}`);
+  // says so loudly, in the log and in every digest while it lasts (they are not deduplicated). A Lots table
+  // that does not read is the same: the warning replaces the volume check (no lots to compare), and nothing
+  // the check itself throws can stop what follows.
+  digest.lotsWarnings = lotsWarnings(portfolio, lotsProblem);
+  for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots: ${w}`);
 
   // 2. Load the watchlist and get market prices from the active provider.
   // The tickers to watch are the union watchlist ∪ portfolio.positions
@@ -261,6 +263,16 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     // Deterministic guardrail + recording: checks financial consistency before
     // alerting (shared with pending.ts — see decision.ts).
     await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
+  }
+}
+
+/** The lots warnings of the run: the lots that do not read, else the volume check; never a throw. */
+function lotsWarnings(portfolio: PortfolioSnapshot, lotsProblem: string | null): string[] {
+  if (lotsProblem) return [lotsProblem];
+  try {
+    return volumeMismatches(portfolio);
+  } catch (err) {
+    return [`portfolio.md (${portfolio.currency}): the lots check failed: ${(err as Error).message}`];
   }
 }
 

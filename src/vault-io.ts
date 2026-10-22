@@ -11,6 +11,8 @@ import { parseMarkdownNumber } from "./utils/parse.js";
 import { parseLastLog, type LastLog } from "./utils/cooldown.js";
 import {
   assertPortfolioSections,
+  assertLotsSection,
+  LotsTableError,
   assertSchemaVersion,
   extractYamlBlock,
   extractFrontmatter,
@@ -101,16 +103,38 @@ export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[
  * without a manual update. It does not block the run, it only warns.
  */
 export async function readPortfolio(currency: Currency): Promise<PortfolioSnapshot> {
-  return parsePortfolioText(await readTextFile(join(projectDir(), "portfolio.md")), currency);
+  return parsePortfolioText(await readPortfolioText(), currency);
+}
+
+/**
+ * `readPortfolio` for the heartbeat: a `Lots` table that does not read (ADR-0015) does not refuse the
+ * file, so a typo there never switches off the stop alerts: a header that does not read, a misspelled
+ * or deleted `Lots` heading. The portfolio then has no lots and `lotsProblem` says why (file and
+ * section); it is null when the lots read. Every other problem of the file (`Cash`, `Positions`) still
+ * throws.
+ */
+export async function readPortfolioTolerantOfLots(
+  currency: Currency,
+): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null }> {
+  let lotsProblem: string | null = null;
+  const portfolio = parsePortfolioText(await readPortfolioText(), currency, (err) => {
+    lotsProblem = `portfolio.md: ${err.message}`;
+  });
+  return { portfolio, lotsProblem };
 }
 
 /**
  * The silo's snapshot of a `portfolio.md` text already read, with the checks and warnings of
  * `readPortfolio`: a caller that also rewrites the text parses the very text it will rewrite.
  */
-export function parsePortfolioText(raw: string, currency: Currency): PortfolioSnapshot {
+export function parsePortfolioText(
+  raw: string,
+  currency: Currency,
+  /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
+  onLotsError?: (err: Error) => void,
+): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
-  assertPortfolioSections(raw, currency);
+  assertPortfolioSections(raw, currency, { lotsOptional: onLotsError !== undefined });
 
   // Check staleness with the `last_manual_sync` frontmatter field.
   // js-yaml returns a Date when the timestamp is unquoted
@@ -142,9 +166,22 @@ export function parsePortfolioText(raw: string, currency: Currency): PortfolioSn
     cash: parseCash(raw, currency),
     ...(totalCash != null ? { totalCash } : {}),
     positions: parsePositions(raw, currency),
-    lots: parseLots(raw, currency),
+    lots: readLots(raw, currency, onLotsError),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
+}
+
+function readLots(raw: string, currency: Currency, onError?: (err: Error) => void) {
+  if (!onError) return parseLots(raw, currency);
+  try {
+    assertLotsSection(raw, currency);
+    return parseLots(raw, currency);
+  } catch (err) {
+    // Only the parser's own verdict on the table; anything else is a bug and must crash.
+    if (!(err instanceof LotsTableError)) throw err;
+    onError(err);
+    return [];
+  }
 }
 
 /** `portfolio.md` as text, for the writer of the lots; throws `ENOENT` if the file does not exist. */

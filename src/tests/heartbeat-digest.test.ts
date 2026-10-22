@@ -165,6 +165,13 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual([fresh.tightStops, fresh.armed, fresh.escalated], [[], [], []]);
   });
 
+  it("a lots warning is never marked as sent: it comes back in every digest while it lasts", () => {
+    const lotsWarnings = ["portfolio.md (USD): CAT: Volume 1 is not the sum of the Units of its lots (3)"];
+    const withLots = digest({ lotsWarnings });
+    assert.deepEqual(digestKeys(withLots), []);
+    assert.deepEqual(onlyNew(withLots, new Set(digestKeys(withLots))).lotsWarnings, lotsWarnings);
+  });
+
   it("the crossed stop leaves no key: there is nothing to remember", () => {
     assert.ok(!digestKeys(digest({ breaches })).length);
   });
