@@ -20,6 +20,7 @@ export interface HeldLot {
 }
 
 export const LOTS_HEADER = [
+  "Ticker",
   "Entry id",
   "Date",
   "Units",
@@ -42,7 +43,7 @@ export const mdTable = (header: string[], rows: string[]): string =>
 export function lotsSection(currency: Silo, held: HeldLot[] = []): string {
   const rows = held.map(
     (l) =>
-      `| ${l.id ?? lotId(l.ticker)} | ${l.date ?? "2026-06-15"} | ${l.units} | ${l.entryUnits ?? l.units} | ${l.price} | ${
+      `| ${l.ticker} | ${l.id ?? lotId(l.ticker)} | ${l.date ?? "2026-06-15"} | ${l.units} | ${l.entryUnits ?? l.units} | ${l.price} | ${
         l.stop ?? "—"
       } | — | sistema | 1.0 | — |`,
   );

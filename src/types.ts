@@ -59,10 +59,12 @@ export interface Position {
 }
 
 /**
- * The open units of one entry (ADR-0015), one row of the `Lots` table of portfolio.md. The table
- * has no ticker: the lot's entry in the decision log says which position it belongs to.
+ * The open units of one entry (ADR-0015), one row of the `Lots` table of portfolio.md. The row names
+ * its ticker, so `Volume` can be checked against it without reading the decision log (#52).
  */
 export interface Lot {
+  /** Ticker of the position the lot belongs to; it must be the one of its entry in the log. */
+  ticker: string;
   /** Id of the `entry` decision that opened the lot. */
   entryId: string;
   /** Entry date, YYYY-MM-DD. */

@@ -328,6 +328,7 @@ export function parsePositions(md: string, currency: Currency): Position[] {
 
 /** Columns of the lots table (v2 format), by header text. */
 const LOT_COLUMNS = {
+  ticker: "Ticker",
   entryId: "Entry id",
   date: "Date",
   units: "Units",
@@ -340,9 +341,9 @@ const LOT_COLUMNS = {
   rulesViolations: "Rules violations",
 } as const;
 
-type LotColumn = keyof typeof LOT_COLUMNS;
+export type LotColumn = keyof typeof LOT_COLUMNS;
 
-function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
+export function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
   const normalized = header.map((c) => c.trim().toLowerCase());
   const missing: string[] = [];
   const indexes = {} as Record<LotColumn, number>;
@@ -361,7 +362,7 @@ const isPlaceholder = (cell: string): boolean => cell === "" || cell === "—" |
 
 /**
  * Parses the rows of the `## <CURRENCY> — Lots` table (columns in LOT_COLUMNS, in any order). Skips
- * placeholder rows and rows that do not read as a lot (no id, units or price that are numbers, ...):
+ * placeholder rows and rows that do not read as a lot (no id or ticker, units or price that are numbers, ...):
  * the lot then does not count towards its position's `Volume`, so the check against the decision
  * log reports the mismatch instead of the row vanishing silently. Cross-checks with the log are
  * not made here: this parser is pure.
@@ -370,41 +371,45 @@ export function parseLots(md: string, currency: Currency): Lot[] {
   const [header, ...rows] = parseTableRows(sectionBody(md, currency, "Lots"));
   if (!header) return [];
   const col = lotColumns(header, currency);
-  const lots: Lot[] = [];
+  return rows.map((cells) => lotOfRow(cells, col)).filter((lot): lot is Lot => lot !== null);
+}
 
-  for (const cells of rows) {
-    const cell = (key: LotColumn) => (cells[col[key]] ?? "").trim();
-    const entryId = cell("entryId");
-    if (isPlaceholder(entryId) || /^entry id$/i.test(entryId)) continue;
+/** True for a placeholder row (`—`) or a repeated header of the lots table: not a lot, and nothing to keep. */
+export function isLotPlaceholderRow(cells: readonly string[], col: Record<LotColumn, number>): boolean {
+  const entryId = (cells[col.entryId] ?? "").trim();
+  return isPlaceholder(entryId) || /^entry id$/i.test(entryId) || isPlaceholder((cells[col.ticker] ?? "").trim());
+}
 
-    const units = parseMarkdownNumber(cell("units"));
-    const entryUnits = parseMarkdownNumber(cell("entryUnits"));
-    const entryPrice = parseMarkdownNumber(cell("entryPrice"));
-    const origin = cell("origin");
-    const rulesVersion = cell("rulesVersion");
-    const date = cell("date");
-    if (units == null || entryUnits == null || entryPrice == null) continue;
-    if (!(DECISION_ORIGINS as readonly string[]).includes(origin) || isPlaceholder(rulesVersion)) continue;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+/** The lot a row of the lots table reads as; `null` for a placeholder or a row that does not read as a lot. */
+export function lotOfRow(cells: readonly string[], col: Record<LotColumn, number>): Lot | null {
+  if (isLotPlaceholderRow(cells, col)) return null;
+  const cell = (key: LotColumn) => (cells[col[key]] ?? "").trim();
+  const units = parseMarkdownNumber(cell("units"));
+  const entryUnits = parseMarkdownNumber(cell("entryUnits"));
+  const entryPrice = parseMarkdownNumber(cell("entryPrice"));
+  const origin = cell("origin");
+  const rulesVersion = cell("rulesVersion");
+  const date = cell("date");
+  if (units == null || entryUnits == null || entryPrice == null) return null;
+  if (!(DECISION_ORIGINS as readonly string[]).includes(origin) || isPlaceholder(rulesVersion)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
 
-    lots.push({
-      entryId,
-      date,
-      units,
-      entryUnits,
-      entryPrice,
-      initialStop: parseMarkdownNumber(cell("initialStop")),
-      entryCosts: parseMarkdownNumber(cell("entryCosts")),
-      origin: origin as Lot["origin"],
-      rulesVersion,
-      rulesViolations: isPlaceholder(cell("rulesViolations"))
-        ? []
-        : cell("rulesViolations")
-            .split(",")
-            .map((v) => v.trim())
-            .filter((v) => v !== ""),
-    });
-  }
-
-  return lots;
+  return {
+    ticker: cell("ticker"),
+    entryId: cell("entryId"),
+    date,
+    units,
+    entryUnits,
+    entryPrice,
+    initialStop: parseMarkdownNumber(cell("initialStop")),
+    entryCosts: parseMarkdownNumber(cell("entryCosts")),
+    origin: origin as Lot["origin"],
+    rulesVersion,
+    rulesViolations: isPlaceholder(cell("rulesViolations"))
+      ? []
+      : cell("rulesViolations")
+          .split(",")
+          .map((v) => v.trim())
+          .filter((v) => v !== ""),
+  };
 }

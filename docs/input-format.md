@@ -56,7 +56,8 @@ notation. `—`, `-` or `TBD` mean "no value".
 
 ## `portfolio.md`
 
-Synced by hand from the broker. One `Cash`, one `Positions` and one `Lots`
+Synced by hand from the broker, except `Lots` and `Positions`, which `decision:record` writes
+when you record a trade (see below). One `Cash`, one `Positions` and one `Lots`
 section per currency (`EUR`, `USD`), with an em dash, en dash or hyphen between
 currency and section name. A section ends at the next `##` heading or `---` rule.
 
@@ -82,9 +83,9 @@ account_env: demo
 
 ## EUR — Lots
 
-| Entry id                     | Date       | Units | Entry units | Entry price | Initial stop | Entry costs | Origin  | Rules version | Rules violations |
-| ---------------------------- | ---------- | ----- | ----------- | ----------- | ------------ | ----------- | ------- | ------------- | ---------------- |
-| 20260915-sapde-entry-example | 2026-09-15 | 2     | 2           | 180,00      | 168,00       | —           | sistema | 1.0           | —                |
+| Ticker | Entry id                     | Date       | Units | Entry units | Entry price | Initial stop | Entry costs | Origin  | Rules version | Rules violations |
+| ------ | ---------------------------- | ---------- | ----- | ----------- | ----------- | ------------ | ----------- | ------- | ------------- | ---------------- |
+| SAP.DE | 20260915-sapde-entry-example | 2026-09-15 | 2     | 2           | 180,00      | 168,00       | —           | sistema | 1.0           | —                |
 ```
 
 Frontmatter:
@@ -126,14 +127,25 @@ Rows whose ticker is empty or `—`, or whose `Volume` or `Avg price` is not a
 number, are skipped.
 
 Lots table: one row per open [lot](glossary.md#lot), the units of one ticker
-bought in a single entry. The first row is the header and columns are read
-**by name** (case-insensitive), in any order. All ten are required; a missing
+bought in a single entry. `decision:record` writes it: an entry adds a row, a
+sale shrinks the rows it consumes, first in, first out, and removes a row whose
+`Units` reach 0 (its history lives in the `exit` lines of the decision log). You
+only edit it by hand to correct it, in a correction commit (a split, a partial
+fill, a recording mistake). The first row is the header and columns are read
+**by name** (case-insensitive), in any order. All eleven are required; a missing
 one is an error. An empty table (header only, or `—` rows) is a silo with no
 open lots.
 
+The `exit` lines `decision:record` writes for a sale carry, per lot, an `amount`
+that is that exit's exact share of the sale amount and can have sub-cent
+decimals (owner decision of 2026-10-22 in #27). When the owner gives only the
+units, the sale amount derived (`units × price`) is to the cent unless that
+rounds to 0.00, and then it is exact.
+
 | Column             | Meaning                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------ |
-| `Entry id`         | Id of the `entry` line in the decision log that opened the lot; the lot's ticker comes from it   |
+| `Ticker`           | Ticker of the position the lot belongs to; the one of its entry in the decision log              |
+| `Entry id`         | Id of the `entry` line in the decision log that opened the lot                                   |
 | `Date`             | Entry date, `YYYY-MM-DD`                                                                         |
 | `Units`            | Units of the lot still open                                                                      |
 | `Entry units`      | Units the entry bought                                                                           |
@@ -144,27 +156,67 @@ open lots.
 | `Rules version`    | `version` of `strategies/base.md` in force at the entry                                          |
 | `Rules violations` | The rules the entry broke, comma-separated (for example `no_stop, overrode_block`); `—` for none |
 
-Rows without an `Entry id`, or whose `Units`, `Entry units` or `Entry price`
-is not a number, or whose `Origin` is not one of the two values, are skipped,
-so they do not count towards their position's `Volume` and the check below
-reports them.
+Rows without an `Entry id` or a `Ticker`, or whose `Units`, `Entry units` or
+`Entry price` is not a number, or whose `Origin` is not one of the two values,
+are skipped, so they do not count towards their position's `Volume` and the
+check below reports them. When `decision:record` rewrites the table it keeps
+such a row where it is.
 
-The lots must add up to the positions. The table has no ticker: each lot
-belongs to the ticker of its entry in the decision log
-(`logs/decisions.jsonl` and any archived quarter). A silo is **inconsistent** when:
+`decision:record` also keeps `Positions`: the first entry of a ticker creates
+its row, with the lot's initial stop as `Stop loss` (`—` if there was none);
+later entries and sales only change `Volume` and `Avg price` (the units-weighted
+entry price of the open lots), and the row is deleted when the last lot is
+consumed. Recording a trade needs `portfolio.md`; without it an entry or a sale
+is refused.
+
+The lots must add up to the positions and agree with the decision log
+(`logs/decisions.jsonl` and any archived quarter). A silo is **inconsistent**
+when:
 
 - a position's `Volume` is not the sum of the `Units` of its lots (a position
-  with no lots, or lots of a ticker with no position row, count too); or
-- a lot's `Entry id` is not an `entry` of that currency in the decision log.
+  with no lots, or lots of a ticker with no position row, count too);
+- a lot has more `Units` than `Entry units`, or an `Entry id` is on two rows;
+- a lot's `Entry id` is not an `entry` of that currency in the decision log, its
+  `Ticker` is not the ticker of that entry, or its entry price, entry units,
+  initial stop, date, origin, rules version or rules violations differ from the
+  entry's; or
+- an entry in the decision log is still open and has no lot. An entry is open
+  until an exit that cites it has `lot_units_left` 0. An entry whose log line has
+  no `units` was recorded before the lots existed and is not checked
+  (`decision:record` writes `units` on every entry).
 
 Where portfolio and log are both read, `decision:record` and
 `decisions:evaluate` refuse an inconsistent silo with an error naming the ticker
-or the entry id; fix `Lots` by hand. The heartbeat does not refuse it: it keeps
-watching the positions (stops, `Volume`, `Avg price`) and raises a warning in
-its output and in the digest, because a typo must not switch off the stop
-alerts. A stock split is corrected by scaling `Units`, `Entry units`, `Entry
-price` and `Initial stop` by the same ratio; the check cannot catch a wrong
-ratio.
+and the entry id; fix `Lots` by hand. The heartbeat does not read the decision
+log: it only checks `Volume` against the lots, and it does not refuse the file
+either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises
+a warning in its output and in the digest, because a typo must not switch off
+the stop alerts.
+
+A stock split is corrected by hand, in a correction commit, by scaling the lot
+by one ratio r > 0: `Units` and `Entry units` × r, `Entry price` and
+`Initial stop` ÷ r (a 2:1 split doubles the units and halves the prices). The
+check accepts a lot whose `Entry units`, `Entry price` and `Initial stop` differ
+from its entry in the decision log by one such common ratio, and refuses any
+other difference: only the units scaled, or the units and the price by
+different ratios, or a stop that was not scaled. The check cannot tell a wrong
+ratio from a right one, nor a split from a sale that was written to the
+decision log but not to `portfolio.md` (a stop between the two files); you
+catch both when you reconcile `Volume` with the broker.
+
+Write the split-adjusted `Entry price` and `Initial stop` at full precision
+(the original ÷ r, not rounded to the cent): the check compares them with the
+original within a tolerance of 1e-6, and the exits of a lot sold before and
+after the split are measured as one trade only if their snapshots differ by that
+same ratio.
+
+To correct a mistaken entry (a wrong ticker, price or units), the entry line
+stays in the decision log, so a lot deleted by hand would leave the silo
+refused (an open entry with no lot). Correct it in a correction commit
+([ADR-0006](decisions/0006-single-append-only-decision-log.md)): fix or remove the entry's
+line in `logs/decisions.jsonl` (the ADR's dedicated commit, made when no
+automated run is in flight) together with its lot in `Lots` and `Volume` in
+`Positions`, in the same commit, so the log and the portfolio agree again.
 
 ## `watchlist.md`
 

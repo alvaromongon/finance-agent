@@ -55,9 +55,9 @@ last_manual_sync: 2026-09-12T12:05:00Z
 
 ## USD — Lots
 
-| Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 20260901-hal-entry-x | 2026-09-01 | 10 | 10 | 37.00 | 34.00 | — | sistema | 1.0 | — |
+| Ticker | Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| HAL | 20260901-hal-entry-x | 2026-09-01 | 10 | 10 | 37.00 | 34.00 | — | sistema | 1.0 | — |
 `;
 
 const WATCHLIST_LF = `---

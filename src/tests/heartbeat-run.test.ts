@@ -196,15 +196,30 @@ describe("runHeartbeat", () => {
       assert.match(email.body, /CAT.*Volume 1/);
     });
 
-    it("a lot whose entry id is not in the decision log: the tight stop is still found", async () => {
+    it("the alerting path does not read the decision log: Volume is checked from portfolio.md alone (#52)", async () => {
+      // A lot whose entry is not in the log, and a log that cannot be parsed at all: neither reaches the
+      // heartbeat. The checks that need the log run where the log is read (decision:record, the evaluation).
       await setPortfolio(MSFT_ROW, [{ ...MSFT_LOT, id: "ghost-entry" }]);
-      await writeFile(join(vaultDir, "logs", "decisions.jsonl"), "", "utf8");
+      await writeFile(join(vaultDir, "logs", "decisions.jsonl"), "not json at all\n", "utf8");
       const warnings = await heartbeat();
 
-      assert.ok(warnings.some((w) => w.includes("ghost-entry")));
+      assert.deepEqual(
+        warnings.filter((w) => w.includes("Lots")),
+        [],
+      );
       const [email] = await outbox();
       assert.match(email.subject, /stop ceñido: MSFT/);
-      assert.match(email.subject, /lotes que no cuadran/);
+      assert.doesNotMatch(email.subject, /lotes que no cuadran/);
+    });
+
+    it("a Volume that does not match is found by the lots' own Ticker column", async () => {
+      // The row says MSFT 1, the lots say MSFT 1 and CAT 3 with no CAT row.
+      await setPortfolio(MSFT_ROW, [MSFT_LOT, { ...CAT_LOT, units: 3 }]);
+      const warnings = await heartbeat();
+      assert.ok(
+        warnings.some((w) => /CAT.*Volume 0.*3/.test(w)),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
     });
 
     it("a second run the same day does not repeat the warning email", async () => {

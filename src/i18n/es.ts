@@ -232,6 +232,14 @@ export const es: Messages = {
         `${n} ${n === 1 ? "salida" : "salidas"} sin instantánea del lote, fuera de las operaciones cerradas.`,
       oversoldLot: (ticker, lotId) =>
         `${ticker}, lote ${lotId}: sus ventas suman más unidades que la compra (datos incoherentes); no se mide.`,
+      skippedExit: (ticker, date, lotId) => `${ticker}, ${date}${lotId ? `, lote ${lotId}` : ""}`,
+      moreSkippedExits: (n) => `… y ${n} más.`,
+      inconsistentLot: (ticker, lotId, reason) =>
+        `${ticker}, lote ${lotId}: ${
+          reason === "units_left"
+            ? "las unidades que quedan tras cada salida no siguen lo que vendieron las salidas"
+            : "sus salidas no coinciden en los datos de la compra"
+        } (datos incoherentes); no se mide.`,
     },
     stopAt: (atr, horizon) => `${atr} ATR en ${horizon}`,
     howToRead: (o) => [

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
+import { lotsSection } from "./fixtures/lots.js";
 
 const TODAY = "2026-09-14";
 
@@ -31,6 +32,30 @@ watchlist:
 \`\`\`
 `;
 
+/** An empty portfolio in the v2 shape: an entry adds its lot to it, a sale consumes the lots (#42). */
+const PORTFOLIO_MD = `---
+schema_version: 2
+last_manual_sync: 2026-09-10T18:00:00Z
+account_env: demo
+---
+
+${["EUR", "USD"]
+  .map(
+    (c) => `## ${c} — Cash
+
+| Item | Value |
+|---|---|
+| Available cash | 1000.00 |
+
+## ${c} — Positions
+
+| Ticker | Volume | Avg price | Current price | P/L | Stop loss |
+|---|---|---|---|---|---|
+
+${lotsSection(c as "EUR" | "USD")}`,
+  )
+  .join("\n")}`;
+
 /** 30 sessions up to 12-Sep with a daily range of 20: ATR14 = 20. */
 function bars(): HistoricalBar[] {
   return Array.from({ length: 30 }, (_, i) => {
@@ -46,7 +71,7 @@ const fakeProvider = {
 
 describe("decision:record (recordOwnerDecision)", () => {
   let vaultDir: string;
-  let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision>;
+  let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision[]>;
   let proposal: Decision;
 
   const decisionsPath = () => join(vaultDir, "logs", "decisions.jsonl");
@@ -55,7 +80,9 @@ describe("decision:record (recordOwnerDecision)", () => {
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));
-  const record = (raw: unknown) => recordOwnerDecision(raw, fakeProvider, TODAY);
+  const recordAll = (raw: unknown) => recordOwnerDecision(raw, fakeProvider, TODAY);
+  /** The decision a trade records; a sale that spans several lots records one per lot (`recordAll`). */
+  const record = async (raw: unknown) => (await recordAll(raw))[0];
 
   before(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "finance-agent-decision-record-"));
@@ -87,6 +114,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "0.2"\n---\n`, "utf8");
     await writeFile(join(vaultDir, "watchlist.md"), WATCHLIST_MD, "utf8");
     await writeFile(decisionsPath(), JSON.stringify(proposal) + "\n", "utf8");
+    await writeFile(join(vaultDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
   });
 
   it("an entry after a system proposal is the system's and cites it", async () => {
@@ -131,6 +159,159 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.equal(exit.related_id, entry.id);
     assert.equal(exit.origin, "sistema");
     assert.equal(exit.amount, 530);
+  });
+
+  it("a sale that spans two lots records one exit per lot, each citing its own entry", async () => {
+    const first = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
+    const second = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 520, units: 2, stop: 460 });
+
+    const exits = await recordAll({ type: "exit", ticker: "ADBE", currency: "USD", price: 540, units: 3 });
+    assert.deepEqual(
+      exits.map((e) => [e.related_id, e.amount, e.lot_units_left]),
+      [
+        [first.id, 1080, 0],
+        [second.id, 540, 1],
+      ],
+    );
+    assert.equal((await readLines()).filter((d) => d.type === "exit").length, 2);
+  });
+
+  it("the portfolio is parsed from the one text the recorder read (parsePortfolioText)", async () => {
+    const { parsePortfolioText } = await import("../vault-io.js");
+    const portfolio = parsePortfolioText(PORTFOLIO_MD, "USD");
+    assert.equal(portfolio.currency, "USD");
+    assert.deepEqual([portfolio.positions, portfolio.lots], [[], []]);
+  });
+
+  it("portfolio.md is replaced atomically: a temp file renamed over it, nothing left behind", async () => {
+    const { stat, readdir } = await import("node:fs/promises");
+    const before = (await stat(join(vaultDir, "portfolio.md"))).ino;
+    await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 50, units: 1, stop: 40 });
+    assert.notEqual((await stat(join(vaultDir, "portfolio.md"))).ino, before, "a new file was renamed into place");
+    assert.deepEqual(
+      (await readdir(vaultDir)).filter((f) => f.startsWith("portfolio.md") && f !== "portfolio.md"),
+      [],
+    );
+  });
+
+  describe("units and amount agree (reviews of PR #56)", () => {
+    const entryOf = (extra: object) => ({
+      type: "entry",
+      ticker: "ADBE",
+      currency: "USD",
+      price: 50,
+      stop: 40,
+      ...extra,
+    });
+    const sell = (extra: object) => ({ type: "exit", ticker: "ADBE", currency: "USD", price: 50, ...extra });
+
+    it("every entry's log line carries its units: given, or derived from the amount", async () => {
+      assert.equal((await record(entryOf({ units: 10 }))).units, 10);
+      assert.equal((await record(entryOf({ amount: 505 }))).units, 10.1);
+      assert.equal((await record(entryOf({ units: 10, amount: 500 }))).units, 10);
+    });
+
+    it("an entry with units and an amount that is not units × price is refused, naming both, and nothing is written", async () => {
+      const log = await readFile(decisionsPath(), "utf8");
+      const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      await assert.rejects(() => record(entryOf({ units: 10, amount: 505 })), /units 10.*amount 505/);
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
+    });
+
+    it("a sale with units and an amount that is not units × price is refused too", async () => {
+      await record(entryOf({ units: 20 }));
+      await assert.rejects(() => record(sell({ units: 10, amount: 495 })), /units 10.*amount 495/);
+    });
+
+    it("units × price within a cent of the amount passes", async () => {
+      await record(entryOf({ units: 10, amount: 500.0 }));
+      const exits = await recordAll(sell({ units: 3.333, price: 50.01, amount: 166.68 }));
+      assert.equal(exits[0].amount, 166.68);
+    });
+
+    it("lot_units_left falls by the units the evaluation measures (amount / price)", async () => {
+      await record(entryOf({ units: 10 }));
+      const [exit] = await recordAll(sell({ amount: 495 }));
+      assert.ok(Math.abs(exit.lot_units_left! - 0.1) < 1e-9, String(exit.lot_units_left));
+      assert.ok(Math.abs(exit.amount! / exit.price! - 9.9) < 1e-9);
+    });
+
+    it("a sale by amount that leaves less than half a cent of price in the lot uses it up: no Lots or Positions row stays", async () => {
+      await record(entryOf({ units: 7, price: 12.345, stop: 11 }));
+      const [exit] = await recordAll(sell({ price: 12.345, amount: 86.41 }));
+      assert.equal(exit.lot_units_left, 0);
+      const md = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      assert.doesNotMatch(md, /ADBE/);
+    });
+  });
+
+  describe("every exit carries the units it sold (B1 of PR #56)", () => {
+    const entryOf = (extra: object) => ({
+      type: "entry",
+      ticker: "ADBE",
+      currency: "USD",
+      price: 25,
+      stop: 20,
+      ...extra,
+    });
+    const sell = (extra: object) => ({ type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, ...extra });
+    const lotsOf = async (units: number[]) => {
+      for (const u of units) await record(entryOf({ units: u }));
+    };
+
+    for (const [name, sale] of [
+      ["by units", { units: 2.5 }],
+      ["by amount", { amount: 69.95 }],
+    ] as const) {
+      it(`a sale of all 2.5 units over four lots, ${name}: the units add up, every lot closes and is measured`, async () => {
+        await lotsOf([0.502, 0.428, 1.007, 0.563]);
+        const exits = await recordAll(sell(sale));
+        assert.deepEqual(
+          exits.map((e) => e.units),
+          [0.502, 0.428, 1.007, 0.563],
+        );
+        assert.deepEqual(
+          exits.map((e) => e.lot_units_left),
+          [0, 0, 0, 0],
+        );
+        assert.equal(exits.reduce((sum, e) => sum + e.amount!, 0).toFixed(2), "69.95");
+        const { measureTrades } = await import("../utils/decisions-evaluation.js");
+        const measured = measureTrades(await readLines());
+        assert.equal(measured.trades.length, 4);
+        assert.deepEqual(measured.unmeasured.inconsistent, []);
+        assert.deepEqual(measured.unmeasured.oversold, []);
+      });
+    }
+
+    it("a partial sale across lots: units sum to the units sold and lot_units_left steps by them", async () => {
+      await lotsOf([0.502, 0.428, 1.007]);
+      const exits = await recordAll(sell({ units: 1.2 }));
+      assert.deepEqual(
+        exits.map((e) => e.units),
+        [0.502, 0.428, 0.27],
+      );
+      assert.ok(Math.abs(exits[2].lot_units_left! - (1.007 - 0.27)) < 1e-9);
+    });
+
+    it("exact units that leave dust in a low-priced lot keep it: nothing is snapped", async () => {
+      await record(entryOf({ units: 10, price: 0.001, stop: 0.0008 }));
+      const [exit] = await recordAll(sell({ units: 6, price: 0.001 }));
+      assert.equal(exit.units, 6);
+      assert.equal(exit.lot_units_left, 4);
+      const md = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      assert.match(md, /ADBE/);
+    });
+  });
+
+  it("an exit refuses related_id: a sale consumes the lots first in, first out, and nothing is written", async () => {
+    const entry = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
+    const before = await readFile(decisionsPath(), "utf8");
+    await assert.rejects(
+      () => record({ type: "exit", ticker: "ADBE", currency: "USD", price: 540, units: 1, related_id: entry.id }),
+      /related_id does not apply to an exit/,
+    );
+    assert.equal(await readFile(decisionsPath(), "utf8"), before);
   });
 
   it("an entry after an engine block is the owner's, cites it and flags it as broken", async () => {

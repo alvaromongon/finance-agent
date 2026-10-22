@@ -51,10 +51,13 @@ interface TradeEffect {
   cash: number;
 }
 
-/** Units and cash a silo buy or sale moves; costs come out of cash. */
+/**
+ * Units and cash a silo buy or sale moves; costs come out of cash. The units are the line's own
+ * (`decision:record` writes them on every entry and exit); `amount / price` only for a line without.
+ */
 function tradeEffect(d: Decision, currency: Currency): TradeEffect | null {
   if (d.currency !== currency || d.ticker == null || d.price == null || d.amount == null) return null;
-  const units = d.amount / d.price;
+  const units = d.units ?? d.amount / d.price;
   if (d.type === "entry") return { ticker: d.ticker, units, cash: -(d.amount + (d.costs ?? 0)) };
   if (d.type === "exit") return { ticker: d.ticker, units: -units, cash: d.amount - (d.costs ?? 0) };
   return null;

@@ -14,7 +14,6 @@ import {
   appendDecisions,
   getLastLogForTicker,
   listLogFiles,
-  readDecisionHistory,
   readDecisions,
   readHeartbeatSent,
   readPortfolio,
@@ -25,7 +24,7 @@ import {
 } from "./vault-io.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
-import { lotsMismatches } from "./utils/lots-check.js";
+import { volumeMismatches } from "./utils/lots-check.js";
 import { detectStopBreaches } from "./utils/stop-breach.js";
 import { detectTightStops, fetchAtrForPositions } from "./utils/atr-stop.js";
 import { recordDecision } from "./decision.js";
@@ -36,7 +35,7 @@ import { scanSetups } from "./utils/setups/scan.js";
 import { digestKeys, onlyNew, renderHeartbeatDigest, type HeartbeatDigest } from "./utils/heartbeat-digest.js";
 import type { IMarketDataProvider } from "./providers/types.js";
 import type { IAnalystProvider } from "./analyst/types.js";
-import type { Currency, PortfolioSnapshot, Signal } from "./types.js";
+import type { Currency, Signal } from "./types.js";
 
 export interface HeartbeatDeps {
   provider: IMarketDataProvider;
@@ -102,10 +101,12 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   const portfolio = await readPortfolio(currency);
   digest.syncedAt = portfolio.syncedAt;
 
-  // 1a. Lots against the decision log (ADR-0015). Unlike decision:record and the evaluation, the
-  // heartbeat never refuses the file for a mismatch: a typo in Lots must not switch off the stop
-  // alerts. It keeps watching the positions and says so loudly, in the log and in the email.
-  digest.lotsWarnings = await checkLots(portfolio);
+  // 1a. Volume against the lots (ADR-0015), from portfolio.md alone: each lot names its ticker, so the
+  // alerting path does not read the decision log. The checks that need the log run where it is read
+  // (decision:record and the evaluation). Unlike them, the heartbeat never refuses the file for a
+  // mismatch: a typo in Lots must not switch off the stop alerts. It keeps watching the positions and
+  // says so loudly, in the log and in the email.
+  digest.lotsWarnings = volumeMismatches(portfolio);
   for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots do not match: ${w}`);
 
   // 2. Load the watchlist and get market prices from the active provider.
@@ -260,15 +261,6 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     // Deterministic guardrail + recording: checks financial consistency before
     // alerting (shared with pending.ts — see decision.ts).
     await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
-  }
-}
-
-/** Problems of the portfolio's lots against the decision log; an unreadable log is a problem too. */
-async function checkLots(portfolio: PortfolioSnapshot): Promise<string[]> {
-  try {
-    return lotsMismatches(portfolio, await readDecisionHistory());
-  } catch (err) {
-    return [`the decision log could not be read to check Lots: ${err instanceof Error ? err.message : String(err)}`];
   }
 }
 

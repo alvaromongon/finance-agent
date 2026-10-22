@@ -27,9 +27,10 @@ parentheses so a code comment that cites it can be found here.
      fails at once (an alert that does not go out is worse than a run that does not run).
   2. Read `portfolio.md` and `watchlist.md`. The tickers watched are the union of open positions and
      watchlist candidates, so a position is watched for risk even without a watchlist entry.
-     With nothing to watch the run ends. It also checks the portfolio's [lots](glossary.md#lot)
-     against the decision log; on a mismatch it does not refuse the file, it keeps watching and puts
-     a warning in the digest (see [Lots](input-format.md#portfoliomd)).
+     With nothing to watch the run ends. It also checks that each `Volume` is the sum of
+     its [lots](glossary.md#lot)' units, from `portfolio.md` alone (it does not read the decision
+     log); on a mismatch it does not refuse the file, it keeps watching and puts a warning in the
+     digest (see [Lots](input-format.md#portfoliomd)).
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
@@ -166,18 +167,44 @@ them. It needs one history request per position with a stop; without ATR the pos
   4. Blocked ticket: write the Markdown log and the decision line with the reasons; send no email.
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
-- **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match
-  (a `Volume` that is not the sum of its lots' units, or a lot whose entry is not in the decision
-  history), then fill what the owner need not know: id, rules
-  version, benchmark, the rules broken against the current watchlist, and the system proposal it
+- **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match the
+  decision history (a `Volume` that is not the sum of its lots' units, a lot that disagrees with its
+  entry, or an entry still open in the log with no lot), then fill what the owner need not know: id,
+  rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
-  `overrode_block`. An exit computes `pnl` from the average price still in `portfolio.md` (so record
-  the sale before deleting the row) and links the latest entry not yet cited by an exit; costs are
-  not in the computed `pnl`.
-- **Reads / writes**: reads `logs/decisions.jsonl`, `portfolio.md`, `watchlist.md`, the rules
-  version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl` and email.
+  `overrode_block`. The engine also keeps the [lots](glossary.md#lot):
+  - Units and amount are one fact: given both, they must agree to within a cent
+    (`|amount − units × price| ≤ 0.01`), otherwise the trade is refused and nothing is written; given
+    one, the other is derived.
+  - An entry writes `units` (the units bought) on its log line and adds a lot to `Lots`, whose
+    `Entry units` is that number; it creates the ticker's row in `Positions` (with the lot's
+    initial stop as `Stop loss`) or updates its `Volume` and `Avg price`. It needs `portfolio.md`:
+    without it the lot would be lost, so the entry is refused.
+  - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
+    `exit` per lot consumed. Each exit cites its own lot, carries `units` (the units it sold from the
+    lot; those of a sale's exits add up to the units sold), the snapshot the evaluation needs
+    (entry price, units, date, origin, rules version, initial stop, rules broken, its share of the
+    entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). A
+    sale narrated by amount alone has units known only to half a cent of price, so a lot it leaves
+    with less than that is used up; units the owner gave are exact and nothing is snapped. Its
+    The costs of the sale are shared across the exits in whole cents (largest remainder: no share
+    is negative, they add up to the total). An exit's `amount` is its exact share of the sale amount
+    and can have sub-cent decimals (owner decision of 2026-10-22 in #27); when only units are given,
+    the sale amount derived is to the cent unless that rounds to 0.00, then exact. Its
+    `pnl` comes from the lot's entry price, costs not included. The lots a sale uses up are removed
+    from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
+    the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
+  - A sale of a ticker with no lots, of more units than are open, or with no `portfolio.md` is an
+    error.
+- **Reads / writes**: reads `logs/decisions.jsonl` (and the archive), `portfolio.md`, `watchlist.md`,
+  the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
+  `Positions` tables of `portfolio.md` and email. The decision log is appended first and
+  `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
+  it), so a stop never leaves `portfolio.md` cut short.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the
-  record, because a Markdown log without its decision line would mean measuring halfway.
+  record, because a Markdown log without its decision line would mean measuring halfway. If the
+  process stops between the log and the portfolio, an exit exists whose lot did not shrink; the
+  owner corrects `Lots` by hand.
 - **Why**: [ADR-0006](decisions/0006-single-append-only-decision-log.md),
   [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md).
 
@@ -271,10 +298,12 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      line that fails to validate is skipped with a warning. Check the portfolio's lots against it,
      and stop if they do not match.
   2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
-     its [lot](glossary.md#lot)); an exit without one, and an oversold lot, are not measured but are
-     reported (how many, and which lots) in the cutoff board and on the console; simulate each proposal's plan and
-     compare it with the silo [benchmark](glossary.md#benchmark) and the
-     [shadow portfolio](glossary.md#shadow-portfolio).
+     its [lot](glossary.md#lot)); a lot is closed when its last exit has `lot_units_left` = 0. An
+     exit without the snapshot or without `lot_units_left`, an oversold lot, and a lot whose exits do
+     not add up (units left that do not follow the sales, or snapshots that disagree) are not
+     measured but are reported (the exits and lots by name) in the cutoff board and on the console;
+     simulate each proposal's plan and compare it with the silo [benchmark](glossary.md#benchmark)
+     and the [shadow portfolio](glossary.md#shadow-portfolio).
   3. `decisions:evaluate` writes `logs/decisions-evaluation.md` (the cutoff board, expectancy,
      real versus shadow value); `decisions:chart` writes `logs/decisions-evaluation.svg` (SLI 1);
      `screening:outcomes` writes `logs/screening-outcomes.md` (what happened 20 and 60 sessions
