@@ -211,7 +211,7 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
         [position("TCK", 20)],
         [{ ...lot("a", 20), entryUnits: 20, entryPrice: 50, initialStop: 90 }],
       );
-      assert.ok(lotsMismatches(p, log).some((m) => /Initial stop 90/.test(m)));
+      assert.ok(lotsMismatches(p, log).some((m) => /Entry price 50/.test(m)));
     });
 
     it("a stop added to a split lot that had none in the log is refused", () => {

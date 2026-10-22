@@ -111,16 +111,16 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
     if (lotValue !== logValue) differences.push(`${field} ${lotValue} differs from ${logValue}`);
   };
 
-  num("Entry price", lot.entryPrice, entry.price, PRICE_TOLERANCE);
   // An entry recorded under the lot contract carries its units; an older one (a lot written by hand for
   // it) only its amount, rounded to the cent, so its units are known to half a cent of price.
-  if (entry.units != null) {
-    num("Entry units", lot.entryUnits, entry.units, UNITS_TOLERANCE);
-  } else {
-    const logUnits = entry.amount != null && entry.price ? entry.amount / entry.price : null;
-    num("Entry units", lot.entryUnits, logUnits, entry.price ? 0.005 / entry.price + UNITS_TOLERANCE : 0);
+  const logUnits = entry.units ?? (entry.amount != null && entry.price ? entry.amount / entry.price : null);
+  const unitsTolerance =
+    entry.units != null ? UNITS_TOLERANCE : entry.price ? 0.005 / entry.price + UNITS_TOLERANCE : 0;
+  if (!isSplitOf(lot, entry, logUnits, unitsTolerance)) {
+    num("Entry price", lot.entryPrice, entry.price, PRICE_TOLERANCE);
+    num("Entry units", lot.entryUnits, logUnits, unitsTolerance);
+    num("Initial stop", lot.initialStop, entry.stop_initial, PRICE_TOLERANCE);
   }
-  num("Initial stop", lot.initialStop, entry.stop_initial, PRICE_TOLERANCE);
   text("Date", lot.date, entry.date);
   text("Origin", lot.origin, entry.origin);
   text("Rules version", lot.rulesVersion, entry.rules_version);
@@ -175,4 +175,25 @@ export function assertLotsMatch(portfolio: PortfolioSnapshot, decisions: readonl
       `${problems.join("\n")}\nFix Lots by hand in portfolio.md so each Volume is the sum of its lots' units and each open entry has its lot (ADR-0015; see docs/input-format.md)`,
     );
   }
+}
+
+/**
+ * A stock split corrects a lot by hand: `Entry units` × r, `Entry price` ÷ r and `Initial stop` ÷ r, for
+ * one ratio r > 0 (B2 of PR #56). True when the three columns differ from the entry in the log by one
+ * common r (within the tolerances) and are not simply equal to it; anything else, a wrong ratio, only
+ * the units or only the price scaled, is a difference the caller reports. r comes from the units; the
+ * price and stop must follow it. An entry known only by its amount has imprecise units, so its price
+ * tolerance grows by that relative error.
+ */
+function isSplitOf(lot: Lot, entry: Decision, logUnits: number | null, unitsTolerance: number): boolean {
+  if (logUnits === null || !(logUnits > 0) || entry.price == null || !(lot.entryUnits > 0)) return false;
+  if (Math.abs(lot.entryUnits - logUnits) <= unitsTolerance) return false;
+  const r = lot.entryUnits / logUnits;
+  const relative = unitsTolerance / logUnits;
+  const scaled = (lotValue: number | null, logValue: number | null | undefined): boolean => {
+    if (lotValue === null || logValue == null) return lotValue === null && logValue == null;
+    const expected = logValue / r;
+    return Math.abs(lotValue - expected) <= PRICE_TOLERANCE + expected * relative;
+  };
+  return scaled(lot.entryPrice, entry.price) && scaled(lot.initialStop, entry.stop_initial);
 }
