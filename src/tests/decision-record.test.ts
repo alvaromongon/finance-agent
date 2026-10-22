@@ -194,6 +194,32 @@ describe("decision:record (recordOwnerDecision)", () => {
     );
   });
 
+  describe("a Lots table that does not read is refused (the strict reader; only the heartbeat tolerates it, ADR-0015)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 };
+    for (const [name, from, to] of [
+      ["a misspelled column in the header", "| Entry units |", "| Entry unitz |"],
+      ["a misspelled Lots heading", "## USD — Lots", "## USD — Lot"],
+    ] as const) {
+      it(`${name} refuses the entry and leaves portfolio.md and the log as they were`, async () => {
+        const text = PORTFOLIO_MD.replaceAll(from, to);
+        assert.notEqual(text, PORTFOLIO_MD);
+        await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+        const log = await readFile(decisionsPath(), "utf8");
+
+        await assert.rejects(record(entryOf), /Lots/);
+
+        assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), text);
+        assert.equal(await readFile(decisionsPath(), "utf8"), log);
+      });
+    }
+
+    it("a deleted Lots section refuses the entry", async () => {
+      const text = PORTFOLIO_MD.slice(0, PORTFOLIO_MD.indexOf("## USD — Lots"));
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      await assert.rejects(record(entryOf), /missing section "## USD — Lots"/);
+    });
+  });
+
   describe("units and amount agree (reviews of PR #56)", () => {
     const entryOf = (extra: object) => ({
       type: "entry",

@@ -12,6 +12,7 @@ import {
   assertSchemaVersion,
   assertPortfolioSections,
   parseLots,
+  LotsTableError,
 } from "../utils/vault-parser.js";
 
 // ─── Test Markdown ────────────────────────────────────────────────────────────
@@ -404,6 +405,11 @@ describe("assertSchemaVersion", () => {
 // ─── parseLots ────────────────────────────────────────────────────────────────
 
 describe("parseLots", () => {
+  it("a header that does not read throws the parser's own LotsTableError", () => {
+    const md = PORTFOLIO_MD.replace("| Entry units |", "| Entry unitz |");
+    assert.throws(() => parseLots(md, "EUR"), LotsTableError);
+  });
+
   it("parses the lots of a silo into typed fields", () => {
     assert.deepEqual(parseLots(PORTFOLIO_MD, "EUR")[0], {
       ticker: "DEF.MI",

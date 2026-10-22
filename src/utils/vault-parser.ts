@@ -85,9 +85,9 @@ export function sectionBody(md: string, currency: Currency, kind: PortfolioSecti
  * the previous format) would read as an empty silo and the heartbeat would
  * silently stop watching its positions.
  */
-export function assertPortfolioSections(md: string, currency: Currency): void {
+export function assertPortfolioSections(md: string, currency: Currency, { lotsOptional = false } = {}): void {
   const normalized = normalizeEol(md);
-  for (const kind of ["Cash", "Positions", "Lots"] as const) {
+  for (const kind of lotsOptional ? (["Cash", "Positions"] as const) : (["Cash", "Positions", "Lots"] as const)) {
     if (!sectionRange(normalized, currency, kind)) {
       throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
     }
@@ -343,6 +343,21 @@ const LOT_COLUMNS = {
 
 export type LotColumn = keyof typeof LOT_COLUMNS;
 
+/** The `Lots` table cannot be read as such (a missing section, a misspelled column): the heartbeat reports it instead of refusing the file. */
+export class LotsTableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LotsTableError";
+  }
+}
+
+/** Throws a `LotsTableError` when the silo has no `## <CURRENCY> — Lots` section. */
+export function assertLotsSection(md: string, currency: Currency): void {
+  if (!sectionRange(normalizeEol(md), currency, "Lots")) {
+    throw new LotsTableError(`missing section "## ${currency} — Lots" (see docs/input-format.md)`);
+  }
+}
+
 export function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
   const normalized = header.map((c) => c.trim().toLowerCase());
   const missing: string[] = [];
@@ -353,7 +368,7 @@ export function lotColumns(header: readonly string[], currency: Currency): Recor
     indexes[key] = i;
   }
   if (missing.length > 0) {
-    throw new Error(`## ${currency} — Lots: columns ${missing.join(", ")} missing from the table header`);
+    throw new LotsTableError(`## ${currency} — Lots: columns ${missing.join(", ")} missing from the table header`);
   }
   return indexes;
 }

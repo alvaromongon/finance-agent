@@ -31,8 +31,11 @@ parentheses so a code comment that cites it can be found here.
      its [lots](glossary.md#lot)' units, from `portfolio.md` alone (it does not read the decision
      log); on a mismatch it does not refuse the file, it keeps watching and puts a warning in the
      digest (see [Lots](input-format.md#portfoliomd)). The same holds for a `Lots` table that
-     does not read (a misspelled column in its header): no lots-check failure stops the run or
-     comes before the stop and price checks, it becomes a warning naming the file and section.
+     does not read (a misspelled column in its header) and for a `Lots` section that is missing
+     (a misspelled heading, or a deleted empty section): the lots count as empty for that run and the
+     warning names `portfolio.md` and the expected section. Only the `Lots` check is tolerant: a
+     missing `Cash` or `Positions` section, or a table of them that does not read, still stops the
+     run. No lots-check failure stops the run or comes before the stop and price checks.
      The warning is loud: unlike tight stops it is not deduplicated, so it is in every digest
      while it lasts, and a lots warning alone still produces a digest.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`

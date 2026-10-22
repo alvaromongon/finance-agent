@@ -109,7 +109,7 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // that does not read is the same: the warning replaces the volume check (no lots to compare), and nothing
   // the check itself throws can stop what follows.
   digest.lotsWarnings = lotsWarnings(portfolio, lotsProblem);
-  for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots do not match: ${w}`);
+  for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots: ${w}`);
 
   // 2. Load the watchlist and get market prices from the active provider.
   // The tickers to watch are the union watchlist ∪ portfolio.positions
