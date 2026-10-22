@@ -129,6 +129,20 @@ describe("reconstructSilo", () => {
     assert.equal(history.base.value, 1000);
   });
 
+  it("an exit's units are its `units`, not amount / price: a rounded amount does not move the position", () => {
+    // 10 units bought at 0.001 and 6 sold (the amount rounded to the cent, 0.01 / 0.001 would read 10): 4 are left.
+    const decisions = [
+      decision({ type: "entry", date: "2026-09-08", ticker: "AAA", price: 0.001, amount: 0.01, units: 10 }),
+      decision({ type: "exit", date: "2026-09-09", ticker: "AAA", price: 0.001, amount: 0.01, units: 6 }),
+    ];
+    const history = reconstructSilo(
+      input({ decisions, portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 4 }]) }),
+    );
+    assert.deepEqual(history.warnings, []);
+    // Nothing was held before the purchase: the base is the cash alone (4 units read back would be 4 × 50 more).
+    assertClose(history.base.value, 700);
+  });
+
   it("warns if the log does not match portfolio.md", () => {
     const fewerUnits = reconstructSilo(input({ portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 3 }]) }));
     assert.match(fewerUnits.warnings.join("\n"), /AAA tendría -2\.0000 unidades/);

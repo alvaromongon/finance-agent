@@ -7,7 +7,7 @@
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
 import { normalizeEol } from "./parse.js";
-import { round2 } from "./round.js";
+import { round, round2 } from "./round.js";
 import {
   isLotPlaceholderRow,
   isPositionPlaceholder,
@@ -21,6 +21,8 @@ import {
 
 /** Units are fractions: below this the difference is float noise, not units. */
 const UNITS_EPSILON = 1e-8;
+/** Decimals of an exit's amount: its exact share of the sale amount, with the float noise cleared. */
+const AMOUNT_DECIMALS = 8;
 
 /** The lot an entry opens: all the units it bought, with the entry's own data as its snapshot. */
 export function lotOfEntry(entry: Decision, units: number): Lot {
@@ -78,6 +80,8 @@ export interface SaleShare {
  * Consumes the ticker's lots first in, first out (oldest entry date first, ties in the order of the
  * table) until `sale.units` are sold. The amount, the costs and the result of the sale are shared
  * across the lots pro rata to the units, the remainder on the last, so the exits add up to the sale.
+ * The amount is shared exactly (not to the cent: a lot of a few units of a low-priced asset would get
+ * 0.00); the costs and the result, which are settled money, go to the cent.
  * A lot's entry costs go pro rata too, and the exit that uses the lot up takes what is left of them
  * (`priorEntryCosts`: what earlier exits of each lot already took), so the exits of one lot add up
  * to its `Entry costs`. Throws if the ticker has no lots or fewer units than the sale.
@@ -115,17 +119,22 @@ export function planSale(
   }
 
   const sold = taken.reduce((sum, t) => sum + t.unitsSold, 0);
-  const split = (total: number | undefined): (number | undefined)[] => {
+  // `decimals` is the precision of each share: the cent for money that is settled (costs, result), 8 for
+  // the amount, which is the exact share of the sale amount so that a lot of a few units of a low-priced
+  // asset does not get 0.00 (the 8 decimals only clear float noise, as the file's number format does).
+  const split = (total: number | undefined, decimals = 2): (number | undefined)[] => {
     if (total === undefined) return taken.map(() => undefined);
     const shares: number[] = [];
     taken.forEach((t, i) => {
       shares.push(
-        i < taken.length - 1 ? round2((total * t.unitsSold) / sold) : round2(total - shares.reduce((a, b) => a + b, 0)),
+        i < taken.length - 1
+          ? round((total * t.unitsSold) / sold, decimals)
+          : round(total - shares.reduce((a, b) => a + b, 0), decimals),
       );
     });
     return shares;
   };
-  const amounts = split(sale.amount);
+  const amounts = split(sale.amount, AMOUNT_DECIMALS);
   const costs = split(sale.costs);
   const owned = split(sale.pnl);
 

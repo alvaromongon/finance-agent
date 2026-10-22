@@ -41,7 +41,7 @@ import {
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { applyLotChange, lotOfEntry, planSale } from "./utils/portfolio-lots.js";
-import { round2 } from "./utils/round.js";
+import { round, round2 } from "./utils/round.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 
@@ -137,6 +137,12 @@ export type OwnerDecisionProvider = PriceSource;
  * checks run before either is written. Returns the decisions recorded: one, except a sale that
  * spans several lots.
  */
+/**
+ * The amount of units at a price: to the cent, unless that is 0.00 (a few units of a low-priced asset),
+ * where the exact amount is kept so the entry or the sale can be recorded.
+ */
+const amountOf = (units: number, price: number): number => round2(units * price) || round(units * price, 8);
+
 export async function recordOwnerDecision(
   raw: unknown,
   provider: OwnerDecisionProvider = new YahooFinanceProvider(),
@@ -194,7 +200,7 @@ export async function recordOwnerDecision(
         ticker,
         origin: originFrom(proposal),
         price: input.price,
-        amount: input.amount ?? round2(units * input.price!),
+        amount: input.amount ?? amountOf(units, input.price!),
         units,
         costs: input.costs,
         stop_initial: input.stop,
@@ -222,7 +228,7 @@ export async function recordOwnerDecision(
     case "exit": {
       const ticker = input.ticker!;
       const sellProposal = findRelatedProposal(history, { ticker, date, types: ["sell"] });
-      const amount = input.amount ?? round2(input.units! * input.price!);
+      const amount = input.amount ?? amountOf(input.units!, input.price!);
       const units = input.units ?? amount / input.price!;
       const shares = planSale(
         book!.portfolio.lots,

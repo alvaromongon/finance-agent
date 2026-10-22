@@ -523,6 +523,40 @@ describe("measurable exits: the five R tests of spec #27", () => {
       assertRs(tradeRs(await evaluate()), [3]);
     });
 
+    it("a sale across a lot of 0.0001 units and one of 1 unit writes both exits and measures both lots (exact amounts)", async () => {
+      // The tiny lot's entry is 0.002798 and its share of the 30.00 sale 0.003, not 0.00 (a cent).
+      const tiny = await entry(27.98, 0.0001, 25, "2026-06-15");
+      const whole = await entry(27.98, 1, 25, "2026-06-16");
+      await exit(30, 1.0001, "2026-08-10");
+
+      const exits = (await readLog()).filter((d) => d.type === "exit");
+      assert.deepEqual(
+        exits.map((e) => [e.related_id, e.units, e.lot_units_left]),
+        [
+          [tiny.id, 0.0001, 0],
+          [whole.id, 1, 0],
+        ],
+      );
+      assertClose(exits[0].amount as number, (30 * 0.0001) / 1.0001, "the tiny lot's share, not rounded to the cent");
+      assertClose(
+        exits.reduce((sum, e) => sum + (e.amount as number), 0),
+        30,
+        "the shares add up to the sale amount",
+      );
+      assert.equal((await evaluate()).trades.length, 2, "both lots are measured");
+    });
+
+    it("selling the last 4 units of a lot priced 0.001 records an amount of 0.004 and measures the sale", async () => {
+      await entry(0.001, 10, 0.0005, "2026-06-15");
+      await exit(0.0011, 6, "2026-08-10");
+      await exit(0.0012, 4, "2026-08-11");
+
+      const exits = (await readLog()).filter((d) => d.type === "exit");
+      assert.equal(exits.at(-1)!.amount, 0.0048);
+      assert.equal(exits.at(-1)!.lot_units_left, 0);
+      assert.equal((await evaluate()).trades.length, 1);
+    });
+
     it("an entry creates the ticker's row with the lot's initial stop; a later entry only moves Volume and Avg price", async () => {
       await entry(100, 10, 90, "2026-06-15");
       let row = positionRow(await readPortfolioMd(), "TCK")!;
@@ -636,7 +670,8 @@ describe("measurable exits: the five R tests of spec #27", () => {
         date: "2026-08-10",
       });
       const amounts = (await readLog()).filter((d) => d.type === "exit").map((e) => e.amount as number);
-      assert.deepEqual(amounts, [111.11, 111.11, 111.12]);
+      // Exact shares of 333.34 (not rounded to the cent), the remainder on the last.
+      assert.deepEqual(amounts, [111.11333333, 111.11333333, 111.11333334]);
       assertClose(
         amounts.reduce((a, b) => a + b, 0),
         333.34,

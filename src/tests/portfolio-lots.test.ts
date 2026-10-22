@@ -187,14 +187,26 @@ describe("planSale: first in, first out", () => {
 });
 
 describe("planSale: what each exit carries", () => {
-  it("the amounts of the exits add up to the sale amount, the remainder on the last", () => {
-    // 3 lots of 1 unit; 1000.01 over 3 equal shares: 333.34 + 333.34 + 333.33.
+  it("the amounts of the exits are exact shares by units and add up to the sale amount, the remainder on the last", () => {
+    // 3 lots of 1 unit; 1000.01 over 3 equal shares: not rounded to the cent.
     const lots = [lot("a", 1), lot("b", 1), lot("c", 1)];
     const shares = planSale(lots, sale(3, { amount: 1000.01 }), new Map());
-    assert.deepEqual(
-      shares.map((s) => s.amount),
-      [333.34, 333.34, 333.33],
-    );
+    assert.ok(Math.abs(shares[0].amount - 1000.01 / 3) < 1e-7);
+    assert.equal(shares[0].amount, shares[1].amount);
+    assert.ok(Math.abs(shares.reduce((sum, s) => sum + s.amount, 0) - 1000.01) < 1e-9);
+  });
+
+  it("an exit's amount is its exact share, not rounded to the cent: a lot of 0.0001 units keeps a positive amount", () => {
+    // 0.0001 and 1 unit at 27.98: the sale amount is 27.980 + 0.003 (rounded to the cent it is 0.00 and 27.98).
+    const shares = planSale([lot("a", 0.0001), lot("b", 1)], sale(1.0001, { price: 27.98, amount: 27.98 }), new Map());
+    assert.ok(shares[0].amount > 0, `first share ${shares[0].amount}`);
+    assert.ok(Math.abs(shares[0].amount - (27.98 * 0.0001) / 1.0001) < 1e-9);
+    assert.ok(Math.abs(shares[0].amount + shares[1].amount - 27.98) < 1e-12, "the shares add up to the sale amount");
+  });
+
+  it("an exit's amount keeps its sub-cent value when the units are tiny and the price low", () => {
+    const shares = planSale([lot("a", 4)], { ticker: "TCK", units: 4, price: 0.001, amount: 0.004 }, new Map());
+    assert.equal(shares[0].amount, 0.004);
   });
 
   it("the costs of the sale are split the same way and stay absent when there are none", () => {
