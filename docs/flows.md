@@ -301,7 +301,12 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      its [lot](glossary.md#lot)); a lot is closed when its last exit has `lot_units_left` = 0. An
      exit without the snapshot or without `lot_units_left`, an oversold lot, and a lot whose exits do
      not add up (units left that do not follow the sales, or snapshots that disagree) are not
-     measured but are reported (the exits and lots by name) in the cutoff board and on the console;
+     measured but are reported (the exits and lots by name) in the cutoff board and on the console.
+     The open trades of the board come from the `Lots` of `portfolio.md` (one per [lot](glossary.md#lot),
+     a lot sold in part included), never from the decision log; an entry with no lot is not an open
+     trade (entries recorded before the lots carry no `units` and have none until the owner re-records
+     the open positions). The counter starts at the earliest entry date among the entry lines still
+     read, the exits' snapshots and the lots, so archiving a quarter does not move it. Then
      simulate each proposal's plan and compare it with the silo [benchmark](glossary.md#benchmark)
      and the [shadow portfolio](glossary.md#shadow-portfolio).
   3. `decisions:evaluate` writes `logs/decisions-evaluation.md` (the cutoff board, expectancy,

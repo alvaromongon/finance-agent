@@ -428,6 +428,25 @@ describe("measurable exits: the five R tests of spec #27", () => {
     await assertArchivingChangesNothing("before");
   });
 
+  it("R4: a lot sold in part stays one open trade, and the counter starts the same, whichever quarter is archived", async () => {
+    const run = async (archive?: Quarter) => {
+      await resetVault();
+      await record({ type: "deposit", currency: "USD", amount: 5000, date: "2026-02-02" });
+      await entry(100, 10, 90, "2026-06-15");
+      await exit(120, 4, "2026-08-10");
+      if (archive) await archiveQuarter(...archive);
+      const report = await evaluate();
+      assert.equal(report.board.open.length, 1, "the lot has 6 units left");
+      assert.equal(report.board.open[0].units, 6);
+      assert.equal(report.board.counterStart, "2026-06-15");
+      return renderDecisionsEvaluation(report);
+    };
+    const unarchived = await run();
+    for (const quarter of QUARTERS) {
+      assert.equal(await run(quarter), unarchived, `archiving 2026-${quarter[0]}`);
+    }
+  });
+
   describe("R5, read side: Lots that do not match fail on read", () => {
     /** Two entries and a portfolio.md that lists them as lots, the way the recorder leaves it. */
     const holdTwoLots = async () => {
