@@ -105,10 +105,31 @@ export async function readPortfolio(currency: Currency): Promise<PortfolioSnapsh
 }
 
 /**
+ * `readPortfolio` for the heartbeat: a `Lots` table that does not read (ADR-0015) does not refuse the
+ * file, so a typo there never switches off the stop alerts. The portfolio then has no lots and
+ * `lotsProblem` says why (file and section); it is null when the lots read. Every other problem of the
+ * file still throws.
+ */
+export async function readPortfolioTolerantOfLots(
+  currency: Currency,
+): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null }> {
+  let lotsProblem: string | null = null;
+  const portfolio = parsePortfolioText(await readTextFile(join(projectDir(), "portfolio.md")), currency, (err) => {
+    lotsProblem = `portfolio.md: ${err.message}`;
+  });
+  return { portfolio, lotsProblem };
+}
+
+/**
  * The silo's snapshot of a `portfolio.md` text already read, with the checks and warnings of
  * `readPortfolio`: a caller that also rewrites the text parses the very text it will rewrite.
  */
-export function parsePortfolioText(raw: string, currency: Currency): PortfolioSnapshot {
+export function parsePortfolioText(
+  raw: string,
+  currency: Currency,
+  /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
+  onLotsError?: (err: Error) => void,
+): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
   assertPortfolioSections(raw, currency);
 
@@ -142,9 +163,19 @@ export function parsePortfolioText(raw: string, currency: Currency): PortfolioSn
     cash: parseCash(raw, currency),
     ...(totalCash != null ? { totalCash } : {}),
     positions: parsePositions(raw, currency),
-    lots: parseLots(raw, currency),
+    lots: readLots(raw, currency, onLotsError),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
+}
+
+function readLots(raw: string, currency: Currency, onError?: (err: Error) => void) {
+  if (!onError) return parseLots(raw, currency);
+  try {
+    return parseLots(raw, currency);
+  } catch (err) {
+    onError(err as Error);
+    return [];
+  }
 }
 
 /** `portfolio.md` as text, for the writer of the lots; throws `ENOENT` if the file does not exist. */

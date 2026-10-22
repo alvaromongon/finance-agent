@@ -30,7 +30,11 @@ parentheses so a code comment that cites it can be found here.
      With nothing to watch the run ends. It also checks that each `Volume` is the sum of
      its [lots](glossary.md#lot)' units, from `portfolio.md` alone (it does not read the decision
      log); on a mismatch it does not refuse the file, it keeps watching and puts a warning in the
-     digest (see [Lots](input-format.md#portfoliomd)).
+     digest (see [Lots](input-format.md#portfoliomd)). The same holds for a `Lots` table that
+     does not read (a misspelled column in its header): no lots-check failure stops the run or
+     comes before the stop and price checks, it becomes a warning naming the file and section.
+     The warning is loud: unlike tight stops it is not deduplicated, so it is in every digest
+     while it lasts, and a lots warning alone still produces a digest.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
@@ -54,7 +58,7 @@ parentheses so a code comment that cites it can be found here.
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
   12. Send the digest (crossed stops, lots that do not match, tight stops, armed setups, escalations) with only what is new
-      since the last send today, and mark it as sent only if the email went out.
+      since the last send today (crossed stops and lots warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads `portfolio.md`, `watchlist.md`, `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md` and the last log of each ticker. Writes `portfolio.md` (prices),
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
