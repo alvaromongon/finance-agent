@@ -246,6 +246,64 @@ describe("decision:record (recordOwnerDecision)", () => {
     });
   });
 
+  describe("every exit carries the units it sold (B1 of PR #56)", () => {
+    const entryOf = (extra: object) => ({
+      type: "entry",
+      ticker: "ADBE",
+      currency: "USD",
+      price: 25,
+      stop: 20,
+      ...extra,
+    });
+    const sell = (extra: object) => ({ type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, ...extra });
+    const lotsOf = async (units: number[]) => {
+      for (const u of units) await record(entryOf({ units: u }));
+    };
+
+    for (const [name, sale] of [
+      ["by units", { units: 2.5 }],
+      ["by amount", { amount: 69.95 }],
+    ] as const) {
+      it(`a sale of all 2.5 units over four lots, ${name}: the units add up, every lot closes and is measured`, async () => {
+        await lotsOf([0.502, 0.428, 1.007, 0.563]);
+        const exits = await recordAll(sell(sale));
+        assert.deepEqual(
+          exits.map((e) => e.units),
+          [0.502, 0.428, 1.007, 0.563],
+        );
+        assert.deepEqual(
+          exits.map((e) => e.lot_units_left),
+          [0, 0, 0, 0],
+        );
+        assert.equal(exits.reduce((sum, e) => sum + e.amount!, 0).toFixed(2), "69.95");
+        const { measureTrades } = await import("../utils/decisions-evaluation.js");
+        const measured = measureTrades(await readLines());
+        assert.equal(measured.trades.length, 4);
+        assert.deepEqual(measured.unmeasured.inconsistent, []);
+        assert.deepEqual(measured.unmeasured.oversold, []);
+      });
+    }
+
+    it("a partial sale across lots: units sum to the units sold and lot_units_left steps by them", async () => {
+      await lotsOf([0.502, 0.428, 1.007]);
+      const exits = await recordAll(sell({ units: 1.2 }));
+      assert.deepEqual(
+        exits.map((e) => e.units),
+        [0.502, 0.428, 0.27],
+      );
+      assert.ok(Math.abs(exits[2].lot_units_left! - (1.007 - 0.27)) < 1e-9);
+    });
+
+    it("exact units that leave dust in a low-priced lot keep it: nothing is snapped", async () => {
+      await record(entryOf({ units: 10, price: 0.001, stop: 0.0008 }));
+      const [exit] = await recordAll(sell({ units: 6, price: 0.001 }));
+      assert.equal(exit.units, 6);
+      assert.equal(exit.lot_units_left, 4);
+      const md = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      assert.match(md, /ADBE/);
+    });
+  });
+
   it("an exit refuses related_id: a sale consumes the lots first in, first out, and nothing is written", async () => {
     const entry = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
     const before = await readFile(decisionsPath(), "utf8");

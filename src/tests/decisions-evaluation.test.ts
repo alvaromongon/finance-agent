@@ -419,6 +419,60 @@ describe("closedTrades", () => {
     );
   });
 
+  describe("units of an exit (B1 of PR #56)", () => {
+    // Price 27.98, lots 0.502 / 0.428 / 1.007 / 0.563 sold for 69.95 in all: the last exit absorbs the
+    // cents of the others (15.74 → 0.562545 units by amount / price, off 0.000455 from 0.563).
+    const sold = [
+      [0.502, 14.05],
+      [0.428, 11.98],
+      [1.007, 28.18],
+      [0.563, 15.74],
+    ] as const;
+    const exits = sold.map(([units, amount], i) =>
+      lotExit({
+        related_id: `lot-${i}`,
+        entry_units: units,
+        entry_price: 25,
+        stop_initial: 20,
+        price: 27.98,
+        amount,
+        units,
+        lot_units_left: 0,
+      }),
+    );
+
+    it("measures an exit from its units, not from amount / price: every lot closes and is measured", () => {
+      const measured = measureTrades(exits);
+      assert.equal(measured.trades.length, 4);
+      assert.deepEqual(measured.unmeasured.inconsistent, []);
+      assert.deepEqual(measured.unmeasured.oversold, []);
+      assertClose(measured.trades[3].rNet, (27.98 - 25) / 5);
+    });
+
+    it("without units it falls back to amount / price, with the cent slack", () => {
+      const without = exits.slice(0, 3).map(({ units: _units, ...rest }) => rest as Decision);
+      assert.equal(measureTrades(without).trades.length, 3);
+    });
+
+    it("units are measured exactly: a lot_units_left that does not fall by them is inconsistent, however close", () => {
+      const measured = measureTrades([
+        lotExit({ units: 4, amount: 480, lot_units_left: 6.001 }),
+        lotExit({ units: 6, amount: 720, lot_units_left: 0 }),
+      ]);
+      assert.deepEqual(measured.trades, []);
+      assert.equal(measured.unmeasured.inconsistent.length, 1);
+    });
+
+    it("the units weigh the R of a partial exit", () => {
+      // 4 units at 120 (+2R) and 6 at 105 (+0.5R), amounts off by a cent on purpose: weights come from units.
+      const trades = closedTrades([
+        lotExit({ units: 4, price: 120, amount: 480.01, lot_units_left: 6 }),
+        lotExit({ units: 6, price: 105, amount: 629.99, lot_units_left: 0 }),
+      ]);
+      assertClose(trades[0].rNet, 1.1);
+    });
+  });
+
   it("amounts rounded to the cent do not make the lot's units left inconsistent", () => {
     // 10 units sold as 3.333333 + 6.666667 at 30.07: amounts rounded to cents.
     const part = (units: number) => Math.round(units * 30.07 * 100) / 100;

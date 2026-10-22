@@ -150,7 +150,11 @@ describe("planSale: first in, first out", () => {
   it("a sale narrated by amount alone, whose units are known to half a cent of price, can use the lot up", () => {
     // 1.333 units at 100.50 are 133.9665, booked as 133.97: 1.333034 units, a hair more than the lot.
     const amount = 133.97;
-    const shares = planSale([lot("a", 1.333)], sale(amount / 100.5, { price: 100.5, amount }), new Map());
+    const shares = planSale(
+      [lot("a", 1.333)],
+      sale(amount / 100.5, { price: 100.5, amount, unitsFromAmount: true }),
+      new Map(),
+    );
     assert.deepEqual(
       shares.map((s) => [s.unitsSold, s.unitsLeft]),
       [[1.333, 0]],
@@ -161,7 +165,11 @@ describe("planSale: first in, first out", () => {
 
   it("a sale narrated by amount alone that leaves less than half a cent of price uses the lot up too", () => {
     // 7 units at 12.345 are 86.415; booked as 86.41 the units are 6.999595, 0.000405 short of the lot.
-    const shares = planSale([lot("a", 7)], sale(86.41 / 12.345, { price: 12.345, amount: 86.41 }), new Map());
+    const shares = planSale(
+      [lot("a", 7)],
+      sale(86.41 / 12.345, { price: 12.345, amount: 86.41, unitsFromAmount: true }),
+      new Map(),
+    );
     assert.deepEqual(
       shares.map((s) => [s.unitsSold, s.unitsLeft]),
       [[7, 0]],
@@ -418,5 +426,34 @@ last_manual_sync: 2026-10-16T18:00:00Z
   it("works with CRLF line ends, as the rest of the vault reads them", () => {
     const md = applyLotChange(PORTFOLIO.replace(/\n/g, "\r\n"), "USD", [lot("a", 10)], change({ newStopLoss: 90 }));
     assert.equal(usdLots(md).length, 1);
+  });
+});
+
+describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
+  it("a lot of 10 at 0.001 sold 6 units keeps its 4 units when the owner gave the units", () => {
+    const shares = planSale([lot("a", 10)], { ticker: "TCK", units: 6, price: 0.001, amount: 0.01 }, new Map());
+    assert.deepEqual(
+      shares.map((s) => [s.unitsSold, s.unitsLeft]),
+      [[6, 4]],
+    );
+  });
+
+  it("derived from an amount, the same remainder is dust and the lot is used up", () => {
+    const shares = planSale(
+      [lot("a", 10)],
+      { ticker: "TCK", units: 6, price: 0.001, amount: 0.01, unitsFromAmount: true },
+      new Map(),
+    );
+    assert.deepEqual(
+      shares.map((s) => [s.unitsSold, s.unitsLeft]),
+      [[10, 0]],
+    );
+  });
+
+  it("exact units above the open units are refused even by less than half a cent of price", () => {
+    assert.throws(
+      () => planSale([lot("a", 10)], { ticker: "TCK", units: 10.001, price: 1, amount: 10 }, new Map()),
+      /Cannot sell 10\.001/,
+    );
   });
 });

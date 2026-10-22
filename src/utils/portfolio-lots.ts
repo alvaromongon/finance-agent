@@ -45,6 +45,12 @@ export interface SalePlanInput {
   ticker: string;
   /** Units sold. */
   units: number;
+  /**
+   * The units were derived from `amount / price` (the owner gave only the amount), so they are known
+   * to half a cent of price: a lot that the sale leaves with less than that is used up. Absent when the
+   * owner gave the units: they are exact and nothing is snapped.
+   */
+  unitsFromAmount?: boolean;
   price: number;
   /** Amount of the whole sale, in the silo currency. */
   amount: number;
@@ -91,7 +97,8 @@ export function planSale(
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
   // and that much under leaves nothing worth keeping: the lot is used up (a position of dust is not one).
-  const tolerance = 0.005 / sale.price + UNITS_EPSILON;
+  // Units the owner gave are exact: on a low-priced asset half a cent of price is several units.
+  const tolerance = (sale.unitsFromAmount ? 0.005 / sale.price : 0) + UNITS_EPSILON;
   if (sale.units > open + tolerance) {
     throw new Error(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
   }

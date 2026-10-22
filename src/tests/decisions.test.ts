@@ -643,3 +643,25 @@ describe("findRelatedProposal / findOpenEntry", () => {
     assert.equal(findOpenEntry([e1, x1], "ADBE"), undefined);
   });
 });
+
+describe("validateDecision: units of an exit (B1 of PR #56)", () => {
+  const exitLine = (overrides: Partial<Decision> = {}) =>
+    base({ type: "exit", price: 120, amount: 480, source: "portfolio-sync", ...overrides });
+
+  it("an exit may carry the units it sold", () => {
+    assert.equal(buildDecision(exitLine({ units: 4 })).units, 4);
+  });
+
+  it("units is a number > 0 in an exit too", () => {
+    for (const bad of [0, -1, Number.NaN]) {
+      assert.throws(() => buildDecision(exitLine({ units: bad })), /units must be a number > 0/, String(bad));
+    }
+  });
+
+  it("units only goes in an entry or an exit", () => {
+    assert.throws(
+      () => buildDecision(base({ type: "adjust_stop", stop: 90, units: 4 })),
+      /units only goes in entry or exit/,
+    );
+  });
+});

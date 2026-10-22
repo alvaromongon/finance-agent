@@ -164,6 +164,66 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
     });
   }
 
+  describe("a split correction scales units, price and stop by one ratio (B2 of PR #56)", () => {
+    it("a 2:1 split passes: units × 2, entry price and initial stop ÷ 2", () => {
+      const p = portfolio(
+        [position("TCK", 20)],
+        [{ ...lot("a", 20), entryUnits: 20, entryPrice: 50, initialStop: 45 }],
+      );
+      assert.deepEqual(lotsMismatches(p, log), []);
+    });
+
+    it("a 1:10 reverse split passes too (ratio below 1), also on a part-sold lot", () => {
+      const p = portfolio(
+        [position("TCK", 0.6)],
+        [{ ...lot("a", 0.6), entryUnits: 1, entryPrice: 1000, initialStop: 900 }],
+      );
+      assert.deepEqual(lotsMismatches(p, log), []);
+    });
+
+    it("a split of a lot with no initial stop passes when the log has none either", () => {
+      const noStop = [{ ...entry("a", "TCK"), stop_initial: undefined }];
+      const p = portfolio(
+        [position("TCK", 20)],
+        [{ ...lot("a", 20), entryUnits: 20, entryPrice: 50, initialStop: null }],
+      );
+      assert.deepEqual(lotsMismatches(p, noStop), []);
+    });
+
+    it("scaling only the units is refused", () => {
+      const messages = lotsMismatches(portfolio([position("TCK", 20)], [{ ...lot("a", 20), entryUnits: 20 }]), log);
+      assert.ok(
+        messages.some((m) => /Entry units 20/.test(m)),
+        JSON.stringify(messages),
+      );
+    });
+
+    it("scaling units and price by different ratios is refused", () => {
+      const p = portfolio(
+        [position("TCK", 20)],
+        [{ ...lot("a", 20), entryUnits: 20, entryPrice: 40, initialStop: 45 }],
+      );
+      assert.ok(lotsMismatches(p, log).length > 0);
+    });
+
+    it("scaling units and price but not the stop is refused", () => {
+      const p = portfolio(
+        [position("TCK", 20)],
+        [{ ...lot("a", 20), entryUnits: 20, entryPrice: 50, initialStop: 90 }],
+      );
+      assert.ok(lotsMismatches(p, log).some((m) => /Initial stop 90/.test(m)));
+    });
+
+    it("a stop added to a split lot that had none in the log is refused", () => {
+      const noStop = [{ ...entry("a", "TCK"), stop_initial: undefined }];
+      const p = portfolio(
+        [position("TCK", 20)],
+        [{ ...lot("a", 20), entryUnits: 20, entryPrice: 50, initialStop: 45 }],
+      );
+      assert.ok(lotsMismatches(p, noStop).length > 0);
+    });
+  });
+
   it("a lot that agrees with its entry passes, with the entry units known to the cent (no units in the line)", () => {
     // 3.3333333 units at 100.12 are booked as 333.73 (rounded to the cent): 3.33333... units.
     const e = { ...earlierEntry("a", "TCK"), price: 100.12, amount: 333.73 };

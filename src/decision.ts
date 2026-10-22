@@ -226,7 +226,15 @@ export async function recordOwnerDecision(
       const units = input.units ?? amount / input.price!;
       const shares = planSale(
         book!.portfolio.lots,
-        { ticker, units, price: input.price!, amount, costs: input.costs, pnl: input.pnl },
+        {
+          ticker,
+          units,
+          unitsFromAmount: input.units == null,
+          price: input.price!,
+          amount,
+          costs: input.costs,
+          pnl: input.pnl,
+        },
         entryCostsTaken(history),
       );
       const origin = originFrom(sellProposal);
@@ -238,6 +246,8 @@ export async function recordOwnerDecision(
           origin,
           price: input.price,
           amount: share.amount,
+          // What this exit sold from its lot: the evaluation measures from it, not from amount / price.
+          units: share.unitsSold,
           costs: share.costs,
           pnl: share.pnl,
           // The lot's, never the latest open entry's: each exit is self-contained (ADR-0015).

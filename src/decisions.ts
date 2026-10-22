@@ -137,6 +137,10 @@ export interface Decision {
    * `entry`: the units bought, written by `decision:record` since the lot contract (#52); the lot's
    * `Entry units` is this number. An entry whose line carries none predates the lots and is out of the
    * lots check.
+   * `exit`: the units this exit sold from its lot, written by `decision:record` (B1 of PR #56). The
+   * evaluation measures from it (weights, the check of `lot_units_left`, closure) so the cent rounding
+   * of a sale split across lots cannot make a lot look inconsistent; an exit without it (written by
+   * hand) falls back to `amount / price`. The exits of one sale add up to the units sold.
    */
   units?: number;
   /** Snapshot: units of the whole lot at entry (`amount / price` of the entry). */
@@ -306,7 +310,7 @@ export function validateDecision(raw: unknown): Decision {
       errors.push(`${field} must be a number >= 0; got: ${JSON.stringify(v)}`);
     }
   }
-  if (raw.units != null && type !== "entry") errors.push("units only goes in entry");
+  if (raw.units != null && type !== "entry" && type !== "exit") errors.push("units only goes in entry or exit");
   if (raw.pnl != null) {
     if (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl))
       errors.push(`pnl must be a number; got: ${JSON.stringify(raw.pnl)}`);

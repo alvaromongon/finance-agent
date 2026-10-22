@@ -235,14 +235,17 @@ export interface ClosedTrade {
   exits: Decision[];
 }
 
-/** Units an exit sold. */
-const exitUnits = (exit: Decision): number => exit.amount! / exit.price!;
+/**
+ * Units an exit sold: its `units`, which `decision:record` writes on every exit. `amount / price` is
+ * only the fallback for an exit without it (written by hand), whose units are not exact.
+ */
+const exitUnits = (exit: Decision): number => exit.units ?? exit.amount! / exit.price!;
 
 /**
- * Slack, in units, in the units an exit sold: its amount is rounded to the cent, so its units are
- * only known to a cent of price. Float noise on top.
+ * Slack, in units, in the units an exit sold. None to speak of when it carries its `units` (float
+ * noise); without them its amount is rounded to the cent, so they are only known to a cent of price.
  */
-const exitSlack = (exit: Decision): number => 0.01 / exit.price! + 1e-9;
+const exitSlack = (exit: Decision): number => (exit.units != null ? 1e-8 : 0.01 / exit.price! + 1e-9);
 
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
