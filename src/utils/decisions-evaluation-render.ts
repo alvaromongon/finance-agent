@@ -123,7 +123,7 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
     ...t.boardHeader,
     t.closedTradesRow(trades.total, f.cutReviewTrades, f.cutDecisionTrades),
     t.expectancyRow(expectancy),
-    t.openTradesRow(board.open),
+    t.openTradesRow(board.open.length),
     t.portfoliosRow(total),
     "",
     ...t.siloHeader,

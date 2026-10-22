@@ -765,12 +765,6 @@ export function findRelatedProposal(
     .at(-1);
 }
 
-/** Latest entry of the ticker not yet cited by an exit. */
-export function findOpenEntry(decisions: readonly Decision[], ticker: string): Decision | undefined {
-  const closed = new Set(decisions.filter((d) => d.type === "exit").map((d) => d.related_id));
-  return decisions.filter((d) => d.type === "entry" && d.ticker === ticker && !closed.has(d.id)).at(-1);
-}
-
 /**
  * Origin of a narrated trade from the decision preceding it (ADR-0009 §8):
  * `sistema` (system) if it follows one of its proposals or an eligible armed

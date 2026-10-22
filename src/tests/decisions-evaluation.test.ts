@@ -32,7 +32,7 @@ import {
   renderDecisionsEvaluation,
 } from "../utils/decisions-evaluation-render.js";
 import type { HistoricalBar } from "../providers/types.js";
-import type { Currency, PortfolioSnapshot } from "../types.js";
+import type { Currency, Lot, PortfolioSnapshot } from "../types.js";
 import { closes, weekdayBars } from "./fixtures/weekday-bars.js";
 import { en } from "../i18n/en.js";
 import { es } from "../i18n/es.js";
@@ -941,6 +941,152 @@ describe("unmeasured exits and lots", () => {
   });
 });
 
+/** A held lot of the 10-unit lot of `lotExit` (ticker LOT, entry `lot-a`), with `units` still open. */
+const heldLot = (fields: Partial<Lot> = {}): Lot => ({
+  ticker: "LOT",
+  entryId: "lot-a",
+  date: "2026-08-03",
+  units: 6,
+  entryUnits: 10,
+  entryPrice: 100,
+  initialStop: 90,
+  entryCosts: null,
+  origin: "sistema",
+  rulesVersion: "1.0",
+  rulesViolations: [],
+  ...fields,
+});
+
+/** The cut board of a log and the USD silo's `Lots`; nothing else is held. */
+const lotWarnings = (board: ReturnType<typeof buildCutBoard>) =>
+  board.warnings.filter((w) => w.kind !== "reconstruction");
+
+const boardOf = (decisions: Decision[], lots: Lot[]) =>
+  buildCutBoard({
+    ...INPUT,
+    decisions,
+    portfolios: { EUR: snapshot("EUR", 500), USD: { ...snapshot("USD", 2171), lots } },
+  });
+
+describe("open trades come from Lots", () => {
+  it("a lot sold in part is one open trade with its remaining units and no closed trade; sold out, the reverse", () => {
+    const partly = boardOf([lotExit()], [heldLot()]);
+    assert.deepEqual(partly.open, [
+      {
+        currency: "USD",
+        ticker: "LOT",
+        entryId: "lot-a",
+        entryDate: "2026-08-03",
+        units: 6,
+        origin: "sistema",
+        rulesVersion: "1.0",
+        ruleViolations: [],
+      },
+    ]);
+    assert.equal(partly.trades.total, 0);
+
+    const soldOut = boardOf([lotExit(), lotExit({ date: "2026-09-17", amount: 720, lot_units_left: 0 })], []);
+    assert.deepEqual(soldOut.open, []);
+    assert.equal(soldOut.trades.total, 1);
+  });
+
+  it("two lots, one of them sold in part: both are open, an untouched one and a partly sold one", () => {
+    const untouched = heldLot({ ticker: "TWO", entryId: "lot-b", units: 5, entryUnits: 5, date: "2026-08-10" });
+    const board = boardOf([lotExit()], [heldLot(), untouched]);
+    assert.deepEqual(
+      board.open.map((o) => [o.ticker, o.units]),
+      [
+        ["LOT", 6],
+        ["TWO", 5],
+      ],
+    );
+    assert.equal(board.trades.total, 0);
+  });
+
+  it("carries the lot's origin, rules version and violations, and counts only system lots under C v1", () => {
+    const owner = heldLot({ entryId: "lot-o", origin: "propietario", rulesViolations: ["entry_above_zone"] });
+    const early = heldLot({ entryId: "lot-e", rulesVersion: "0.9" });
+    assert.deepEqual(boardOf([], [owner, early]).open, []);
+    const counted = boardOf([], [heldLot({ rulesViolations: ["entry_above_zone"] })]);
+    assert.deepEqual(counted.open[0].ruleViolations, ["entry_above_zone"]);
+  });
+
+  it("an entry with no lot is not an open trade, and an exit's related_id does not make one", () => {
+    const withoutLot = decision({ type: "entry", ticker: "NOL", amount: 500, rules_version: "1.0" });
+    assert.deepEqual(boardOf([withoutLot], []).open, []);
+    assert.deepEqual(boardOf([lotExit()], []).open, [], "a partly sold lot that is not in Lots is not held");
+  });
+
+  it("the output is the same whichever quarter is archived: the entry is not read from the log", () => {
+    const entryLine = decision({
+      type: "entry",
+      id: "lot-a",
+      ticker: "LOT",
+      date: "2026-08-03",
+      amount: 1000,
+      rules_version: "1.0",
+    });
+    const live = boardOf([entryLine, lotExit()], [heldLot()]);
+    const archived = boardOf([lotExit()], [heldLot()]);
+    assert.deepEqual(archived.open, live.open);
+    assert.equal(archived.counterStart, live.counterStart);
+    assert.equal(archived.counterStart, "2026-08-03");
+  });
+
+  describe("board and warnings agree", () => {
+    it("a lot named by an inconsistentLots warning that is still in Lots is open", () => {
+      // The second exit leaves 3 units after selling 4 from 6: units that do not follow the sales.
+      const exits = [lotExit(), lotExit({ date: "2026-09-17", amount: 480, lot_units_left: 3 })];
+      const board = boardOf(exits, [heldLot({ units: 3 })]);
+      assert.deepEqual(lotWarnings(board), [
+        { kind: "inconsistentLots", lots: [{ currency: "USD", ticker: "LOT", lotId: "lot-a", reason: "units_left" }] },
+      ]);
+      assert.deepEqual(
+        board.open.map((o) => [o.entryId, o.units]),
+        [["lot-a", 3]],
+      );
+    });
+
+    it("an oversold lot is not in Lots and is not counted open", () => {
+      const exits = [lotExit({ amount: 1500, units: 12, lot_units_left: 0 })];
+      const board = boardOf(exits, []);
+      assert.deepEqual(lotWarnings(board), [
+        { kind: "oversoldLots", lots: [{ currency: "USD", ticker: "LOT", lotId: "lot-a" }] },
+      ]);
+      assert.deepEqual(board.open, []);
+    });
+
+    it("an exit without a snapshot does not change the open count of the lot it cites", () => {
+      const { entry_price: _price, ...noSnapshot } = lotExit({ date: "2026-09-17" });
+      const board = boardOf([lotExit(), noSnapshot], [heldLot()]);
+      assert.deepEqual(
+        lotWarnings(board).map((w) => w.kind),
+        ["exitsWithoutSnapshot"],
+      );
+      assert.deepEqual(
+        board.open.map((o) => [o.entryId, o.units]),
+        [["lot-a", 6]],
+      );
+    });
+  });
+});
+
+describe("counterStart reads the entries, the exits' snapshots and the lots", () => {
+  it("a lot or an exit snapshot starts the counter when its entry line is archived", () => {
+    assert.equal(counterStart([], [heldLot()]), "2026-08-03");
+    assert.equal(counterStart([lotExit()]), "2026-08-03");
+  });
+
+  it("is the earliest of the three, under the same origin and rules-version filter", () => {
+    assert.equal(
+      counterStart([entry, lotExit({ entry_date: "2026-08-20" })], [heldLot({ date: "2026-08-10" })]),
+      "2026-08-10",
+    );
+    assert.equal(counterStart([lotExit({ entry_origin: "propietario" })], [heldLot({ origin: "propietario" })]), null);
+    assert.equal(counterStart([lotExit({ entry_rules_version: "0.9" })], [heldLot({ rulesVersion: "0.9" })]), null);
+  });
+});
+
 describe("buildCutBoard", () => {
   it("counts the system trades under C v1 and compares real and shadow portfolios in EUR", () => {
     const board = buildCutBoard(INPUT);
@@ -950,7 +1096,7 @@ describe("buildCutBoard", () => {
       { ...board.trades, expectancy: Number(board.trades.expectancy!.toFixed(6)) },
       { total: 1, withR: 1, expectancy: 1.96, winners: 1 },
     );
-    assert.equal(board.open, 0);
+    assert.deepEqual(board.open, []);
 
     const usd = board.silos.find((s) => s.currency === "USD")!;
     assertClose(usd.real, 2171, 1e-6);

@@ -10,7 +10,6 @@ import {
   buildDecision,
   decisionFromRecommendation,
   entryRuleViolations,
-  findOpenEntry,
   findRelatedProposal,
   originOf,
   resolveFxConversion,
@@ -578,7 +577,7 @@ describe("entryRuleViolations", () => {
   });
 });
 
-describe("findRelatedProposal / findOpenEntry", () => {
+describe("findRelatedProposal", () => {
   const proposal = buildDecision(base({ type: "buy_proposal", date: "2026-09-08", price: 500, assumptions: ["a"] }));
 
   it("attributes the entry to the same ticker's proposal within the window", () => {
@@ -631,16 +630,6 @@ describe("findRelatedProposal / findOpenEntry", () => {
     assert.equal(originOf(related), "propietario");
     assert.equal(originOf(proposal), "sistema");
     assert.equal(originOf(undefined), "propietario");
-  });
-
-  it("the exit closes the ticker's last open entry", () => {
-    const e1 = buildDecision(base({ type: "entry", source: "portfolio-sync", price: 490, amount: 490 }));
-    const x1 = buildDecision(
-      base({ type: "exit", source: "portfolio-sync", price: 460, amount: 460, related_id: e1.id }),
-    );
-    const e2 = buildDecision(base({ type: "entry", source: "portfolio-sync", price: 535, amount: 535 }));
-    assert.equal(findOpenEntry([e1, x1, e2], "ADBE")?.id, e2.id);
-    assert.equal(findOpenEntry([e1, x1], "ADBE"), undefined);
   });
 });
 

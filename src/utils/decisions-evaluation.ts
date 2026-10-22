@@ -8,7 +8,7 @@ import { config } from "../config.js";
 import type { Decision, DecisionOrigin, DecisionType } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { CONVICTIONS, CURRENCIES } from "../types.js";
-import type { Currency, PortfolioSnapshot } from "../types.js";
+import type { Currency, Lot, PortfolioSnapshot } from "../types.js";
 import { suggestStop } from "./atr-stop.js";
 import { splitRatio } from "./lots-check.js";
 import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
@@ -464,12 +464,6 @@ export function realizedR(exit: Decision): number | null {
   return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
 }
 
-/** Entries not cited by an exit. */
-export function openEntries(decisions: readonly Decision[]): Decision[] {
-  const closed = new Set(decisions.filter((d) => d.type === "exit").map((d) => d.related_id));
-  return decisions.filter((d) => d.type === "entry" && !closed.has(d.id));
-}
-
 // ─── Aggregates ──────────────────────────────────────────────────────────────
 
 export interface TradeStats {
@@ -696,6 +690,42 @@ export type BoardWarning =
   | { kind: "oversoldLots"; lots: OversoldLot[] }
   | { kind: "inconsistentLots"; lots: InconsistentLot[] };
 
+/** A lot still held, the open half of a trade (ADR-0015): read from `Lots`, never from the log. */
+export interface OpenTrade {
+  currency: Currency;
+  ticker: string;
+  /** Id of the entry that opened the lot. */
+  entryId: string;
+  entryDate: string;
+  /** Units still open. */
+  units: number;
+  origin: DecisionOrigin;
+  rulesVersion: string;
+  ruleViolations: string[];
+}
+
+/** Open trades of the silos' `Lots`: those that count for the cutoff (system, C v1). */
+export function openTrades(portfolios: Record<Currency, PortfolioSnapshot>): OpenTrade[] {
+  return CURRENCIES.flatMap((currency) =>
+    portfolios[currency].lots
+      .filter((lot) => countsForCutoff(lot.origin, lot.rulesVersion))
+      .map((lot) => ({
+        currency,
+        ticker: lot.ticker,
+        entryId: lot.entryId,
+        entryDate: lot.date,
+        units: lot.units,
+        origin: lot.origin,
+        rulesVersion: lot.rulesVersion,
+        ruleViolations: lot.rulesViolations,
+      })),
+  );
+}
+
+/** A trade counts for the cutoff when it is a system one under C v1 (ADR-0009 §4). */
+const countsForCutoff = (origin: DecisionOrigin, rulesVersion: string): boolean =>
+  origin === "sistema" && isCv1(rulesVersion);
+
 export interface CutBoard {
   /** Rules version in force (strategies/base.md). */
   rulesVersion: string;
@@ -705,8 +735,8 @@ export interface CutBoard {
   measuredFrom: string | null;
   /** Closed trades that count for the cutoff. */
   trades: TradeStats;
-  /** System entries under C v1 still open. */
-  open: number;
+  /** System trades under C v1 still open: one per lot in `Lots`, a lot sold in part included. */
+  open: OpenTrade[];
   silos: SiloPerformance[];
   /** What the report flags, the only warnings channel: silo reconstruction and the unmeasured exits and lots. */
   warnings: BoardWarning[];
@@ -715,14 +745,27 @@ export interface CutBoard {
   framework: EvaluationFramework;
 }
 
-/** The counter starts with the first entry under C v1 (ADR-0009 §4). */
-export function counterStart(decisions: readonly Decision[]): string | null {
-  return (
-    decisions
-      .filter((d) => d.type === "entry" && isCv1(d.rules_version))
-      .map((d) => d.date)
-      .sort()[0] ?? null
-  );
+/**
+ * The counter starts with the first entry under C v1 (ADR-0009 §4). The entry line may be archived,
+ * so the start is the earliest date among the entry lines still read, the `entry_date` of the
+ * snapshots of the exits and the `Date` of the lots, all of a system entry under C v1.
+ */
+export function counterStart(decisions: readonly Decision[], lots: readonly Lot[] = []): string | null {
+  const dates = [
+    ...decisions.filter((d) => d.type === "entry" && countsForCutoff(d.origin, d.rules_version)).map((d) => d.date),
+    ...decisions
+      .filter(
+        (d) =>
+          d.type === "exit" &&
+          d.entry_date != null &&
+          d.entry_origin != null &&
+          d.entry_rules_version != null &&
+          countsForCutoff(d.entry_origin, d.entry_rules_version),
+      )
+      .map((d) => d.entry_date!),
+    ...lots.filter((l) => countsForCutoff(l.origin, l.rulesVersion)).map((l) => l.date),
+  ];
+  return dates.sort()[0] ?? null;
 }
 
 export interface EvaluationInput {
@@ -748,7 +791,10 @@ export function buildCutBoard(
 ): CutBoard {
   const { trades, unmeasured } = measured;
   const framework = input.framework ?? configuredFramework();
-  const start = counterStart(input.decisions);
+  const start = counterStart(
+    input.decisions,
+    CURRENCIES.flatMap((c) => input.portfolios[c].lots),
+  );
   const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
   const silos =
     measuredFrom == null
@@ -787,7 +833,7 @@ export function buildCutBoard(
     counterStart: start,
     measuredFrom,
     trades: tradeStats(trades.filter((t) => t.counts)),
-    open: openEntries(input.decisions).filter((d) => d.origin === "sistema" && isCv1(d.rules_version)).length,
+    open: openTrades(input.portfolios),
     silos,
     warnings,
     totalEur,
