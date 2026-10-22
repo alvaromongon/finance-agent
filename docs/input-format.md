@@ -198,6 +198,12 @@ ratio from a right one, nor a split from a sale that was written to the
 decision log but not to `portfolio.md` (a stop between the two files); you
 catch both when you reconcile `Volume` with the broker.
 
+Write the split-adjusted `Entry price` and `Initial stop` at full precision
+(the original ÷ r, not rounded to the cent): the check compares them with the
+original within a tolerance of 1e-6, and the exits of a lot sold before and
+after the split are measured as one trade only if their snapshots differ by that
+same ratio.
+
 To correct a mistaken entry (a wrong ticker, price or units), the entry line
 stays in the decision log, so a lot deleted by hand would leave the silo
 refused (an open entry with no lot). Correct it in a correction commit
