@@ -160,8 +160,8 @@ rewritten, and the engine is its only writer.
 The units of one ticker bought in a single entry. A trade is one lot: buying more of a ticker you
 already hold opens a second lot and so a second trade, and its [R](#r) is measured on its own,
 from its own entry price and initial stop. A sale consumes the ticker's lots first in, first out
-(the oldest entry first) and records one exit per lot consumed; each exit says how many units its lot
-has left. Selling part of a lot leaves the rest of it open: a trade is closed, and counts in the
+(the oldest entry first) and records one exit per lot consumed; each exit says how many units it
+sold from its lot and how many the lot has left. Selling part of a lot leaves the rest of it open: a trade is closed, and counts in the
 results, when its lot is fully consumed, that is, when its last exit leaves 0 units. A lot only partly
 sold is an open position, not a closed trade. A lot whose sales add up to more than the units of the
 entry, or whose exits disagree about the entry or about the units left, is inconsistent data: it is not

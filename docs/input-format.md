@@ -185,9 +185,26 @@ and the entry id; fix `Lots` by hand. The heartbeat does not read the decision
 log: it only checks `Volume` against the lots, and it does not refuse the file
 either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises
 a warning in its output and in the digest, because a typo must not switch off
-the stop alerts. A stock split is corrected by scaling `Units`, `Entry units`,
-`Entry price` and `Initial stop` by the same ratio; the check cannot catch a
-wrong ratio.
+the stop alerts.
+
+A stock split is corrected by hand, in a correction commit, by scaling the lot
+by one ratio r > 0: `Units` and `Entry units` × r, `Entry price` and
+`Initial stop` ÷ r (a 2:1 split doubles the units and halves the prices). The
+check accepts a lot whose `Entry units`, `Entry price` and `Initial stop` differ
+from its entry in the decision log by one such common ratio, and refuses any
+other difference: only the units scaled, or the units and the price by
+different ratios, or a stop that was not scaled. The check cannot tell a wrong
+ratio from a right one, nor a split from a sale that was written to the
+decision log but not to `portfolio.md` (a stop between the two files); you
+catch both when you reconcile `Volume` with the broker.
+
+To correct a mistaken entry (a wrong ticker, price or units), the entry line
+stays in the decision log, so a lot deleted by hand would leave the silo
+refused (an open entry with no lot). Correct it in a correction commit
+([ADR-0006](decisions/0006-single-append-only-decision-log.md)): fix or remove the entry's
+line in `logs/decisions.jsonl` (the ADR's dedicated commit, made when no
+automated run is in flight) together with its lot in `Lots` and `Volume` in
+`Positions`, in the same commit, so the log and the portfolio agree again.
 
 ## `watchlist.md`
 

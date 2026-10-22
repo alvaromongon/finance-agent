@@ -173,13 +173,20 @@ them. It needs one history request per position with a stop; without ATR the pos
   rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
   `overrode_block`. The engine also keeps the [lots](glossary.md#lot):
-  - An entry adds a lot to `Lots` and creates the ticker's row in `Positions` (with the lot's
+  - Units and amount are one fact: given both, they must agree to within a cent
+    (`|amount − units × price| ≤ 0.01`), otherwise the trade is refused and nothing is written; given
+    one, the other is derived.
+  - An entry writes `units` (the units bought) on its log line and adds a lot to `Lots`, whose
+    `Entry units` is that number; it creates the ticker's row in `Positions` (with the lot's
     initial stop as `Stop loss`) or updates its `Volume` and `Avg price`. It needs `portfolio.md`:
     without it the lot would be lost, so the entry is refused.
   - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
-    `exit` per lot consumed. Each exit cites its own lot, carries the snapshot the evaluation needs
+    `exit` per lot consumed. Each exit cites its own lot, carries `units` (the units it sold from the
+    lot; those of a sale's exits add up to the units sold), the snapshot the evaluation needs
     (entry price, units, date, origin, rules version, initial stop, rules broken, its share of the
-    entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). Its
+    entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). A
+    sale narrated by amount alone has units known only to half a cent of price, so a lot it leaves
+    with less than that is used up; units the owner gave are exact and nothing is snapped. Its
     `pnl` comes from the lot's entry price, costs not included. The lots a sale uses up are removed
     from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
@@ -188,7 +195,8 @@ them. It needs one history request per position with a stop; without ATR the pos
 - **Reads / writes**: reads `logs/decisions.jsonl` (and the archive), `portfolio.md`, `watchlist.md`,
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
-  `portfolio.md` rewritten second.
+  `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
+  it), so a stop never leaves `portfolio.md` cut short.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the
   record, because a Markdown log without its decision line would mean measuring halfway. If the
   process stops between the log and the portfolio, an exit exists whose lot did not shrink; the
