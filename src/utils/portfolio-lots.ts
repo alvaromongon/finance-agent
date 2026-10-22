@@ -89,18 +89,21 @@ export function planSale(
   if (ordered.length === 0)
     throw new Error(`Cannot sell ${sale.ticker}: no open lots for ${sale.ticker} in portfolio.md`);
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
-  // A sale narrated by amount has its units known to half a cent of price: that much over is the lot.
-  if (sale.units > open + UNITS_EPSILON + 0.005 / sale.price) {
+  // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
+  // and that much under leaves nothing worth keeping: the lot is used up (a position of dust is not one).
+  const tolerance = 0.005 / sale.price + UNITS_EPSILON;
+  if (sale.units > open + tolerance) {
     throw new Error(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
   }
 
   const taken: { lot: Lot; unitsSold: number; unitsLeft: number }[] = [];
   let remaining = sale.units;
   for (const lot of ordered) {
-    if (remaining < UNITS_EPSILON) break;
-    const unitsSold = Math.min(lot.units, remaining);
-    const left = lot.units - unitsSold;
-    taken.push({ lot, unitsSold, unitsLeft: left < UNITS_EPSILON ? 0 : left });
+    if (remaining < UNITS_EPSILON || (taken.length > 0 && remaining <= tolerance)) break;
+    const left = lot.units - Math.min(lot.units, remaining);
+    const usedUp = left <= tolerance;
+    const unitsSold = usedUp ? lot.units : lot.units - left;
+    taken.push({ lot, unitsSold, unitsLeft: usedUp ? 0 : left });
     remaining -= unitsSold;
   }
 

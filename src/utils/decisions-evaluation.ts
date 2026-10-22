@@ -240,9 +240,9 @@ const exitUnits = (exit: Decision): number => exit.amount! / exit.price!;
 
 /**
  * Slack, in units, in the units an exit sold: its amount is rounded to the cent, so its units are
- * only known to half a cent of price. Float noise on top.
+ * only known to a cent of price. Float noise on top.
  */
-const exitSlack = (exit: Decision): number => 0.005 / exit.price! + 1e-9;
+const exitSlack = (exit: Decision): number => 0.01 / exit.price! + 1e-9;
 
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
@@ -331,10 +331,9 @@ export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
   // Each lot is judged once: closed (measured), open (not yet a trade) or not measured, with the reason.
   const closed: { exits: LotExit[]; last: number }[] = [];
   for (const lot of byLot.values()) {
-    const exits = [...lot.exits].sort((a, b) => a.date.localeCompare(b.date));
-    const verdict = judgeLot(exits);
-    const { currency, ticker, related_id: lotId } = exits[0];
-    if (verdict === "closed") closed.push({ exits, last: lot.last });
+    const verdict = judgeLot(lot.exits);
+    const { currency, ticker, related_id: lotId } = lot.exits[0];
+    if (verdict === "closed") closed.push({ exits: [...lot.exits].sort(byDate), last: lot.last });
     else if (verdict === "oversold") unmeasured.oversold.push({ currency, ticker, lotId });
     else if (verdict !== "open") unmeasured.inconsistent.push({ currency, ticker, lotId, reason: verdict });
   }
@@ -360,12 +359,19 @@ export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
   return { trades, unmeasured };
 }
 
+/** Stable: exits of the same day keep the order they came in. */
+const byDate = (a: Decision, b: Decision): number => a.date.localeCompare(b.date);
+
 /**
- * Judges the exits of one lot, in date order. They must agree on the snapshot of the lot, must not
+ * Judges the exits of one lot. `lot_units_left` is the lot's running balance, written in the order the
+ * sales were recorded, which a backdated sale breaks from date order (and the decision history is in
+ * date order). The balance only ever falls, so the exits are followed from the highest balance to the
+ * lowest, which is the order they were written in whatever their dates. They must agree on the snapshot of the lot, must not
  * sell more than it had, and each must take `lot_units_left` down by the units it sold (within cent
  * rounding); then the lot is closed when its last exit left 0 and open otherwise.
  */
-function judgeLot(exits: readonly LotExit[]): LotVerdict {
+function judgeLot(written: readonly LotExit[]): LotVerdict {
+  const exits = [...written].sort((a, b) => b.lot_units_left - a.lot_units_left);
   const first = exits[0];
   const violations = (e: Decision) => [...(e.rule_violations ?? [])].sort().join(",");
   const agrees = (e: Decision) =>

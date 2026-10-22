@@ -133,6 +133,12 @@ export interface Decision {
    * parses, and the evaluation skips it. Snapshot: entry price.
    */
   entry_price?: number;
+  /**
+   * `entry`: the units bought, written by `decision:record` since the lot contract (#52); the lot's
+   * `Entry units` is this number. An entry whose line carries none predates the lots and is out of the
+   * lots check.
+   */
+  units?: number;
   /** Snapshot: units of the whole lot at entry (`amount / price` of the entry). */
   entry_units?: number;
   /**
@@ -193,6 +199,7 @@ const KNOWN_FIELDS = new Set<string>([
   "assumptions",
   "rules_version",
   "rule_violations",
+  "units",
   "entry_price",
   "entry_units",
   "entry_costs",
@@ -286,6 +293,7 @@ export function validateDecision(raw: unknown): Decision {
     "atr14",
     "entry_price",
     "entry_units",
+    "units",
   ] as const) {
     const v = raw[field];
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
@@ -298,6 +306,7 @@ export function validateDecision(raw: unknown): Decision {
       errors.push(`${field} must be a number >= 0; got: ${JSON.stringify(v)}`);
     }
   }
+  if (raw.units != null && type !== "entry") errors.push("units only goes in entry");
   if (raw.pnl != null) {
     if (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl))
       errors.push(`pnl must be a number; got: ${JSON.stringify(raw.pnl)}`);
@@ -654,6 +663,18 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if ((type === "entry" || type === "exit") && !has("price")) errors.push(`price is required in ${type}`);
   if ((type === "entry" || type === "exit") && !has("amount") && !has("units")) {
     errors.push(`${type} needs amount or units`);
+  }
+  if ((type === "entry" || type === "exit") && has("units") && has("amount")) {
+    // Units, amount and price are one fact told twice: the lot, the log line and the evaluation (which
+    // measures units as amount / price) must read the same units, so a contradiction is refused.
+    const { units, amount, price } = raw as { units: number; amount: number; price: number };
+    if (Number.isFinite(units) && Number.isFinite(amount) && Number.isFinite(price) && price > 0) {
+      if (Math.abs(amount - units * price) > 0.01 + 1e-9) {
+        errors.push(
+          `units ${units} × price ${price} = ${round(units * price, 2)}, not the amount ${amount} (give units or amount, or make them agree to the cent)`,
+        );
+      }
+    }
   }
   if (type === "adjust_stop" && !has("stop")) errors.push("stop is required in adjust_stop");
   if ((type === "deposit" || type === "withdrawal" || type === "fx_conversion") && !has("amount")) {

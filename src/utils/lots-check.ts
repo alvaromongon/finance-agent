@@ -52,9 +52,8 @@ export function volumeMismatches(portfolio: PortfolioSnapshot): string[] {
  *   (`lot_units_left` 0): a two-file write that stopped halfway after the log;
  * - a ticker whose `Volume` is not the sum of the units of its lots (`volumeMismatches`).
  *
- * An entry is open when no exit citing it has `lot_units_left` = 0. An entry cited by an exit that
- * carries no `lot_units_left` was closed before the lot contract (#52) and is out of the check:
- * entries carry no `units` of their own, so this is how the entries of the earlier format are told apart.
+ * An entry is open when no exit citing it has `lot_units_left` = 0. Entries whose log line carries no
+ * `units` predate the lot contract (#52) and are out of that check (`entriesWithoutLot`).
  */
 export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly Decision[]): string[] {
   const at = where(portfolio);
@@ -113,9 +112,14 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
   };
 
   num("Entry price", lot.entryPrice, entry.price, PRICE_TOLERANCE);
-  // The entry's amount is rounded to the cent, so its units are only known to half a cent of price.
-  const logUnits = entry.amount != null && entry.price ? entry.amount / entry.price : null;
-  num("Entry units", lot.entryUnits, logUnits, entry.price ? 0.005 / entry.price + UNITS_TOLERANCE : 0);
+  // An entry recorded under the lot contract carries its units; an older one (a lot written by hand for
+  // it) only its amount, rounded to the cent, so its units are known to half a cent of price.
+  if (entry.units != null) {
+    num("Entry units", lot.entryUnits, entry.units, UNITS_TOLERANCE);
+  } else {
+    const logUnits = entry.amount != null && entry.price ? entry.amount / entry.price : null;
+    num("Entry units", lot.entryUnits, logUnits, entry.price ? 0.005 / entry.price + UNITS_TOLERANCE : 0);
+  }
   num("Initial stop", lot.initialStop, entry.stop_initial, PRICE_TOLERANCE);
   text("Date", lot.date, entry.date);
   text("Origin", lot.origin, entry.origin);
@@ -125,24 +129,26 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
   return differences;
 }
 
-/** Entries of the silo that are still open in the log and have no row in `Lots`. */
+/**
+ * Entries of the silo that are still open in the log and have no row in `Lots`. Only entries under the
+ * lot contract are checked: their log line carries `units`, which `decision:record` writes on every
+ * entry from #42 on. An entry without it predates the lots and is out of the check, cited by an exit or
+ * not (a v1 position still open, an exit that cited only the latest entry of a scale-in, an exit with
+ * no `related_id`).
+ */
 function entriesWithoutLot(portfolio: PortfolioSnapshot, decisions: readonly Decision[]): string[] {
-  const used = new Set<string>();
-  const earlierFormat = new Set<string>();
-  for (const d of decisions) {
-    if (d.type !== "exit" || !d.related_id) continue;
-    if (d.lot_units_left == null) earlierFormat.add(d.related_id);
-    else if (d.lot_units_left === 0) used.add(d.related_id);
-  }
+  const used = new Set(
+    decisions.filter((d) => d.type === "exit" && d.lot_units_left === 0 && d.related_id).map((d) => d.related_id),
+  );
   const lotted = new Set(portfolio.lots.map((l) => l.entryId));
   return decisions
     .filter(
       (d) =>
         d.type === "entry" &&
+        d.units != null &&
         d.ticker != null &&
         d.currency === portfolio.currency &&
         !used.has(d.id) &&
-        !earlierFormat.has(d.id) &&
         !lotted.has(d.id),
     )
     .map((d) => `${where(portfolio)}: ${d.ticker}: entry ${d.id} is open in the decision log but has no lot in Lots`);

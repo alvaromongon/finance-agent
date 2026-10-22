@@ -15,7 +15,7 @@ import {
   readAccountEnv,
   readDecisionHistory,
   readDecisions,
-  readPortfolio,
+  parsePortfolioText,
   readPortfolioText,
   readRulesVersion,
   readWatchlist,
@@ -185,13 +185,17 @@ export async function recordOwnerDecision(
         explicit ??
         findRelatedProposal(history, { ticker, date, types: ["buy_proposal", "buy_blocked", "setup_armed"] });
       const atr = await fetchAtr(provider, ticker);
+      // Units and amount are one fact (the input validation refused a contradiction): the log line, the
+      // lot's `Entry units` and the evaluation read the same units.
+      const units = input.units ?? input.amount! / input.price!;
       const entry = buildDecision({
         ...common,
         type: "entry",
         ticker,
         origin: originFrom(proposal),
         price: input.price,
-        amount: input.amount ?? round2(input.units! * input.price!),
+        amount: input.amount ?? round2(units * input.price!),
+        units,
         costs: input.costs,
         stop_initial: input.stop,
         rule_violations: [
@@ -208,15 +212,11 @@ export async function recordOwnerDecision(
         related_id: proposal?.id,
       });
       decisions = [entry];
-      portfolioText = withLots(
-        book!,
-        [...book!.portfolio.lots, lotOfEntry(entry, input.units ?? entry.amount! / entry.price!)],
-        {
-          ticker,
-          newStopLoss: entry.stop_initial ?? null,
-          currentPrice: entry.price,
-        },
-      );
+      portfolioText = withLots(book!, [...book!.portfolio.lots, lotOfEntry(entry, units)], {
+        ticker,
+        newStopLoss: entry.stop_initial ?? null,
+        currentPrice: entry.price,
+      });
       break;
     }
     case "exit": {
@@ -332,7 +332,7 @@ async function readLotBook(currency: Currency, history: readonly Decision[]): Pr
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
-  const portfolio = await readPortfolio(currency);
+  const portfolio = parsePortfolioText(text, currency);
   assertLotsMatch(portfolio, history);
   return { text, portfolio };
 }

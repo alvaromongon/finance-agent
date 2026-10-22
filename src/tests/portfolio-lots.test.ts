@@ -159,6 +159,20 @@ describe("planSale: first in, first out", () => {
     assert.throws(() => planSale([lot("a", 1.333)], sale(1.3331, { price: 100.5 }), new Map()), /1\.3331.*TCK.*1\.333/);
   });
 
+  it("a sale narrated by amount alone that leaves less than half a cent of price uses the lot up too", () => {
+    // 7 units at 12.345 are 86.415; booked as 86.41 the units are 6.999595, 0.000405 short of the lot.
+    const shares = planSale([lot("a", 7)], sale(86.41 / 12.345, { price: 12.345, amount: 86.41 }), new Map());
+    assert.deepEqual(
+      shares.map((s) => [s.unitsSold, s.unitsLeft]),
+      [[7, 0]],
+    );
+  });
+
+  it("a sale that leaves more than half a cent of price in the lot leaves it open", () => {
+    const shares = planSale([lot("a", 7)], sale(86.4 / 12.345, { price: 12.345, amount: 86.4 }), new Map());
+    assert.equal(shares[0].unitsLeft > 0, true);
+  });
+
   it("a sale of more units than the ticker's open units is an error naming both", () => {
     assert.throws(() => planSale([lot("a", 10), lot("b", 10)], sale(21), new Map()), /21.*TCK.*20/);
   });

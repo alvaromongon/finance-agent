@@ -711,11 +711,12 @@ describe("measurable exits: the five R tests of spec #27", () => {
       if (process.getuid?.() === 0) return t.skip("root can write a read-only file");
       await entry(100, 10, 90, "2026-06-15");
       const before = await readPortfolioMd();
-      await chmod(join(vaultDir, "portfolio.md"), 0o444);
+      // The rewrite creates a temp file beside portfolio.md, so a read-only directory stops it.
+      await chmod(vaultDir, 0o555);
       try {
         await assert.rejects(exit(120, 10, "2026-08-10"), /EACCES|permission/i);
       } finally {
-        await chmod(join(vaultDir, "portfolio.md"), 0o644);
+        await chmod(vaultDir, 0o755);
       }
       assert.equal((await readLog()).filter((d) => d.type === "exit").length, 1, "the exit is in the log");
       assert.equal(await readPortfolioMd(), before, "the lot was not touched");

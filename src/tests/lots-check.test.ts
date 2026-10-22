@@ -15,9 +15,16 @@ const entry = (id: string, ticker: string, currency: "EUR" | "USD" = "USD"): Dec
     type: "entry",
     price: 100,
     amount: 1000,
+    units: 10,
     stop_initial: 90,
     rules_version: "1.0",
   });
+
+/** An entry recorded before the lot contract (#52): its log line carries no `units`. */
+const earlierEntry = (id: string, ticker: string): Decision => {
+  const { units: _units, ...rest } = entry(id, ticker);
+  return rest;
+};
 
 const position = (ticker: string, volume: number): Position => ({
   ticker,
@@ -157,9 +164,9 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
     });
   }
 
-  it("a lot that agrees with its entry passes, with the entry units known to the cent", () => {
+  it("a lot that agrees with its entry passes, with the entry units known to the cent (no units in the line)", () => {
     // 3.3333333 units at 100.12 are booked as 333.73 (rounded to the cent): 3.33333... units.
-    const e = buildDecision({ ...log[0], price: 100.12, amount: 333.73, stop_initial: 90 });
+    const e = { ...earlierEntry("a", "TCK"), price: 100.12, amount: 333.73 };
     const p = portfolio(
       [position("TCK", 3.3333333)],
       [{ ...lot("a", 3.3333333), entryUnits: 3.3333333, entryPrice: 100.12 }],
@@ -209,8 +216,16 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
       assert.deepEqual(lotsMismatches(empty, [...log, exitOf("a", 5), exitOf("a", 0)]), []);
     });
 
-    it("an entry cited by an exit that carries no lot_units_left was closed before the lot contract: out of the check", () => {
-      assert.deepEqual(lotsMismatches(empty, [...log, exitOf("a")]), []);
+    it("an entry whose log line carries no units predates the lot contract: out of the check, cited or not", () => {
+      assert.deepEqual(lotsMismatches(empty, [earlierEntry("a", "TCK")]), [], "no exit cites it");
+      assert.deepEqual(lotsMismatches(empty, [earlierEntry("a", "TCK"), exitOf("a")]), [], "cited without a left");
+    });
+
+    it("a v1 position still open: its old entries are out of the check, and a new entry beside them is checked", () => {
+      const old = [earlierEntry("old1", "TCK"), earlierEntry("old2", "TCK")];
+      assert.deepEqual(lotsMismatches(empty, old), []);
+      const [message] = lotsMismatches(empty, [...old, entry("new", "TCK")]);
+      assert.match(message, /TCK.*entry new.*no lot/);
     });
 
     it("only the entries of the silo's currency count", () => {

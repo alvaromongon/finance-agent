@@ -477,6 +477,29 @@ describe("closedTrades", () => {
   });
 
   describe("closure by lot_units_left (#52)", () => {
+    it("a backdated sale is not a mismatch: the balance is followed in the order it was written, not by date", () => {
+      // A lot of 10: sale A (12-Sep) leaves 7, then sale B, recorded later but dated 10-Sep, leaves 5.
+      // The decision history is in date order, so B comes before A.
+      const a = lotExit({ date: "2026-09-12", amount: 360, price: 120, lot_units_left: 7 });
+      const b = lotExit({ date: "2026-09-10", amount: 240, price: 120, lot_units_left: 5 });
+      const c = lotExit({ date: "2026-09-13", amount: 600, price: 120, lot_units_left: 0 });
+      for (const exits of [
+        [b, a, c],
+        [a, b, c],
+        [c, a, b],
+      ]) {
+        const measured = measureTrades(exits);
+        assert.deepEqual(measured.unmeasured.inconsistent, []);
+        assert.equal(measured.trades.length, 1);
+        assert.equal(measured.trades[0].exitDate, "2026-09-13");
+        assert.deepEqual(
+          measured.trades[0].exits.map((e) => e.date),
+          ["2026-09-10", "2026-09-12", "2026-09-13"],
+          "the trade lists its exits by date",
+        );
+      }
+    });
+
     it("a lot is closed when its last exit has lot_units_left = 0, however the units add up", () => {
       const [t] = closedTrades([
         lotExit({ amount: 480, lot_units_left: 6 }),
@@ -505,7 +528,7 @@ describe("closedTrades", () => {
       assert.equal(measureTrades([part(49, 51), part(51, 0)]).trades.length, 1);
     });
 
-    it("the exits are followed in date order, whatever their order in the log", () => {
+    it("the exits are followed by their balance, whatever their order in the log", () => {
       const measured = measureTrades([
         lotExit({ date: "2026-09-17", amount: 720, lot_units_left: 0 }),
         lotExit({ date: "2026-09-10", amount: 480, lot_units_left: 6 }),

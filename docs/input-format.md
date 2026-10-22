@@ -175,9 +175,9 @@ when:
   initial stop, date, origin, rules version or rules violations differ from the
   entry's; or
 - an entry in the decision log is still open and has no lot. An entry is open
-  until an exit that cites it has `lot_units_left` 0. An entry cited by an exit
-  without `lot_units_left` was closed before the lots existed and is not
-  checked.
+  until an exit that cites it has `lot_units_left` 0. An entry whose log line has
+  no `units` was recorded before the lots existed and is not checked
+  (`decision:record` writes `units` on every entry).
 
 Where portfolio and log are both read, `decision:record` and
 `decisions:evaluate` refuse an inconsistent silo with an error naming the ticker

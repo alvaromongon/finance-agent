@@ -1,6 +1,6 @@
 // Reading/writing of the vault Markdown "brain".
 import { messages } from "./i18n/index.js";
-import { writeFile, readdir, mkdir, unlink, appendFile } from "node:fs/promises";
+import { writeFile, readdir, mkdir, unlink, appendFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { config } from "./config.js";
@@ -101,7 +101,14 @@ export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[
  * without a manual update. It does not block the run, it only warns.
  */
 export async function readPortfolio(currency: Currency): Promise<PortfolioSnapshot> {
-  const raw = await readTextFile(join(projectDir(), "portfolio.md"));
+  return parsePortfolioText(await readTextFile(join(projectDir(), "portfolio.md")), currency);
+}
+
+/**
+ * The silo's snapshot of a `portfolio.md` text already read, with the checks and warnings of
+ * `readPortfolio`: a caller that also rewrites the text parses the very text it will rewrite.
+ */
+export function parsePortfolioText(raw: string, currency: Currency): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
   assertPortfolioSections(raw, currency);
 
@@ -147,7 +154,16 @@ export async function readPortfolioText(): Promise<string> {
 
 /** Replaces `portfolio.md` with `text`: `decision:record` rewrites the `Lots` and `Positions` tables (ADR-0015). */
 export async function writePortfolioText(text: string): Promise<void> {
-  await writeFile(join(projectDir(), "portfolio.md"), text, "utf8");
+  // Atomic: a temp file in the same directory, renamed over the file, so a crash never leaves it truncated.
+  const target = join(projectDir(), "portfolio.md");
+  const temp = `${target}.${process.pid}.tmp`;
+  try {
+    await writeFile(temp, text, "utf8");
+    await rename(temp, target);
+  } catch (err) {
+    await unlink(temp).catch(() => undefined);
+    throw err;
+  }
 }
 
 // ─── Portfolio auto-update ────────────────────────────────────────────────────
