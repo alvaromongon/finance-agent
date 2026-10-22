@@ -136,6 +136,12 @@ fill, a recording mistake). The first row is the header and columns are read
 one is an error. An empty table (header only, or `—` rows) is a silo with no
 open lots.
 
+The `exit` lines `decision:record` writes for a sale carry, per lot, an `amount`
+that is that exit's exact share of the sale amount and can have sub-cent
+decimals (owner decision of 2026-10-22 in #27). When the owner gives only the
+units, the sale amount derived (`units × price`) is to the cent unless that
+rounds to 0.00, and then it is exact.
+
 | Column             | Meaning                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------ |
 | `Ticker`           | Ticker of the position the lot belongs to; the one of its entry in the decision log              |

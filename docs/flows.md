@@ -187,6 +187,10 @@ them. It needs one history request per position with a stop; without ATR the pos
     entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). A
     sale narrated by amount alone has units known only to half a cent of price, so a lot it leaves
     with less than that is used up; units the owner gave are exact and nothing is snapped. Its
+    The costs of the sale are shared across the exits in whole cents (largest remainder: no share
+    is negative, they add up to the total). An exit's `amount` is its exact share of the sale amount
+    and can have sub-cent decimals (owner decision of 2026-10-22 in #27); when only units are given,
+    the sale amount derived is to the cent unless that rounds to 0.00, then exact. Its
     `pnl` comes from the lot's entry price, costs not included. The lots a sale uses up are removed
     from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.

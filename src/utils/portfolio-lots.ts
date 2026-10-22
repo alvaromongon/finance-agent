@@ -7,7 +7,7 @@
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
 import { normalizeEol } from "./parse.js";
-import { round, round2 } from "./round.js";
+import { round2 } from "./round.js";
 import {
   isLotPlaceholderRow,
   isPositionPlaceholder,
@@ -39,6 +39,39 @@ export function lotOfEntry(entry: Decision, units: number): Lot {
     rulesVersion: entry.rules_version,
     rulesViolations: entry.rule_violations ?? [],
   };
+}
+
+/**
+ * Shares `total` over `weights` in whole units of the last of `decimals` decimals (cents for 2), by the
+ * largest-remainder method: each share is its exact part rounded down, and the units left over go one
+ * each to the largest remainders (the later on a tie, as the remainder used to go to the last). So no share is ever negative (all are <= 0 for
+ * a negative total) and the shares add up exactly to `total` rounded to that unit. Rounding every share
+ * and giving the last `total - sum` can leave the last negative.
+ */
+export function allocateByWeight(total: number, weights: readonly number[], decimals: number): number[] {
+  const unit = 10 ** decimals;
+  const sign = total < 0 ? -1 : 1;
+  const cents = Math.round(Math.abs(total) * unit);
+  const weightSum = weights.reduce((a, b) => a + b, 0);
+  const exact = weights.map((w) => (cents * w) / weightSum);
+  const shares = exact.map(Math.floor);
+  const byRemainder = exact
+    .map((x, i) => ({ i, remainder: x - shares[i] }))
+    .sort((a, b) => b.remainder - a.remainder || b.i - a.i);
+  let left = cents - shares.reduce((a, b) => a + b, 0);
+  // Float noise can leave one unit too many (never more): take it back from the smallest remainders.
+  for (let k = 0; left !== 0 && k < 2 * byRemainder.length; k++) {
+    const { i } =
+      left > 0 ? byRemainder[k % byRemainder.length] : byRemainder[byRemainder.length - 1 - (k % byRemainder.length)];
+    if (left > 0) {
+      shares[i]++;
+      left--;
+    } else if (shares[i] > 0) {
+      shares[i]--;
+      left++;
+    }
+  }
+  return shares.map((n) => (n === 0 ? 0 : (sign * n) / unit));
 }
 
 // ─── Sale: first in, first out ────────────────────────────────────────────────
@@ -79,7 +112,7 @@ export interface SaleShare {
 /**
  * Consumes the ticker's lots first in, first out (oldest entry date first, ties in the order of the
  * table) until `sale.units` are sold. The amount, the costs and the result of the sale are shared
- * across the lots pro rata to the units, the remainder on the last, so the exits add up to the sale.
+ * across the lots pro rata to the units, so the exits add up to the sale (`allocateByWeight`: never a negative share).
  * The amount is shared exactly (not to the cent: a lot of a few units of a low-priced asset would get
  * 0.00); the costs and the result, which are settled money, go to the cent.
  * A lot's entry costs go pro rata too, and the exit that uses the lot up takes what is left of them
@@ -118,22 +151,12 @@ export function planSale(
     remaining -= unitsSold;
   }
 
-  const sold = taken.reduce((sum, t) => sum + t.unitsSold, 0);
   // `decimals` is the precision of each share: the cent for money that is settled (costs, result), 8 for
   // the amount, which is the exact share of the sale amount so that a lot of a few units of a low-priced
   // asset does not get 0.00 (the 8 decimals only clear float noise, as the file's number format does).
-  const split = (total: number | undefined, decimals = 2): (number | undefined)[] => {
-    if (total === undefined) return taken.map(() => undefined);
-    const shares: number[] = [];
-    taken.forEach((t, i) => {
-      shares.push(
-        i < taken.length - 1
-          ? round((total * t.unitsSold) / sold, decimals)
-          : round(total - shares.reduce((a, b) => a + b, 0), decimals),
-      );
-    });
-    return shares;
-  };
+  const weights = taken.map((t) => t.unitsSold);
+  const split = (total: number | undefined, decimals = 2): (number | undefined)[] =>
+    total === undefined ? taken.map(() => undefined) : allocateByWeight(total, weights, decimals);
   const amounts = split(sale.amount, AMOUNT_DECIMALS);
   const costs = split(sale.costs);
   const owned = split(sale.pnl);
@@ -287,12 +310,10 @@ function editTable(
       lineOf(canonicalHeader.map(() => "---")),
       ...edit([...canonicalHeader], []).map(lineOf),
     ];
-    return (
-      md.slice(0, range.start) +
-      `\n\n${table.join("\n")}\n` +
-      md.slice(range.start, range.end).trimStart() +
-      md.slice(range.end)
-    );
+    // What followed the heading stays after the table, a blank line apart (as before a next heading).
+    const rest = md.slice(range.start, range.end).trimStart();
+    const after = rest !== "" ? `\n${rest}` : range.end < md.length ? "\n" : "";
+    return md.slice(0, range.start) + `\n\n${table.join("\n")}\n` + after + md.slice(range.end);
   }
 
   const header = cellsOf(lines[headerAt]);
