@@ -98,6 +98,8 @@ export interface PortfolioSnapshot {
   positions: Position[];
   /** Open lots of the silo; `Volume` of each position is the sum of its lots' units. */
   lots: Lot[];
+  /** One message per row of `Lots` the reader skipped because it does not read as a lot; absent if none. */
+  skippedLotRows?: string[];
   syncedAt: string; // ISO timestamp
 }
 

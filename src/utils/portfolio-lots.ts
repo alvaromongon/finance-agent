@@ -6,21 +6,25 @@
 // - `applyLotChange`: the new `portfolio.md` text, with the silo's `Lots` and its `Positions` row edited.
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
+import { UNITS_TOLERANCE } from "./lots-check.js";
 import { normalizeEol } from "./parse.js";
 import { round2 } from "./round.js";
 import {
   isLotPlaceholderRow,
   isPositionPlaceholder,
+  isTableLine,
+  isTableSeparator,
   lotColumns,
   lotOfRow,
   positionColumns,
   sectionRange,
+  splitTableRow,
+  missingLotsSection,
+  LotsTableError,
   type LotColumn,
   type PortfolioSection,
 } from "./vault-parser.js";
 
-/** Units are fractions: below this the difference is float noise, not units. */
-const UNITS_EPSILON = 1e-8;
 /** Decimals of an exit's amount: its exact share of the sale amount, with the float noise cleared. */
 const AMOUNT_DECIMALS = 8;
 
@@ -135,7 +139,7 @@ export function planSale(
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
   // and that much under leaves nothing worth keeping: the lot is used up (a position of dust is not one).
   // Units the owner gave are exact: on a low-priced asset half a cent of price is several units.
-  const tolerance = (sale.unitsFromAmount ? 0.005 / sale.price : 0) + UNITS_EPSILON;
+  const tolerance = (sale.unitsFromAmount ? 0.005 / sale.price : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
     throw new Error(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
   }
@@ -143,7 +147,7 @@ export function planSale(
   const taken: { lot: Lot; unitsSold: number; unitsLeft: number }[] = [];
   let remaining = sale.units;
   for (const lot of ordered) {
-    if (remaining < UNITS_EPSILON || (taken.length > 0 && remaining <= tolerance)) break;
+    if (remaining < UNITS_TOLERANCE || (taken.length > 0 && remaining <= tolerance)) break;
     const left = lot.units - Math.min(lot.units, remaining);
     const usedUp = left <= tolerance;
     const unitsSold = usedUp ? lot.units : lot.units - left;
@@ -245,7 +249,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     const col = positionColumns(header, currency);
     const kept = rows.filter((cells) => !isPositionPlaceholder((cells[col.ticker] ?? "").trim()));
     const at = kept.findIndex((cells) => (cells[col.ticker] ?? "").trim() === change.ticker);
-    if (change.volume <= UNITS_EPSILON) return at === -1 ? kept : kept.filter((_, i) => i !== at);
+    if (change.volume <= UNITS_TOLERANCE) return at === -1 ? kept : kept.filter((_, i) => i !== at);
     if (at !== -1) {
       kept[at][col.volume] = num(change.volume, 0);
       if (change.avgPrice != null) kept[at][col.avgPrice] = num(change.avgPrice, 2);
@@ -276,15 +280,6 @@ function numberFormat(currency: Currency): (n: number, minDecimals: number) => s
   };
 }
 
-const isTableLine = (line: string): boolean => line.trim().startsWith("|");
-const isSeparator = (cells: readonly string[]): boolean => cells.every((c) => /^:?-+:?$/.test(c));
-const cellsOf = (line: string): string[] => {
-  const trimmed = line.trim();
-  return trimmed
-    .slice(1, trimmed.endsWith("|") ? -1 : undefined)
-    .split("|")
-    .map((c) => c.trim());
-};
 const lineOf = (cells: readonly string[]): string => `| ${cells.join(" | ")} |`;
 
 /**
@@ -300,7 +295,10 @@ function editTable(
   edit: (header: string[], rows: string[][]) => string[][],
 ): string {
   const range = sectionRange(md, currency, kind);
-  if (!range) throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
+  if (!range) {
+    if (kind === "Lots") throw new LotsTableError(missingLotsSection(currency));
+    throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
+  }
   const lines = md.slice(range.start, range.end).split("\n");
 
   const headerAt = lines.findIndex(isTableLine);
@@ -316,12 +314,12 @@ function editTable(
     return md.slice(0, range.start) + `\n\n${table.join("\n")}\n` + after + md.slice(range.end);
   }
 
-  const header = cellsOf(lines[headerAt]);
+  const header = splitTableRow(lines[headerAt]);
   let end = headerAt + 1;
-  if (end < lines.length && isTableLine(lines[end]) && isSeparator(cellsOf(lines[end]))) end++;
+  if (end < lines.length && isTableLine(lines[end]) && isTableSeparator(splitTableRow(lines[end]))) end++;
   const dataFrom = end;
   while (end < lines.length && isTableLine(lines[end])) end++;
-  const rows = lines.slice(dataFrom, end).map(cellsOf);
+  const rows = lines.slice(dataFrom, end).map(splitTableRow);
 
   const written = edit(header, rows).map(lineOf);
   const rebuilt = [...lines.slice(0, dataFrom), ...written, ...lines.slice(end)];

@@ -139,7 +139,7 @@ describe("vault parsers with CRLF", () => {
   });
 
   it("parseLots reads the lots, with `:---:` separator rows", () => {
-    assert.deepEqual(parseLots(crlf(PORTFOLIO_LF), "EUR"), []);
+    assert.throws(() => parseLots(crlf(PORTFOLIO_LF), "EUR"), /missing section "## EUR — Lots"/);
     const [lot] = parseLots(crlf(PORTFOLIO_LF), "USD");
     assert.equal(lot.entryId, "20260901-hal-entry-x");
     assert.equal(lot.units, 10);

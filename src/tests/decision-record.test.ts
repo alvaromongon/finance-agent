@@ -213,6 +213,15 @@ describe("decision:record (recordOwnerDecision)", () => {
       });
     }
 
+    it("a lot row that does not read refuses the entry and names the row and the reason", async () => {
+      const text = `${PORTFOLIO_MD}| ADBE | adbe-1 | 2026-01-01 | 1 | 1 | 1 | — | — | Sistema | 1.0 | — |\n`;
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      await assert.rejects(
+        record(entryOf),
+        /portfolio\.md \(USD\): Lots row 1 \(ADBE, adbe-1\): Origin "Sistema" is not sistema or propietario/,
+      );
+    });
+
     it("a deleted Lots section refuses the entry", async () => {
       const text = PORTFOLIO_MD.slice(0, PORTFOLIO_MD.indexOf("## USD — Lots"));
       await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");

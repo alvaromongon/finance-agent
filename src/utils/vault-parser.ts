@@ -80,14 +80,15 @@ export function sectionBody(md: string, currency: Currency, kind: PortfolioSecti
 }
 
 /**
- * Checks the silo has the `Cash`, `Positions` and `Lots` sections and the
- * `Available cash` row. Without this, a misspelled heading or row (e.g. from
- * the previous format) would read as an empty silo and the heartbeat would
- * silently stop watching its positions.
+ * Checks the silo has the `Cash` and `Positions` sections and the `Available cash` row. Without this,
+ * a misspelled heading or row (e.g. from the previous format) would read as an empty silo and the
+ * heartbeat would silently stop watching its positions. The `Lots` section is not checked here: the
+ * Lots reader (`parseLotRows`) owns it, and reports a missing one as a `LotsTableError`, which the
+ * heartbeat tolerates and the strict readers do not.
  */
-export function assertPortfolioSections(md: string, currency: Currency, { lotsOptional = false } = {}): void {
+export function assertPortfolioSections(md: string, currency: Currency): void {
   const normalized = normalizeEol(md);
-  for (const kind of lotsOptional ? (["Cash", "Positions"] as const) : (["Cash", "Positions", "Lots"] as const)) {
+  for (const kind of ["Cash", "Positions"] as const) {
     if (!sectionRange(normalized, currency, kind)) {
       throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
     }
@@ -100,18 +101,31 @@ export function assertPortfolioSections(md: string, currency: Currency, { lotsOp
   }
 }
 
+/** `portfolio.md (USD)`: file and silo, the prefix of every message about the lots of one silo. */
+export const portfolioWhere = (currency: Currency): string => `portfolio.md (${currency})`;
+
+/** True for a line of a Markdown table (it starts with `|`). */
+export const isTableLine = (line: string): boolean => line.trim().startsWith("|");
+
+/** The trimmed cells of a table line, with or without the closing `|`. */
+export function splitTableRow(line: string): string[] {
+  const trimmed = line.trim();
+  return trimmed
+    .slice(1, trimmed.endsWith("|") ? -1 : undefined)
+    .split("|")
+    .map((c) => c.trim());
+}
+
+/** True for the `|---|:---:|` line under a table header. */
+export const isTableSeparator = (cells: readonly string[]): boolean => cells.every((c) => /^:?-+:?$/.test(c));
+
 /** Extracts the data rows of a Markdown table (skips the |---| separator). */
 export function parseTableRows(body: string): string[][] {
   const rows: string[][] = [];
   for (const line of normalizeEol(body).split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("|")) continue;
-    const cells = trimmed
-      .slice(1, trimmed.endsWith("|") ? -1 : undefined)
-      .split("|")
-      .map((c) => c.trim());
-    if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
-    rows.push(cells);
+    if (!isTableLine(line)) continue;
+    const cells = splitTableRow(line);
+    if (!isTableSeparator(cells)) rows.push(cells);
   }
   return rows;
 }
@@ -267,19 +281,34 @@ const POSITION_COLUMNS = {
 export type PositionColumn = keyof typeof POSITION_COLUMNS;
 
 /**
+ * Index of each column of a table from its header row, by name (case-insensitive); `missing` lists the
+ * labels the header lacks. Shared by the `Positions` and `Lots` readers.
+ */
+function columnIndexes<K extends string>(
+  header: readonly string[],
+  labels: Readonly<Record<K, string>>,
+): { indexes: Record<K, number>; missing: string[] } {
+  const normalized = header.map((c) => c.trim().toLowerCase());
+  const missing: string[] = [];
+  const indexes = {} as Record<K, number>;
+  for (const [key, label] of Object.entries(labels) as [K, string][]) {
+    const i = normalized.indexOf(label.toLowerCase());
+    if (i === -1) missing.push(label);
+    indexes[key] = i;
+  }
+  return { indexes, missing };
+}
+
+/** A cell with no value: empty, `—` or `-`. */
+const isPlaceholder = (cell: string): boolean => cell === "" || cell === "—" || cell === "-";
+
+/**
  * Index of each positions-table column from its header row (the table's
  * first row). Columns are read by name, not by position; a missing one →
  * error with the section and the column.
  */
 export function positionColumns(header: readonly string[], currency: Currency): Record<PositionColumn, number> {
-  const normalized = header.map((c) => c.trim().toLowerCase());
-  const missing: string[] = [];
-  const indexes = {} as Record<PositionColumn, number>;
-  for (const [key, label] of Object.entries(POSITION_COLUMNS) as [PositionColumn, string][]) {
-    const i = normalized.indexOf(label.toLowerCase());
-    if (i === -1) missing.push(label);
-    indexes[key] = i;
-  }
+  const { indexes, missing } = columnIndexes(header, POSITION_COLUMNS);
   if (missing.length > 0) {
     throw new Error(`## ${currency} — Positions: columns ${missing.join(", ")} missing from the table header`);
   }
@@ -288,7 +317,7 @@ export function positionColumns(header: readonly string[], currency: Currency): 
 
 /** True if the row is a placeholder or a repeated header, not a position. */
 export function isPositionPlaceholder(ticker: string): boolean {
-  return !ticker || ticker === "—" || ticker === "-" || /^ticker$/i.test(ticker);
+  return isPlaceholder(ticker) || /^ticker$/i.test(ticker);
 }
 
 /**
@@ -343,7 +372,11 @@ const LOT_COLUMNS = {
 
 export type LotColumn = keyof typeof LOT_COLUMNS;
 
-/** The `Lots` table cannot be read as such (a missing section, a misspelled column): the heartbeat reports it instead of refusing the file. */
+/**
+ * The `Lots` table cannot be read as such (a missing section, a misspelled column): the heartbeat
+ * reports it instead of refusing the file. Its message starts with `portfolioWhere`, like every lots
+ * warning.
+ */
 export class LotsTableError extends Error {
   constructor(message: string) {
     super(message);
@@ -351,42 +384,67 @@ export class LotsTableError extends Error {
   }
 }
 
-/** Throws a `LotsTableError` when the silo has no `## <CURRENCY> — Lots` section. */
-export function assertLotsSection(md: string, currency: Currency): void {
-  if (!sectionRange(normalizeEol(md), currency, "Lots")) {
-    throw new LotsTableError(`missing section "## ${currency} — Lots" (see docs/input-format.md)`);
-  }
-}
+/** The message for a silo without its `## <CURRENCY> — Lots` section: the one place it is worded. */
+export const missingLotsSection = (currency: Currency): string =>
+  `${portfolioWhere(currency)}: missing section "## ${currency} — Lots" (see docs/input-format.md)`;
 
 export function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
-  const normalized = header.map((c) => c.trim().toLowerCase());
-  const missing: string[] = [];
-  const indexes = {} as Record<LotColumn, number>;
-  for (const [key, label] of Object.entries(LOT_COLUMNS) as [LotColumn, string][]) {
-    const i = normalized.indexOf(label.toLowerCase());
-    if (i === -1) missing.push(label);
-    indexes[key] = i;
-  }
+  const { indexes, missing } = columnIndexes(header, LOT_COLUMNS);
   if (missing.length > 0) {
-    throw new LotsTableError(`## ${currency} — Lots: columns ${missing.join(", ")} missing from the table header`);
+    // A v2 file written before the `Ticker` column existed (PR #50) has all the others.
+    const fix = missing.includes("Ticker") ? ` (add a "Ticker" column, first, to "## ${currency} — Lots")` : "";
+    throw new LotsTableError(
+      `${portfolioWhere(currency)}: ## ${currency} — Lots: columns ${missing.join(", ")} missing from the table header${fix}`,
+    );
   }
   return indexes;
 }
 
-const isPlaceholder = (cell: string): boolean => cell === "" || cell === "—" || cell === "-";
+/** The silo's `Lots` section body; a `LotsTableError` if the section is missing. */
+function lotsBody(md: string, currency: Currency): string {
+  const normalized = normalizeEol(md);
+  const range = sectionRange(normalized, currency, "Lots");
+  if (!range) throw new LotsTableError(missingLotsSection(currency));
+  return normalized.slice(range.start, range.end);
+}
+
+/** What the `Lots` table of a silo reads as: the lots, and one message per row it skipped. */
+export interface LotRows {
+  lots: Lot[];
+  /** One message per skipped row (`Lots row 2 (AAPL, id): <reason>; the row is skipped`), without the file prefix. */
+  skipped: string[];
+}
 
 /**
- * Parses the rows of the `## <CURRENCY> — Lots` table (columns in LOT_COLUMNS, in any order). Skips
- * placeholder rows and rows that do not read as a lot (no id or ticker, units or price that are numbers, ...):
- * the lot then does not count towards its position's `Volume`, so the check against the decision
- * log reports the mismatch instead of the row vanishing silently. Cross-checks with the log are
- * not made here: this parser is pure.
+ * Reads the rows of the `## <CURRENCY> — Lots` table (columns in LOT_COLUMNS, in any order). Placeholder
+ * rows and a repeated header are nothing. A row that does not read as a lot (no id or ticker, units or
+ * price that are not numbers, an origin or date out of format, ...) is skipped and reported in `skipped`
+ * with the reason: it then does not count towards its position's `Volume`, and the lots check says so
+ * instead of only reporting the mismatch. A silo without the section throws a `LotsTableError`.
+ * Cross-checks with the log are not made here: this parser is pure.
  */
-export function parseLots(md: string, currency: Currency): Lot[] {
-  const [header, ...rows] = parseTableRows(sectionBody(md, currency, "Lots"));
-  if (!header) return [];
+export function parseLotRows(md: string, currency: Currency): LotRows {
+  const [header, ...rows] = parseTableRows(lotsBody(md, currency));
+  const result: LotRows = { lots: [], skipped: [] };
+  if (!header) return result;
   const col = lotColumns(header, currency);
-  return rows.map((cells) => lotOfRow(cells, col)).filter((lot): lot is Lot => lot !== null);
+  rows.forEach((cells, i) => {
+    const reading = readLotRow(cells, col);
+    if (reading === null) return;
+    if ("lot" in reading) {
+      result.lots.push(reading.lot);
+      return;
+    }
+    const named = [cells[col.ticker], cells[col.entryId]].map((c) => (c ?? "").trim()).filter((c) => !isPlaceholder(c));
+    const name = named.length > 0 ? ` (${named.join(", ")})` : "";
+    result.skipped.push(`Lots row ${i + 1}${name}: ${reading.reason}; the row is skipped`);
+  });
+  return result;
+}
+
+/** The lots of the silo's `Lots` table; see `parseLotRows` for the rows it skips. */
+export function parseLots(md: string, currency: Currency): Lot[] {
+  return parseLotRows(md, currency).lots;
 }
 
 /** True for a placeholder row (`—`) or a repeated header of the lots table: not a lot, and nothing to keep. */
@@ -397,34 +455,59 @@ export function isLotPlaceholderRow(cells: readonly string[], col: Record<LotCol
 
 /** The lot a row of the lots table reads as; `null` for a placeholder or a row that does not read as a lot. */
 export function lotOfRow(cells: readonly string[], col: Record<LotColumn, number>): Lot | null {
-  if (isLotPlaceholderRow(cells, col)) return null;
+  const reading = readLotRow(cells, col);
+  return reading !== null && "lot" in reading ? reading.lot : null;
+}
+
+/**
+ * A row of the lots table: `null` for a placeholder (every cell empty or `—`) or a repeated header, a
+ * `lot`, or the `reason` it does not read as one. Origin matches exactly (it is compared with the
+ * log's, which writes it in lower case); the headers are the owner's to type and match any case.
+ */
+function readLotRow(
+  cells: readonly string[],
+  col: Record<LotColumn, number>,
+): { lot: Lot } | { reason: string } | null {
   const cell = (key: LotColumn) => (cells[col[key]] ?? "").trim();
-  const units = parseMarkdownNumber(cell("units"));
-  const entryUnits = parseMarkdownNumber(cell("entryUnits"));
-  const entryPrice = parseMarkdownNumber(cell("entryPrice"));
+  if (cells.every((c) => isPlaceholder(c.trim())) || /^entry id$/i.test(cell("entryId"))) return null;
+  if (isPlaceholder(cell("entryId"))) return { reason: "no Entry id" };
+  if (isPlaceholder(cell("ticker"))) return { reason: "no Ticker" };
+
+  const numbers = {} as Record<"units" | "entryUnits" | "entryPrice", number>;
+  for (const key of ["units", "entryUnits", "entryPrice"] as const) {
+    const value = parseMarkdownNumber(cell(key));
+    if (value == null) return { reason: `${LOT_COLUMNS[key]} "${cell(key)}" is not a number` };
+    numbers[key] = value;
+  }
   const origin = cell("origin");
-  const rulesVersion = cell("rulesVersion");
+  if (!(DECISION_ORIGINS as readonly string[]).includes(origin)) {
+    const right = DECISION_ORIGINS.find((o) => o === origin.toLowerCase());
+    const hint = right ? ` (write it "${right}")` : "";
+    return { reason: `Origin "${origin}" is not ${DECISION_ORIGINS.join(" or ")}${hint}` };
+  }
   const date = cell("date");
-  if (units == null || entryUnits == null || entryPrice == null) return null;
-  if (!(DECISION_ORIGINS as readonly string[]).includes(origin) || isPlaceholder(rulesVersion)) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { reason: `Date "${date}" is not YYYY-MM-DD` };
+  const rulesVersion = cell("rulesVersion");
+  if (isPlaceholder(rulesVersion)) return { reason: "no Rules version" };
 
   return {
-    ticker: cell("ticker"),
-    entryId: cell("entryId"),
-    date,
-    units,
-    entryUnits,
-    entryPrice,
-    initialStop: parseMarkdownNumber(cell("initialStop")),
-    entryCosts: parseMarkdownNumber(cell("entryCosts")),
-    origin: origin as Lot["origin"],
-    rulesVersion,
-    rulesViolations: isPlaceholder(cell("rulesViolations"))
-      ? []
-      : cell("rulesViolations")
-          .split(",")
-          .map((v) => v.trim())
-          .filter((v) => v !== ""),
+    lot: {
+      ticker: cell("ticker"),
+      entryId: cell("entryId"),
+      date,
+      units: numbers.units,
+      entryUnits: numbers.entryUnits,
+      entryPrice: numbers.entryPrice,
+      initialStop: parseMarkdownNumber(cell("initialStop")),
+      entryCosts: parseMarkdownNumber(cell("entryCosts")),
+      origin: origin as Lot["origin"],
+      rulesVersion,
+      rulesViolations: isPlaceholder(cell("rulesViolations"))
+        ? []
+        : cell("rulesViolations")
+            .split(",")
+            .map((v) => v.trim())
+            .filter((v) => v !== ""),
+    },
   };
 }

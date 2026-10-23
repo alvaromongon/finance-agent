@@ -12,6 +12,8 @@ import {
   assertSchemaVersion,
   assertPortfolioSections,
   parseLots,
+  parseLotRows,
+  splitTableRow,
   LotsTableError,
 } from "../utils/vault-parser.js";
 
@@ -340,11 +342,11 @@ describe("assertPortfolioSections", () => {
     });
   });
 
-  it("rejects a v2 silo without a Lots section", () => {
+  it("leaves the Lots section to the Lots reader: a silo without it passes here", () => {
     const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes");
-    assert.throws(() => {
+    assert.doesNotThrow(() => {
       assertPortfolioSections(md, "USD");
-    }, /portfolio\.md.*## USD — Lots/);
+    });
   });
 
   it("rejects a Cash section without the Available cash row", () => {
@@ -405,6 +407,37 @@ describe("assertSchemaVersion", () => {
 // ─── parseLots ────────────────────────────────────────────────────────────────
 
 describe("parseLots", () => {
+  it("a silo without a Lots section throws a LotsTableError naming file, silo and section", () => {
+    const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes");
+    assert.throws(
+      () => parseLots(md, "USD"),
+      (err: unknown) => {
+        assert.ok(err instanceof LotsTableError);
+        assert.match(
+          err.message,
+          /^portfolio\.md \(USD\): missing section "## USD — Lots" \(see docs\/input-format\.md\)$/,
+        );
+        return true;
+      },
+    );
+  });
+
+  it("a header that does not read names file and silo, the same prefix as the lots check", () => {
+    const md = PORTFOLIO_MD.replace("| Entry units |", "| Entry unitz |");
+    assert.throws(
+      () => parseLots(md, "EUR"),
+      /^LotsTableError: portfolio\.md \(EUR\): ## EUR — Lots: columns Entry units missing/,
+    );
+  });
+
+  it("a v2 file written before the Ticker column existed says to add it, first", () => {
+    const md = PORTFOLIO_MD.replaceAll("| Ticker | Entry id |", "| Entry id |");
+    assert.throws(
+      () => parseLots(md, "USD"),
+      /columns Ticker missing.*add a "Ticker" column, first, to "## USD — Lots"/,
+    );
+  });
+
   it("a header that does not read throws the parser's own LotsTableError", () => {
     const md = PORTFOLIO_MD.replace("| Entry units |", "| Entry unitz |");
     assert.throws(() => parseLots(md, "EUR"), LotsTableError);
@@ -489,5 +522,78 @@ describe("parseLots", () => {
 
   it("returns an empty array when the section has no table", () => {
     assert.deepEqual(parseLots("## USD — Lots\n\nnothing\n", "USD"), []);
+  });
+});
+
+// ─── parseLotRows: what the Lots reader skips, and why (#55) ───────────────────
+
+describe("parseLotRows", () => {
+  const LOT = ["XOM", "xom-1", "2026-04-01", "5", "5", "100", "90", "—", "sistema", "1.0", "—"];
+  const mdWith = (...rows: string[][]) =>
+    `## USD — Lots\n\n${LOTS_HEADER}\n${rows.map((r) => `| ${r.join(" | ")} |`).join("\n")}\n`;
+  const edited = (at: number, value: string) => LOT.map((c, i) => (i === at ? value : c));
+
+  it("reads the lots and reports nothing for a clean table, placeholder rows and a repeated header", () => {
+    const md = mdWith(
+      LOT,
+      LOT.map(() => "—"),
+      ["Ticker", "Entry id", ...LOT.slice(2).map(() => "")],
+    );
+    const { lots, skipped } = parseLotRows(md, "USD");
+    assert.equal(lots.length, 1);
+    assert.deepEqual(skipped, []);
+  });
+
+  for (const [name, at, value, reason] of [
+    ["no entry id", 1, "—", /no Entry id/],
+    ["no ticker", 0, "—", /no Ticker/],
+    ["non-numeric units", 3, "TBD", /Units "TBD" is not a number/],
+    ["non-numeric entry units", 4, "x", /Entry units "x" is not a number/],
+    ["non-numeric entry price", 5, "", /Entry price "" is not a number/],
+    ["an unknown origin", 8, "otro", /Origin "otro" is not sistema or propietario/],
+    ["a non-ISO date", 2, "01/04/2026", /Date "01\/04\/2026" is not YYYY-MM-DD/],
+    ["an empty rules version", 9, "—", /no Rules version/],
+  ] as const) {
+    it(`reports a row with ${name}, naming the row, its ticker and entry id, and the reason`, () => {
+      const { lots, skipped } = parseLotRows(
+        mdWith(
+          LOT,
+          edited(at, value).map((c, i) => c || (i === at ? "" : c)),
+        ),
+        "USD",
+      );
+      assert.equal(lots.length, 1, "the other lot is still read");
+      assert.equal(skipped.length, 1);
+      assert.match(skipped[0], /^Lots row 2/);
+      assert.match(skipped[0], reason);
+    });
+  }
+
+  it("names the ticker and entry id of the skipped row when it has them", () => {
+    const { skipped } = parseLotRows(mdWith(edited(2, "01/04/2026")), "USD");
+    assert.match(skipped[0], /Lots row 1 \(XOM, xom-1\): .*skipped/);
+  });
+
+  it("Origin matches exactly, as the log stores it; the message points to the right case", () => {
+    const { lots, skipped } = parseLotRows(mdWith(edited(8, "Sistema")), "USD");
+    assert.deepEqual(lots, []);
+    assert.match(skipped[0], /Origin "Sistema" is not sistema or propietario \(write it "sistema"\)/);
+  });
+
+  it("the headers stay case-insensitive", () => {
+    const md = mdWith(LOT).replace("| Origin |", "| ORIGIN |");
+    assert.equal(parseLotRows(md, "USD").lots.length, 1);
+  });
+
+  it("parseLots reads the same lots", () => {
+    const md = mdWith(LOT, edited(8, "Sistema"));
+    assert.deepEqual(parseLots(md, "USD"), parseLotRows(md, "USD").lots);
+  });
+});
+
+describe("splitTableRow", () => {
+  it("splits a row into trimmed cells, with or without the closing bar", () => {
+    assert.deepEqual(splitTableRow("| a | b  |  c |"), ["a", "b", "c"]);
+    assert.deepEqual(splitTableRow("| a | b"), ["a", "b"]);
   });
 });

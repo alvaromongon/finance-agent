@@ -297,6 +297,15 @@ describe("measurable exits: the five R tests of spec #27", () => {
       });
     }
 
+    it("a lot row that does not read, named with the row and the reason", async () => {
+      const text = `${portfolioMd()}| TCK | bad-1 | 01/02/2026 | 1 | 1 | 1 | — | — | sistema | 1.0 | — |\n`;
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      await assert.rejects(
+        evaluate(),
+        /portfolio\.md \(USD\): Lots row 1 \(TCK, bad-1\): Date "01\/02\/2026" is not YYYY-MM-DD/,
+      );
+    });
+
     it("a deleted Lots section", async () => {
       const full = portfolioMd();
       await writeFile(join(vaultDir, "portfolio.md"), full.slice(0, full.indexOf("## USD — Lots")), "utf8");
