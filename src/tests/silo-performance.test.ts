@@ -145,18 +145,25 @@ describe("reconstructSilo", () => {
 
   it("warns if the log does not match portfolio.md", () => {
     const fewerUnits = reconstructSilo(input({ portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 3 }]) }));
-    assert.match(fewerUnits.warnings.join("\n"), /AAA tendría -2\.0000 unidades/);
+    assert.deepEqual(fewerUnits.warnings, [
+      { kind: "oversold", currency: "EUR", ticker: "AAA", units: -2, start: "2026-09-07" },
+    ]);
 
     const unrecordedDeposit = reconstructSilo(
       input({ decisions: [...DECISIONS, decision({ type: "deposit", date: "2026-09-08", amount: 2000 })] }),
     );
-    assert.match(unrecordedDeposit.warnings.join("\n"), /la caja al 2026-09-07 sale negativa/);
+    assert.equal(unrecordedDeposit.warnings.length, 1);
+    const [cashWarning] = unrecordedDeposit.warnings;
+    assert.ok(
+      cashWarning.kind === "negativeCash" && cashWarning.currency === "EUR" && cashWarning.start === "2026-09-07",
+    );
+    assert.ok(cashWarning.kind === "negativeCash" && cashWarning.cash < 0);
   });
 
   it("without closes for an asset values it at the last known price and warns", () => {
     const history = reconstructSilo(input({ bars: new Map([["EXSA.DE", BARS.get("EXSA.DE")!]]) }));
     assertClose(history.days.at(-1)?.value, 975, 1e-9);
-    assert.match(history.warnings.join("\n"), /sin cierres de AAA/);
+    assert.deepEqual(history.warnings, [{ kind: "missingCloses", currency: "EUR", tickers: ["AAA"] }]);
   });
 });
 
@@ -219,11 +226,11 @@ describe("moneyWeightedReturn", () => {
 
 describe("siloPerformance", () => {
   it("real against shadow, with returns and drawdown", () => {
-    const eur = siloPerformance(input());
+    const { performance: eur, warnings } = siloPerformance(input());
     assertClose(eur.real, 975);
     assertClose(eur.shadow, 999);
     assert.ok(eur.realReturnPct! < eur.shadowReturnPct!);
-    assert.deepEqual(eur.warnings, []);
+    assert.deepEqual(warnings, []);
   });
 
   // Real case of 2026-09-15: Yahoo did not have VOO's Monday 09-14 session,
@@ -234,7 +241,7 @@ describe("siloPerformance", () => {
       ["VOO", weekdayBars("2026-09-10", [800, 810])], // Thu 09-10 and Fri 09-11
       ["AAA", weekdayBars("2026-09-11", [100, 90])], // Fri 09-11 and Mon 09-14
     ]);
-    const perf = siloPerformance({
+    const { performance: perf } = siloPerformance({
       currency: "USD",
       portfolio: snapshot("USD", 0, [{ ...AAA_POSITION, currency: "USD", volume: 1 }]),
       decisions: [],
@@ -249,8 +256,8 @@ describe("siloPerformance", () => {
   });
 
   it("without a benchmark warns and leaves the shadow empty", () => {
-    const eur = siloPerformance(input({ reference: "NO.EXISTE" }));
+    const { performance: eur, warnings } = siloPerformance(input({ reference: "NO.EXISTE" }));
     assert.equal(eur.shadow, null);
-    assert.match(eur.warnings.join("\n"), /no hay cartera sombra/);
+    assert.deepEqual(warnings, [{ kind: "noShadow", currency: "EUR", reference: "NO.EXISTE" }]);
   });
 });

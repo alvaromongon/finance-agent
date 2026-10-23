@@ -12,7 +12,7 @@ import type { Currency, Lot, PortfolioSnapshot } from "../types.js";
 import { suggestStop } from "./atr-stop.js";
 import { splitRatio } from "./lots-check.js";
 import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
-import { siloPerformance, type SiloPerformance } from "./silo-performance.js";
+import { siloPerformance, type SiloPerformance, type SiloWarning } from "./silo-performance.js";
 
 /** Framework parameters the evaluation uses; `config.framework` and `config.reference` by default. */
 export interface EvaluationFramework {
@@ -684,10 +684,10 @@ function compareVersions(a: string, b: string): number {
 
 /**
  * One warning of the board, as data: the renderer puts it into words (in its language), and the
- * run prints the same words to the console. The silo reconstruction lines are already text.
+ * run prints the same words to the console. The silo reconstruction warnings are data too, held only here.
  */
 export type BoardWarning =
-  | { kind: "reconstruction"; lines: string[] }
+  | { kind: "reconstruction"; warnings: SiloWarning[] }
   | { kind: "exitsWithoutSnapshot"; exits: SkippedExit[] }
   | { kind: "oversoldLots"; lots: OversoldLot[] }
   | { kind: "inconsistentLots"; lots: InconsistentLot[] };
@@ -798,7 +798,7 @@ export function buildCutBoard(
     CURRENCIES.flatMap((c) => input.portfolios[c].lots),
   );
   const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
-  const silos =
+  const measurements =
     measuredFrom == null
       ? []
       : CURRENCIES.map((currency) =>
@@ -813,6 +813,7 @@ export function buildCutBoard(
           }),
         );
 
+  const silos = measurements.map((x) => x.performance);
   const eur = silos.find((s) => s.currency === "EUR");
   const usd = silos.find((s) => s.currency === "USD");
   const rate = input.eurUsd;
@@ -821,9 +822,9 @@ export function buildCutBoard(
       ? { real: eur.real + usd.real / rate, shadow: eur.shadow + usd.shadow / rate }
       : null;
 
-  const siloLines = silos.flatMap((s) => s.warnings);
+  const siloWarnings = measurements.flatMap((x) => x.warnings);
   const warnings: BoardWarning[] = [];
-  if (siloLines.length > 0) warnings.push({ kind: "reconstruction", lines: siloLines });
+  if (siloWarnings.length > 0) warnings.push({ kind: "reconstruction", warnings: siloWarnings });
   if (unmeasured.exitsWithoutSnapshot.length > 0) {
     warnings.push({ kind: "exitsWithoutSnapshot", exits: unmeasured.exitsWithoutSnapshot });
   }
