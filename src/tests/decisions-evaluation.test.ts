@@ -425,6 +425,8 @@ describe("closedTrades", () => {
       ["a whitespace-only entry_rules_version", { entry_rules_version: "   " }],
       ["an entry_date after the exit", { entry_date: "2026-09-11" }],
       ["a malformed entry_date", { entry_date: "03/08/2026" }],
+      ["an empty related_id", { related_id: "" }],
+      ["an empty entry_origin", { entry_origin: "" as Decision["entry_origin"] }],
     ] satisfies [string, Partial<Decision>][]) {
       it(`${name}: not measured, as validation refuses it`, () => {
         const sale: Decision = { ...fullExit(), ...change }; // never validated

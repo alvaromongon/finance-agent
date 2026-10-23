@@ -266,6 +266,9 @@ export function lotSnapshotProblems(raw: Record<string, unknown>): string[] {
     // All or nothing: half a snapshot would be measured as a different trade.
     for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
       if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
+      // The lot's entry id names the lot: an empty one would merge lots under one key.
+      else if (field === SNAPSHOT_LOT_ID && (typeof raw[field] !== "string" || raw[field].trim() === ""))
+        errors.push(`${field} must be a non-empty string`);
     }
   }
   if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
