@@ -281,6 +281,50 @@ describe("decision:record (recordOwnerDecision)", () => {
     });
   });
 
+  describe("a sale is not dated before the entry of a lot it consumes (#48)", () => {
+    const entryOf = (extra: object) => ({
+      type: "entry",
+      ticker: "ADBE",
+      currency: "USD",
+      price: 25,
+      stop: 20,
+      ...extra,
+    });
+    const sell = (extra: object) => ({ type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, ...extra });
+
+    it("refuses it, naming both dates, and writes neither the log nor portfolio.md", async () => {
+      await record(entryOf({ units: 2, date: "2026-09-10" }));
+      const log = await readFile(decisionsPath(), "utf8");
+      const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+
+      await assert.rejects(
+        record(sell({ units: 1, date: "2026-09-09" })),
+        /entry_date 2026-09-10 is after the exit's date 2026-09-09/,
+      );
+
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
+    });
+
+    it("refuses a sale that reaches into a later lot even if the first lot is old enough", async () => {
+      await record(entryOf({ units: 1, date: "2026-09-01" }));
+      await record(entryOf({ units: 1, date: "2026-09-10" }));
+      const log = await readFile(decisionsPath(), "utf8");
+
+      await assert.rejects(record(sell({ units: 2, date: "2026-09-05" })), /entry_date 2026-09-10 is after/);
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+    });
+
+    it("accepts a sale on the entry date and one that only consumes the older lot", async () => {
+      await record(entryOf({ units: 1, date: "2026-09-01" }));
+      await record(entryOf({ units: 1, date: "2026-09-10" }));
+      const [onlyOld] = await recordAll(sell({ units: 1, date: "2026-09-05" }));
+      assert.equal(onlyOld.entry_date, "2026-09-01");
+      const [sameDay] = await recordAll(sell({ units: 1, date: "2026-09-10" }));
+      assert.equal(sameDay.entry_date, "2026-09-10");
+    });
+  });
+
   describe("every exit carries the units it sold (B1 of PR #56)", () => {
     const entryOf = (extra: object) => ({
       type: "entry",
