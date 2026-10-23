@@ -555,13 +555,7 @@ describe("parseLotRows", () => {
     ["an empty rules version", 9, "—", /no Rules version/],
   ] as const) {
     it(`reports a row with ${name}, naming the row, its ticker and entry id, and the reason`, () => {
-      const { lots, skipped } = parseLotRows(
-        mdWith(
-          LOT,
-          edited(at, value).map((c, i) => c || (i === at ? "" : c)),
-        ),
-        "USD",
-      );
+      const { lots, skipped } = parseLotRows(mdWith(LOT, edited(at, value)), "USD");
       assert.equal(lots.length, 1, "the other lot is still read");
       assert.equal(skipped.length, 1);
       assert.match(skipped[0], /^Lots row 2/);

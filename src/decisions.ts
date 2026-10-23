@@ -247,6 +247,56 @@ const isStringList = (v: unknown): v is string[] =>
 export const isAssumptionList = (v: unknown): v is string[] => isStringList(v) && v.length >= 1 && v.length <= 3;
 
 /**
+ * Units an `entry` or `exit` moved: its own `units` (`decision:record` writes them on every trade) and,
+ * only for a line without them (written by hand), `amount / price`, whose units are not exact. The one
+ * rule, for every consumer of a line's units. The caller has checked `price` and `amount` are there.
+ */
+export const tradeUnits = (d: Decision): number => d.units ?? d.amount! / d.price!;
+
+/**
+ * What is wrong with the lot snapshot (`entry_*` and `related_id`) of a decision, if it has one: an empty
+ * list is a complete and coherent snapshot of an `exit`. The one definition of "a snapshot a measurement
+ * can use": `validateDecision` reports these problems and the evaluation's guard (`hasLotSnapshot`)
+ * leaves out an exit that has any, so the two cannot disagree on input that was never validated.
+ */
+export function lotSnapshotProblems(raw: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  if (raw.type !== "exit") errors.push("the lot snapshot (entry_*) only goes in exit");
+  else {
+    // All or nothing: half a snapshot would be measured as a different trade.
+    for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
+      if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
+    }
+  }
+  if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
+    errors.push(`entry_date must be YYYY-MM-DD; got: ${JSON.stringify(raw.entry_date)}`);
+  }
+  if (
+    raw.type === "exit" &&
+    typeof raw.entry_date === "string" &&
+    DATE_RE.test(raw.entry_date) &&
+    typeof raw.date === "string" &&
+    DATE_RE.test(raw.date) &&
+    raw.entry_date > raw.date
+  ) {
+    // A lot cannot be sold before it was bought; the same day is a round trip.
+    errors.push(`entry_date ${raw.entry_date} is after the exit's date ${raw.date}`);
+  }
+  if (raw.entry_origin != null && !DECISION_ORIGINS.includes(raw.entry_origin as DecisionOrigin)) {
+    errors.push(
+      `entry_origin must be one of [${DECISION_ORIGINS.join(", ")}]; got: ${JSON.stringify(raw.entry_origin)}`,
+    );
+  }
+  if (
+    raw.entry_rules_version != null &&
+    (typeof raw.entry_rules_version !== "string" || raw.entry_rules_version.trim() === "")
+  ) {
+    errors.push("entry_rules_version must be a non-empty string");
+  }
+  return errors;
+}
+
+/**
  * Validates a decision against the schema. It collects every problem and throws
  * a single error, like `validateRecommendation`: a malformed line must not
  * reach the log, because everything measured later will read it as is.
@@ -320,31 +370,7 @@ export function validateDecision(raw: unknown): Decision {
     if (raw[field] == null) errors.push(`${field} is required in ${type}`);
   }
 
-  if (SNAPSHOT_FIELDS.some((f) => raw[f] != null)) {
-    if (type !== "exit") errors.push("the lot snapshot (entry_*) only goes in exit");
-    else {
-      // All or nothing: half a snapshot would be measured as a different trade.
-      for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
-        if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
-      }
-    }
-    if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
-      errors.push(`entry_date must be YYYY-MM-DD; got: ${JSON.stringify(raw.entry_date)}`);
-    }
-    if (
-      type === "exit" &&
-      typeof raw.entry_date === "string" &&
-      DATE_RE.test(raw.entry_date) &&
-      typeof raw.date === "string" &&
-      DATE_RE.test(raw.date) &&
-      raw.entry_date > raw.date
-    ) {
-      // A lot cannot be sold before it was bought; the same day is a round trip.
-      errors.push(`entry_date ${raw.entry_date} is after the exit's date ${raw.date}`);
-    }
-    if (raw.entry_origin != null) oneOf("entry_origin", DECISION_ORIGINS);
-    if (raw.entry_rules_version != null) nonEmpty("entry_rules_version");
-  }
+  if (SNAPSHOT_FIELDS.some((f) => raw[f] != null)) errors.push(...lotSnapshotProblems(raw));
 
   if (raw.lot_units_left != null && !(type === "exit" && SNAPSHOT_FIELDS.some((f) => raw[f] != null))) {
     errors.push("lot_units_left only goes with the lot snapshot of an exit");

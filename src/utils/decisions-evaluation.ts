@@ -5,12 +5,19 @@
 // Markdown.
 import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
-import type { Decision, DecisionOrigin, DecisionType } from "../decisions.js";
+import {
+  lotSnapshotProblems,
+  tradeUnits,
+  type Decision,
+  type DecisionOrigin,
+  type DecisionType,
+} from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { CONVICTIONS, CURRENCIES } from "../types.js";
 import type { Currency, Lot, PortfolioSnapshot } from "../types.js";
 import { suggestStop } from "./atr-stop.js";
 import { splitRatio } from "./lots-check.js";
+import { UNITS_TOLERANCE } from "./units.js";
 import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
 import { siloPerformance, type SiloPerformance, type SiloWarning } from "./silo-performance.js";
 
@@ -237,19 +244,10 @@ export interface ClosedTrade {
 }
 
 /**
- * Units an exit sold: its `units`, which `decision:record` writes on every exit. `amount / price` is
- * only the fallback for an exit without it (written by hand), whose units are not exact.
- */
-const exitUnits = (exit: Decision): number => exit.units ?? exit.amount! / exit.price!;
-
-/**
  * Slack, in units, in the units an exit sold. None to speak of when it carries its `units` (float
  * noise); without them its amount is rounded to the cent, so they are only known to a cent of price.
  */
-const exitSlack = (exit: Decision): number => (exit.units != null ? 1e-8 : 0.01 / exit.price! + 1e-9);
-
-/** Tolerance of the units of a snapshot when it is compared with another by a split ratio: float noise. */
-const SPLIT_UNITS_TOLERANCE = 1e-8;
+const exitSlack = (exit: Decision): number => (exit.units != null ? UNITS_TOLERANCE : 0.01 / exit.price! + 1e-9);
 
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
@@ -329,10 +327,11 @@ export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
       });
       return;
     }
-    const lot = byLot.get(lotKey(d)) ?? { exits: [], last: index };
+    const key = lotKey(d);
+    let lot = byLot.get(key);
+    if (!lot) byLot.set(key, (lot = { exits: [], last: index }));
     lot.exits.push(d);
     lot.last = index;
-    byLot.set(lotKey(d), lot);
   });
 
   // Each lot is judged once: closed (measured), open (not yet a trade) or not measured, with the reason.
@@ -359,7 +358,7 @@ export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
         ruleViolations: first.rule_violations ?? [],
         stop: first.stop_initial ?? null,
         rNet: tradeR(exits),
-        counts: first.entry_origin === "sistema" && isCv1(first.entry_rules_version!),
+        counts: countsForCutoff(first.entry_origin!, first.entry_rules_version!),
         exits,
       };
     });
@@ -392,7 +391,7 @@ function judgeLot(written: readonly LotExit[]): LotVerdict {
     e.entry_units === reference.entry_units &&
     e.stop_initial === reference.stop_initial
       ? 1
-      : splitRatio(shape(e), shape(reference), SPLIT_UNITS_TOLERANCE);
+      : splitRatio(shape(e), shape(reference), UNITS_TOLERANCE);
   const agrees = (e: Decision) =>
     e.entry_date === reference.entry_date &&
     e.entry_origin === reference.entry_origin &&
@@ -404,7 +403,7 @@ function judgeLot(written: readonly LotExit[]): LotVerdict {
     const r = scaleOf(e);
     if (r === null || !agrees(e)) return "snapshot";
     scaled.push({
-      units: exitUnits(e) / r,
+      units: tradeUnits(e) / r,
       left: e.lot_units_left === 0 ? 0 : e.lot_units_left / r,
       slack: exitSlack(e) / r,
     });
@@ -431,15 +430,10 @@ type LotExit = Decision & { ticker: string; related_id: string; lot_units_left: 
 /** The exit carries what a measurement needs of its lot, including the units the lot has left. */
 const hasLotSnapshot = (exit: Decision): exit is LotExit =>
   !!exit.ticker &&
-  !!exit.related_id &&
-  exit.entry_price != null &&
-  exit.entry_units != null &&
-  !!exit.entry_date &&
-  exit.entry_origin != null &&
-  !!exit.entry_rules_version &&
   exit.lot_units_left != null &&
   exit.price != null &&
-  !!exit.amount;
+  !!exit.amount &&
+  lotSnapshotProblems({ ...exit }).length === 0;
 
 /** R of a lot: its exits weighted by the units they sold; null if any of them has no R. */
 function tradeR(exits: readonly Decision[]): number | null {
@@ -447,7 +441,7 @@ function tradeR(exits: readonly Decision[]): number | null {
   for (const exit of exits) {
     const r = realizedR(exit);
     if (r == null) return null;
-    total += (exitUnits(exit) / exit.entry_units!) * r;
+    total += (tradeUnits(exit) / exit.entry_units!) * r;
   }
   return total;
 }
@@ -462,7 +456,7 @@ export function realizedR(exit: Decision): number | null {
   if (stop == null || entryPrice == null || !entryUnits || exitPrice == null || !exit.amount || !(stop < entryPrice)) {
     return null;
   }
-  const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / exitUnits(exit);
+  const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / tradeUnits(exit);
   return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
 }
 
@@ -706,22 +700,30 @@ export interface OpenTrade {
   ruleViolations: string[];
 }
 
+/** A lot of a silo's `Lots`, with the silo it is in. */
+interface HeldLot {
+  currency: Currency;
+  lot: Lot;
+}
+
+/** The lots of both silos, flattened once. */
+const heldLots = (portfolios: Record<Currency, PortfolioSnapshot>): HeldLot[] =>
+  CURRENCIES.flatMap((currency) => portfolios[currency].lots.map((lot) => ({ currency, lot })));
+
 /** Open trades of the silos' `Lots`: those that count for the cutoff (system, C v1). */
-export function openTrades(portfolios: Record<Currency, PortfolioSnapshot>): OpenTrade[] {
-  return CURRENCIES.flatMap((currency) =>
-    portfolios[currency].lots
-      .filter((lot) => countsForCutoff(lot.origin, lot.rulesVersion))
-      .map((lot) => ({
-        currency,
-        ticker: lot.ticker,
-        entryId: lot.entryId,
-        entryDate: lot.date,
-        units: lot.units,
-        origin: lot.origin,
-        rulesVersion: lot.rulesVersion,
-        ruleViolations: lot.rulesViolations,
-      })),
-  );
+function openTrades(held: readonly HeldLot[]): OpenTrade[] {
+  return held
+    .filter(({ lot }) => countsForCutoff(lot.origin, lot.rulesVersion))
+    .map(({ currency, lot }) => ({
+      currency,
+      ticker: lot.ticker,
+      entryId: lot.entryId,
+      entryDate: lot.date,
+      units: lot.units,
+      origin: lot.origin,
+      rulesVersion: lot.rulesVersion,
+      ruleViolations: lot.rulesViolations,
+    }));
 }
 
 /** A trade counts for the cutoff when it is a system one under C v1 (ADR-0009 §4). */
@@ -752,7 +754,7 @@ export interface CutBoard {
  * so the start is the earliest date among the entry lines still read, the `entry_date` of the
  * snapshots of the exits and the `Date` of the lots, all of a system entry under C v1.
  */
-export function counterStart(decisions: readonly Decision[], lots: readonly Lot[] = []): string | null {
+export function counterStart(decisions: readonly Decision[], lots: readonly Lot[]): string | null {
   const dates = [
     ...decisions.filter((d) => d.type === "entry" && countsForCutoff(d.origin, d.rules_version)).map((d) => d.date),
     ...decisions
@@ -793,9 +795,10 @@ export function buildCutBoard(
 ): CutBoard {
   const { trades, unmeasured } = measured;
   const framework = input.framework ?? configuredFramework();
+  const held = heldLots(input.portfolios);
   const start = counterStart(
     input.decisions,
-    CURRENCIES.flatMap((c) => input.portfolios[c].lots),
+    held.map(({ lot }) => lot),
   );
   const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
   const measurements =
@@ -836,7 +839,7 @@ export function buildCutBoard(
     counterStart: start,
     measuredFrom,
     trades: tradeStats(trades.filter((t) => t.counts)),
-    open: openTrades(input.portfolios),
+    open: openTrades(held),
     silos,
     warnings,
     totalEur,

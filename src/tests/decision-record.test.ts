@@ -299,11 +299,32 @@ describe("decision:record (recordOwnerDecision)", () => {
 
       await assert.rejects(
         record(sell({ units: 1, date: "2026-09-09" })),
-        /entry_date 2026-09-10 is after the exit's date 2026-09-09/,
+        /entry_date 2026-09-10 is after the exit's date 2026-09-09.*\(nothing was recorded\)/,
       );
 
       assert.equal(await readFile(decisionsPath(), "utf8"), log);
       assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
+    });
+
+    it("refuses it before any call to the market data provider", async () => {
+      await record(entryOf({ units: 2, date: "2026-09-10" }));
+      const calls: string[] = [];
+      const counting = {
+        getPrices: async (tickers: string[]) => {
+          calls.push("getPrices");
+          return fakeProvider.getPrices(tickers);
+        },
+        getHistorical: async () => {
+          calls.push("getHistorical");
+          return bars();
+        },
+      };
+
+      await assert.rejects(
+        recordOwnerDecision(sell({ units: 1, date: "2026-09-09" }), counting, TODAY),
+        /is after the exit's date/,
+      );
+      assert.deepEqual(calls, []);
     });
 
     it("refuses a sale that reaches into a later lot even if the first lot is old enough", async () => {

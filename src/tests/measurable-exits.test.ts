@@ -748,16 +748,17 @@ describe("measurable exits: the five R tests of spec #27", () => {
         log: await readFile(decisionsPath(), "utf8").catch(() => null),
         portfolio: await readFile(join(vaultDir, "portfolio.md"), "utf8").catch(() => null),
       });
-      const assertRefused = async (trade: Promise<unknown>, message: RegExp) => {
+      /** `trade` starts the trade; it runs after the "before" snapshot, so an early rejection cannot race it. */
+      const assertRefused = async (trade: () => Promise<unknown>, message: RegExp) => {
         const before = await files();
-        await assert.rejects(trade, message);
+        await assert.rejects(trade(), message);
         assert.deepEqual(await files(), before, "neither the log nor the portfolio changed");
       };
 
       it("a sale with no lots for the ticker", async () => {
         await entry(100, 10, 90, "2026-06-15");
         await assertRefused(
-          record({ type: "exit", ticker: "OTH", currency: "USD", price: 10, units: 1, date: "2026-08-10" }),
+          () => record({ type: "exit", ticker: "OTH", currency: "USD", price: 10, units: 1, date: "2026-08-10" }),
           /no open lots for OTH/,
         );
       });
@@ -779,14 +780,14 @@ describe("measurable exits: the five R tests of spec #27", () => {
       it("a sale of more units than the ticker's open units", async () => {
         await entry(100, 10, 90, "2026-06-15");
         await entry(110, 10, 100, "2026-06-22");
-        await assertRefused(exit(120, 21, "2026-08-10"), /21.*TCK.*20/);
+        await assertRefused(() => exit(120, 21, "2026-08-10"), /21.*TCK.*20/);
       });
 
       it("a sale on a portfolio that fails the lots check", async () => {
         await entry(100, 10, 90, "2026-06-15");
         const md = await readPortfolioMd();
         await writeFile(join(vaultDir, "portfolio.md"), corruptPositions(md, /\| TCK \| 10 \|/, "| TCK | 7 |"), "utf8");
-        await assertRefused(exit(120, 1, "2026-08-10"), /TCK.*Volume/);
+        await assertRefused(() => exit(120, 1, "2026-08-10"), /TCK.*Volume/);
       });
     });
 

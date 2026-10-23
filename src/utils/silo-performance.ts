@@ -8,7 +8,7 @@
 // date are undone and each session is valued at the close. If something is
 // missing from the log, the reconstruction does not add up (negative cash or
 // units at the start) and a warning is raised instead of hiding it.
-import type { Decision } from "../decisions.js";
+import { tradeUnits, type Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { closeOnOrBefore, daysBetween } from "./forward-returns.js";
@@ -56,7 +56,7 @@ interface TradeEffect {
  */
 function tradeEffect(d: Decision, currency: Currency): TradeEffect | null {
   if (d.currency !== currency || d.ticker == null || d.price == null || d.amount == null) return null;
-  const units = d.units ?? d.amount / d.price;
+  const units = tradeUnits(d);
   if (d.type === "entry") return { ticker: d.ticker, units, cash: -(d.amount + (d.costs ?? 0)) };
   if (d.type === "exit") return { ticker: d.ticker, units: -units, cash: d.amount - (d.costs ?? 0) };
   return null;

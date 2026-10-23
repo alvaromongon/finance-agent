@@ -35,12 +35,13 @@ import {
   resolveFxConversion,
   twoMonthRuleWarning,
   validateOwnerInput,
+  type OwnerDecisionInput,
   type Decision,
   type DecisionOrigin,
 } from "./decisions.js";
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
-import { applyLotChange, lotOfEntry, planSale } from "./utils/portfolio-lots.js";
+import { applyLotChange, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
 import { round, round2 } from "./utils/round.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
@@ -162,6 +163,9 @@ export async function recordOwnerDecision(
     );
   }
   const date = input.date ?? today;
+  // A sale is planned, and refused if it is dated before a lot it would consume, before anything goes to
+  // the network: the lots are in `portfolio.md` and the refusal needs nothing else.
+  const sale = input.type === "exit" ? planOwnerSale(input, book!.portfolio.lots, history, date) : undefined;
   const [rulesVersion, watchlist] = await Promise.all([readRulesVersion(), readWatchlist(input.currency)]);
   const benchmark = await benchmarkOnDate(provider, input.currency, date, today);
 
@@ -228,21 +232,7 @@ export async function recordOwnerDecision(
     case "exit": {
       const ticker = input.ticker!;
       const sellProposal = findRelatedProposal(history, { ticker, date, types: ["sell"] });
-      const amount = input.amount ?? amountOf(input.units!, input.price!);
-      const units = input.units ?? amount / input.price!;
-      const shares = planSale(
-        book!.portfolio.lots,
-        {
-          ticker,
-          units,
-          unitsFromAmount: input.units == null,
-          price: input.price!,
-          amount,
-          costs: input.costs,
-          pnl: input.pnl,
-        },
-        entryCostsTaken(history),
-      );
+      const shares = sale!;
       const origin = originFrom(sellProposal);
       decisions = shares.map((share) =>
         buildDecision({
@@ -426,4 +416,39 @@ if (isMain) {
       console.error("[decision]", err instanceof Error ? err.message : err);
       process.exitCode = 1;
     });
+}
+
+/**
+ * The lots a sale consumes (first in, first out). Refused, with nothing recorded, if any of them was
+ * entered after the sale's date: a lot cannot be sold before it was bought (the same day is a round trip).
+ */
+function planOwnerSale(
+  input: OwnerDecisionInput,
+  lots: readonly Lot[],
+  history: readonly Decision[],
+  date: string,
+): SaleShare[] {
+  const ticker = input.ticker!;
+  const amount = input.amount ?? amountOf(input.units!, input.price!);
+  const units = input.units ?? amount / input.price!;
+  const shares = planSale(
+    lots,
+    {
+      ticker,
+      units,
+      unitsFromAmount: input.units == null,
+      price: input.price!,
+      amount,
+      costs: input.costs,
+      pnl: input.pnl,
+    },
+    entryCostsTaken(history),
+  );
+  const later = shares.find((share) => share.lot.date > date);
+  if (later) {
+    throw new Error(
+      `entry_date ${later.lot.date} is after the exit's date ${date}: a lot cannot be sold before it was bought (nothing was recorded)`,
+    );
+  }
+  return shares;
 }
