@@ -11,7 +11,6 @@ import { parseMarkdownNumber } from "./utils/parse.js";
 import { parseLastLog, type LastLog } from "./utils/cooldown.js";
 import {
   assertPortfolioSections,
-  assertLotsSection,
   LotsTableError,
   assertSchemaVersion,
   extractYamlBlock,
@@ -19,7 +18,9 @@ import {
   isBlockedLog,
   isPositionPlaceholder,
   parseCash,
-  parseLots,
+  parseLotRows,
+  splitTableRow,
+  isTableSeparator,
   parseTableRows,
   parseTotalCash,
   parsePositions,
@@ -118,7 +119,7 @@ export async function readPortfolioTolerantOfLots(
 ): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null }> {
   let lotsProblem: string | null = null;
   const portfolio = parsePortfolioText(await readPortfolioText(), currency, (err) => {
-    lotsProblem = `portfolio.md: ${err.message}`;
+    lotsProblem = err.message;
   });
   return { portfolio, lotsProblem };
 }
@@ -134,7 +135,7 @@ export function parsePortfolioText(
   onLotsError?: (err: Error) => void,
 ): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
-  assertPortfolioSections(raw, currency, { lotsOptional: onLotsError !== undefined });
+  assertPortfolioSections(raw, currency);
 
   // Check staleness with the `last_manual_sync` frontmatter field.
   // js-yaml returns a Date when the timestamp is unquoted
@@ -166,21 +167,25 @@ export function parsePortfolioText(
     cash: parseCash(raw, currency),
     ...(totalCash != null ? { totalCash } : {}),
     positions: parsePositions(raw, currency),
-    lots: readLots(raw, currency, onLotsError),
+    ...readLots(raw, currency, onLotsError),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
 }
 
-function readLots(raw: string, currency: Currency, onError?: (err: Error) => void) {
-  if (!onError) return parseLots(raw, currency);
+/** The silo's lots and the rows of `Lots` the reader skipped; a table that does not read is `onError`'s, or throws. */
+function readLots(
+  raw: string,
+  currency: Currency,
+  onError?: (err: Error) => void,
+): Pick<PortfolioSnapshot, "lots" | "skippedLotRows"> {
   try {
-    assertLotsSection(raw, currency);
-    return parseLots(raw, currency);
+    const { lots, skipped } = parseLotRows(raw, currency);
+    return skipped.length > 0 ? { lots, skippedLotRows: skipped } : { lots };
   } catch (err) {
     // Only the parser's own verdict on the table; anything else is a bug and must crash.
-    if (!(err instanceof LotsTableError)) throw err;
+    if (!onError || !(err instanceof LotsTableError)) throw err;
     onError(err);
-    return [];
+    return { lots: [] };
   }
 }
 
@@ -227,14 +232,11 @@ export async function updatePortfolioPrices(currency: Currency, prices: Map<stri
   if (!header) return;
   const col = positionColumns(header, currency);
   const updatedSection = section.replace(/^\|(.+)\|$/gm, (line) => {
-    const cells = line
-      .slice(1, -1)
-      .split("|")
-      .map((c) => c.trim());
+    const cells = splitTableRow(line);
 
     // Skip header and separator
     if (isPositionPlaceholder(cells[col.ticker] ?? "")) return line;
-    if (cells.every((c) => /^:?-+:?$/.test(c))) return line;
+    if (isTableSeparator(cells)) return line;
 
     const current = prices.get(cells[col.ticker]);
     if (current == null) return line; // ticker without a price: leave the row alone

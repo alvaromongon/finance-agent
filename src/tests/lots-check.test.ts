@@ -112,6 +112,53 @@ describe("lotsMismatches", () => {
     assert.match(message, /s.*not an entry/);
   });
 
+  it("says an entry without a ticker has none, instead of calling it not an entry", () => {
+    const noTicker: Decision = { ...entry("e", "TCK"), ticker: null };
+    const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("e", 5)]), [noTicker]);
+    assert.match(message, /lot e is an entry in the decision log that has no ticker/);
+    assert.doesNotMatch(message, /a entry|not an entry/);
+  });
+
+  it("names the type of a decision that is not an entry", () => {
+    const sell = { ...entry("s", "TCK"), type: "exit" as const };
+    const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("s", 5)]), [sell]);
+    assert.match(message, /lot s is a decision of type exit in the decision log, not an entry/);
+  });
+
+  it("a ticker that differs only in case between Lots and the log is one message, not two Volume mismatches", () => {
+    const messages = lotsMismatches(portfolio([position("AAPL", 10)], [lot("a", 10, "aapl")]), [entry("a", "AAPL")]);
+    assert.equal(messages.length, 1, messages.join("\n"));
+    assert.match(
+      messages[0],
+      /lot a is on aapl but its entry in the decision log is AAPL \(they differ only in case\)/,
+    );
+  });
+
+  it("a ticker that differs only in case between Positions and Lots is one message from portfolio.md alone", () => {
+    const messages = volumeMismatches(portfolio([position("AAPL", 10)], [lot("a", 10, "aapl")]));
+    assert.equal(messages.length, 1, messages.join("\n"));
+    assert.match(messages[0], /aapl in Lots and AAPL in Positions differ only in case/);
+  });
+
+  it("a case difference does not hide a Volume that is wrong for other tickers", () => {
+    const messages = volumeMismatches(
+      portfolio([position("AAPL", 10), position("TCK", 7)], [lot("a", 10, "aapl"), lot("b", 5)]),
+    );
+    assert.equal(messages.length, 2);
+    assert.match(messages[1], /TCK: Volume 7.*\(5\)/);
+  });
+
+  it("reports the rows of Lots the reader skipped, with the file prefix", () => {
+    const p = {
+      ...portfolio([], []),
+      skippedLotRows: ['Lots row 2 (XOM, x1): Origin "Sistema" is not sistema or propietario'],
+    };
+    assert.deepEqual(volumeMismatches(p), [
+      'portfolio.md (USD): Lots row 2 (XOM, x1): Origin "Sistema" is not sistema or propietario',
+    ]);
+    assert.equal(lotsMismatches(p, []).length, 1);
+  });
+
   it("flags a lot whose entry was recorded in the other currency", () => {
     const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("e", 5)]), [entry("e", "TCK", "EUR")]);
     assert.match(message, /e.*EUR.*USD/);

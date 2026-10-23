@@ -136,12 +136,6 @@ fill, a recording mistake). The first row is the header and columns are read
 one is an error. An empty table (header only, or `—` rows) is a silo with no
 open lots.
 
-The `exit` lines `decision:record` writes for a sale carry, per lot, an `amount`
-that is that exit's exact share of the sale amount and can have sub-cent
-decimals (owner decision of 2026-10-22 in #27). When the owner gives only the
-units, the sale amount derived (`units × price`) is to the cent unless that
-rounds to 0.00, and then it is exact.
-
 | Column             | Meaning                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------ |
 | `Ticker`           | Ticker of the position the lot belongs to; the one of its entry in the decision log              |
@@ -156,11 +150,33 @@ rounds to 0.00, and then it is exact.
 | `Rules version`    | `version` of `strategies/base.md` in force at the entry                                          |
 | `Rules violations` | The rules the entry broke, comma-separated (for example `no_stop, overrode_block`); `—` for none |
 
-Rows without an `Entry id` or a `Ticker`, or whose `Units`, `Entry units` or
-`Entry price` is not a number, or whose `Origin` is not one of the two values,
-are skipped, so they do not count towards their position's `Volume` and the
-check below reports them. When `decision:record` rewrites the table it keeps
-such a row where it is.
+The `exit` lines `decision:record` writes for a sale carry, per lot, an `amount`
+that is that exit's exact share of the sale amount and can have sub-cent
+decimals (owner decision of 2026-10-22 in #27). When the owner gives only the
+units, the sale amount derived (`units × price`) is to the cent unless that
+rounds to 0.00, and then it is exact.
+
+A row of `—` (or empty cells) and a repeated header are not lots and are ignored.
+Any other row that does not read as a lot is **skipped**: it does not count towards
+its position's `Volume`, `decision:record` keeps it where it is when it rewrites
+the table, and the lots check reports it with its row number, its `Ticker` and
+`Entry id` (when it has them) and the reason, for example
+`portfolio.md (USD): Lots row 2 (XOM, xom-1): Origin "Sistema" is not sistema or propietario (write it "sistema"); the row is skipped`.
+The reasons:
+
+- no `Entry id`, or no `Ticker`;
+- `Units`, `Entry units` or `Entry price` is not a number (including empty);
+- `Origin` is not `sistema` or `propietario`. It matches exactly, in lower case,
+  because it is compared with the entry's in the decision log, which writes it so;
+  the message says which case to write. (Column headers, which you type, match any case);
+- `Date` is not `YYYY-MM-DD`;
+- `Rules version` is empty or `—`.
+
+A skipped row is a problem like any other of the checks below: `decision:record`
+and `decisions:evaluate` refuse the silo, naming it, and the heartbeat warns.
+A missing column is an error, not a skipped row: a file written before the
+`Ticker` column existed is refused with `add a "Ticker" column, first, to
+"## <CCY> — Lots"`.
 
 `decision:record` also keeps `Positions`: the first entry of a ticker creates
 its row, with the lot's initial stop as `Stop loss` (`—` if there was none);
@@ -177,7 +193,8 @@ when:
   with no lots, or lots of a ticker with no position row, count too);
 - a lot has more `Units` than `Entry units`, or an `Entry id` is on two rows;
 - a lot's `Entry id` is not an `entry` of that currency in the decision log, its
-  `Ticker` is not the ticker of that entry, or its entry price, entry units,
+  `Ticker` is not the ticker of that entry (one that differs only in case is
+  reported as such, once), or its entry price, entry units,
   initial stop, date, origin, rules version or rules violations differ from the
   entry's; or
 - an entry in the decision log is still open and has no lot. An entry is open

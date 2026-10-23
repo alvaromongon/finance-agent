@@ -17,6 +17,7 @@ import { bar, extend, uptrend } from "./fixtures/setup-bars.js";
 import type { IMarketDataProvider, HistoricalBar } from "../providers/types.js";
 import type { IAnalystProvider } from "../analyst/types.js";
 import type { Currency, Signal } from "../types.js";
+import { parsePositions } from "../utils/vault-parser.js";
 import { entryLines, lotsSection, type HeldLot } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
@@ -236,6 +237,47 @@ describe("runHeartbeat", () => {
       assert.doesNotMatch(emails[1].subject, /stop ceñido/, "what is deduplicated still is");
     });
 
+    it("a lot row that does not read is a lots warning naming the row and the reason, not only a Volume mismatch", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const path = join(vaultDir, "portfolio.md");
+      const text = await readFile(path, "utf8");
+      await writeFile(path, text.replace(/\| sistema \|(?=[^\n]*\n[^\n]*\| lot-cat)/, "| Sistema |"), "utf8");
+
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) =>
+          w.includes('portfolio.md (USD): Lots row 1 (MSFT, lot-msft): Origin "Sistema" is not sistema or propietario'),
+        ),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      const [email] = await outbox();
+      assert.match(email.body, /Lots row 1 \(MSFT, lot-msft\)/);
+    });
+
+    it("a Lots heading that is lost while its table stays: no phantom positions, the missing section is reported", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const path = join(vaultDir, "portfolio.md");
+      const text = await readFile(path, "utf8");
+      const edited = text.replace("## USD — Lots\n", "");
+      assert.notEqual(edited, text);
+      assert.ok(edited.includes("| Entry id |"), "the table stays");
+      await writeFile(path, edited, "utf8");
+
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) => w.includes('portfolio.md (USD): missing section "## USD — Lots"')),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      assert.deepEqual(
+        parsePositions(edited, "USD").map((p) => p.ticker),
+        ["MSFT", "CAT"],
+      );
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+    });
+
     describe("a Lots table that does not read", () => {
       const brokenHeader = async () => {
         await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
@@ -255,7 +297,7 @@ describe("runHeartbeat", () => {
         const [email] = await outbox();
         assert.match(email.subject, /stop cruzado: CAT/);
         assert.match(email.subject, /lotes que no cuadran/);
-        assert.match(email.body, /portfolio\.md: ## USD — Lots: columns Entry units missing/);
+        assert.match(email.body, /portfolio\.md \(USD\): ## USD — Lots: columns Entry units missing/);
       });
 
       it("two consecutive runs with the same mismatch both include the warning", async () => {
@@ -290,7 +332,7 @@ describe("runHeartbeat", () => {
           );
           const [email] = await outbox();
           assert.match(email.subject, /stop cruzado: CAT/);
-          assert.match(email.body, /portfolio\.md: missing section "## USD — Lots"/);
+          assert.match(email.body, /portfolio\.md \(USD\): missing section "## USD — Lots"/);
         });
       }
 

@@ -25,6 +25,7 @@ import {
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
 import { volumeMismatches } from "./utils/lots-check.js";
+import { portfolioWhere } from "./utils/vault-parser.js";
 import { detectStopBreaches } from "./utils/stop-breach.js";
 import { detectTightStops, fetchAtrForPositions } from "./utils/atr-stop.js";
 import { recordDecision } from "./decision.js";
@@ -272,7 +273,7 @@ function lotsWarnings(portfolio: PortfolioSnapshot, lotsProblem: string | null):
   try {
     return volumeMismatches(portfolio);
   } catch (err) {
-    return [`portfolio.md (${portfolio.currency}): the lots check failed: ${(err as Error).message}`];
+    return [`${portfolioWhere(portfolio.currency)}: the lots check failed: ${(err as Error).message}`];
   }
 }
 
