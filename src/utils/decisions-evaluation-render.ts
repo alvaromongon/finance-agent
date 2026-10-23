@@ -18,6 +18,7 @@ import {
   type EvaluationReport,
 } from "./decisions-evaluation.js";
 import { normalizeEol } from "./parse.js";
+import type { SiloWarning } from "./silo-performance.js";
 
 // Format, not output: monday-briefing:prepare finds the board by this heading, so
 // it is the same in every language.
@@ -44,6 +45,21 @@ function smallSampleWarning(sizes: readonly number[], m: Messages): string[] {
 /** Skipped exits named one by one in the board; the rest are only counted (until #44 every real exit is skipped). */
 const SKIPPED_EXITS_SHOWN = 10;
 
+/** A silo reconstruction warning in words, in the language of `m`. */
+function siloWarningLine(w: SiloWarning, m: Messages): string {
+  const t = m.evaluation.siloWarnings;
+  switch (w.kind) {
+    case "negativeCash":
+      return t.negativeCash(w.currency, w.start, w.cash.toFixed(2));
+    case "oversold":
+      return t.oversold(w.currency, w.ticker, w.units.toFixed(4), w.start);
+    case "missingCloses":
+      return t.missingCloses(w.currency, w.tickers.join(", "));
+    case "noShadow":
+      return t.noShadow(w.currency, w.reference);
+  }
+}
+
 /**
  * The board's warnings in words: one heading and its lines per group, in the language of `m`. The
  * group is decided by the kind of the warning, never by comparing the translated headings: the
@@ -54,7 +70,11 @@ export function boardWarnings(board: CutBoard, m: Messages = messages()): { titl
   const groups = board.warnings.map((w): { group: "reconstruction" | "unmeasured"; title: string; lines: string[] } => {
     switch (w.kind) {
       case "reconstruction":
-        return { group: "reconstruction", title: t.reconstructionMismatch, lines: w.lines };
+        return {
+          group: "reconstruction",
+          title: t.reconstructionMismatch,
+          lines: w.warnings.map((x) => siloWarningLine(x, m)),
+        };
       case "exitsWithoutSnapshot": {
         const shown = w.exits.slice(0, SKIPPED_EXITS_SHOWN);
         const rest = w.exits.length - shown.length;

@@ -8,7 +8,6 @@
 // date are undone and each session is valued at the close. If something is
 // missing from the log, the reconstruction does not add up (negative cash or
 // units at the start) and a warning is raised instead of hiding it.
-import { messages, type Messages } from "../i18n/index.js";
 import type { Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
@@ -71,12 +70,22 @@ export interface SiloDay {
   flow: number;
 }
 
+/**
+ * A reconstruction that does not add up, as data: the renderer puts it into words in its own
+ * language (`boardWarnings`), so nothing here is text.
+ */
+export type SiloWarning =
+  | { kind: "negativeCash"; currency: Currency; start: string; cash: number }
+  | { kind: "oversold"; currency: Currency; ticker: string; units: number; start: string }
+  | { kind: "missingCloses"; currency: Currency; tickers: string[] }
+  | { kind: "noShadow"; currency: Currency; reference: string };
+
 export interface SiloHistory {
   /** State before the first measured day, valued the day before: the shadow's starting point. */
   base: { date: string; value: number };
   days: SiloDay[];
   flows: SiloFlow[];
-  warnings: string[];
+  warnings: SiloWarning[];
 }
 
 export interface SiloInput {
@@ -95,7 +104,7 @@ export interface SiloInput {
 }
 
 /** Silo value on each session since `start`, rebuilt from portfolio.md and the log. */
-export function reconstructSilo(input: SiloInput, m: Messages = messages()): SiloHistory {
+export function reconstructSilo(input: SiloInput): SiloHistory {
   const { currency, portfolio, start, asOf, bars } = input;
   const events = input.decisions
     .filter((d) => d.date >= start && d.date <= asOf)
@@ -111,13 +120,13 @@ export function reconstructSilo(input: SiloInput, m: Messages = messages()): Sil
     if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) - e.trade.units);
   }
 
-  const warnings: string[] = [];
+  const warnings: SiloWarning[] = [];
   if (cash < -CASH_EPSILON) {
-    warnings.push(m.evaluation.siloWarnings.negativeCash(currency, start, cash.toFixed(2)));
+    warnings.push({ kind: "negativeCash", currency, start, cash });
   }
   for (const [ticker, u] of units) {
     if (u < -UNITS_EPSILON) {
-      warnings.push(m.evaluation.siloWarnings.oversold(currency, ticker, u.toFixed(4), start));
+      warnings.push({ kind: "oversold", currency, ticker, units: u, start });
     }
   }
 
@@ -165,7 +174,7 @@ export function reconstructSilo(input: SiloInput, m: Messages = messages()): Sil
   }
 
   if (missing.size > 0) {
-    warnings.push(m.evaluation.siloWarnings.missingCloses(currency, [...missing].join(", ")));
+    warnings.push({ kind: "missingCloses", currency, tickers: [...missing] });
   }
   return { base, days, flows, warnings };
 }
@@ -269,17 +278,22 @@ export interface SiloPerformance {
   realReturnPct: number | null;
   shadowReturnPct: number | null;
   drawdown: Drawdown;
-  warnings: string[];
+}
+
+/** A silo's performance and what did not add up while measuring it (the board holds the warnings once). */
+export interface SiloMeasurement {
+  performance: SiloPerformance;
+  warnings: SiloWarning[];
 }
 
 /** Real silo against its shadow, with the drawdown. */
-export function siloPerformance(input: SiloInput, m: Messages = messages()): SiloPerformance {
-  const history = reconstructSilo(input, m);
+export function siloPerformance(input: SiloInput): SiloMeasurement {
+  const history = reconstructSilo(input);
   const real = (history.days.at(-1) ?? history.base).value;
   const shadow = shadowValue(history.base, history.flows, input.bars.get(input.reference) ?? [], input.asOf);
   const warnings = [...history.warnings];
-  if (shadow == null) warnings.push(m.evaluation.siloWarnings.noShadow(input.currency, input.reference));
-  return {
+  if (shadow == null) warnings.push({ kind: "noShadow", currency: input.currency, reference: input.reference });
+  const performance: SiloPerformance = {
     currency: input.currency,
     reference: input.reference,
     start: input.start,
@@ -289,6 +303,6 @@ export function siloPerformance(input: SiloInput, m: Messages = messages()): Sil
     shadowReturnPct:
       shadow == null ? null : moneyWeightedReturn(history.base, { date: input.asOf, value: shadow }, history.flows),
     drawdown: drawdown(history),
-    warnings,
   };
+  return { performance, warnings };
 }

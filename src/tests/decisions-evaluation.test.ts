@@ -914,11 +914,35 @@ describe("unmeasured exits and lots", () => {
 
   it("the silo reconstruction warnings travel in the same list, rendered in the renderer's language", () => {
     const board = buildCutBoard({ ...INPUT, bars: new Map() });
-    const siloLines = board.silos.flatMap((s) => s.warnings);
-    assert.ok(siloLines.length > 0, "without bars the silos cannot be reconstructed");
-    assert.deepEqual(board.warnings, [{ kind: "reconstruction", lines: siloLines }]);
+    assert.equal(board.warnings.length, 1, "without bars the silos cannot be reconstructed");
+    const [w] = board.warnings;
+    assert.ok(w.kind === "reconstruction" && w.warnings.length > 0);
+    assert.ok(
+      w.warnings.every((x) => typeof x.kind === "string" && !("lines" in x)),
+      "data, not text",
+    );
     assert.equal(boardWarnings(board, en)[0].title, en.evaluation.reconstructionMismatch);
     assert.equal(boardWarnings(board, es)[0].title, es.evaluation.reconstructionMismatch);
+  });
+
+  it("a board whose warnings were produced under OUTPUT_LANGUAGE=es renders entirely in English", () => {
+    assert.equal(process.env.OUTPUT_LANGUAGE, "es");
+    const board = buildCutBoard({ ...INPUT, bars: new Map() });
+    const groups = boardWarnings(board, en);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].title, en.evaluation.reconstructionMismatch);
+    const english = groups[0].lines;
+    assert.ok(english.length > 0);
+    assert.ok(
+      english.every((l) => /no closes for|cash on|would have/.test(l)),
+      english.join("\n"),
+    );
+    assert.deepEqual(english, boardWarnings(board, en)[0].lines);
+    const spanish = boardWarnings(board, es)[0].lines;
+    assert.notDeepEqual(english, spanish);
+    const report = renderDecisionsEvaluation(buildEvaluationReport({ ...INPUT, bars: new Map() }), en);
+    assert.ok(report.includes(en.evaluation.reconstructionMismatch));
+    for (const line of spanish) assert.ok(!report.includes(line), "no Spanish warning line in the English report");
   });
 
   it("the warnings are put into words by the renderer, in its language", () => {
@@ -1113,10 +1137,7 @@ describe("buildCutBoard", () => {
     const usd = board.silos.find((s) => s.currency === "USD")!;
     assertClose(usd.real, 2171, 1e-6);
     assertClose(usd.shadow, 2000, 1e-6);
-    assert.deepEqual(
-      board.silos.flatMap((s) => s.warnings),
-      [],
-    );
+    assert.deepEqual(board.warnings, []);
     assertClose(board.totalEur?.real, 500 + 2171 / 1.25, 1e-6);
     assertClose(board.totalEur?.shadow, 500 + 2000 / 1.25, 1e-6);
   });
