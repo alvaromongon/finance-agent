@@ -419,6 +419,21 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
     );
   });
 
+  it("an entry date after the exit's own date is refused, naming both dates (#48)", () => {
+    assert.throws(
+      () => buildDecision(exitLine({ ...snapshot, date: "2026-06-14", entry_date: "2026-06-15" })),
+      /entry_date 2026-06-15 is after the exit's date 2026-06-14/,
+    );
+  });
+
+  it("an entry date equal to the exit's date is accepted: a same-day round trip (#48)", () => {
+    assert.doesNotThrow(() => buildDecision(exitLine({ ...snapshot, date: "2026-06-15", entry_date: "2026-06-15" })));
+  });
+
+  it("an entry date before the exit's date is accepted (#48)", () => {
+    assert.doesNotThrow(() => buildDecision(exitLine({ ...snapshot, date: "2026-06-16", entry_date: "2026-06-15" })));
+  });
+
   it("the snapshot needs the entry id: it is what identifies the lot", () => {
     const { related_id: _id, ...noId } = snapshot;
     assert.throws(() => buildDecision(exitLine(noId)), /related_id is required with the lot snapshot/);

@@ -726,6 +726,18 @@ describe("closedTrades", () => {
       assert.deepEqual(measured.unmeasured.inconsistent, []);
     });
 
+    for (const field of ["entry_date", "entry_rules_version"] as const) {
+      it(`an exit whose snapshot lacks ${field} is an exit without a snapshot: counted and named, never measured with undefined (#48)`, () => {
+        const { [field]: _missing, ...incomplete } = fullExit();
+        const measured = measureTrades([incomplete]);
+        assert.deepEqual(measured.trades, []);
+        assert.deepEqual(measured.unmeasured.exitsWithoutSnapshot, [
+          { currency: "USD", ticker: "LOT", date: "2026-09-10", lotId: "lot-a" },
+        ]);
+        assert.deepEqual(closedTrades([incomplete]), []);
+      });
+    }
+
     it("an exit with the snapshot but no lot_units_left is an exit without a snapshot: counted and named", () => {
       const { lot_units_left: _left, ...noLeft } = fullExit();
       const measured = measureTrades([noLeft]);

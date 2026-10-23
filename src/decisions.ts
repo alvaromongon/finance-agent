@@ -331,6 +331,17 @@ export function validateDecision(raw: unknown): Decision {
     if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
       errors.push(`entry_date must be YYYY-MM-DD; got: ${JSON.stringify(raw.entry_date)}`);
     }
+    if (
+      type === "exit" &&
+      typeof raw.entry_date === "string" &&
+      DATE_RE.test(raw.entry_date) &&
+      typeof raw.date === "string" &&
+      DATE_RE.test(raw.date) &&
+      raw.entry_date > raw.date
+    ) {
+      // A lot cannot be sold before it was bought; the same day is a round trip.
+      errors.push(`entry_date ${raw.entry_date} is after the exit's date ${raw.date}`);
+    }
     if (raw.entry_origin != null) oneOf("entry_origin", DECISION_ORIGINS);
     if (raw.entry_rules_version != null) nonEmpty("entry_rules_version");
   }

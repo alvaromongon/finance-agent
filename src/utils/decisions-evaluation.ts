@@ -434,7 +434,9 @@ const hasLotSnapshot = (exit: Decision): exit is LotExit =>
   !!exit.related_id &&
   exit.entry_price != null &&
   exit.entry_units != null &&
+  !!exit.entry_date &&
   exit.entry_origin != null &&
+  !!exit.entry_rules_version &&
   exit.lot_units_left != null &&
   exit.price != null &&
   !!exit.amount;
