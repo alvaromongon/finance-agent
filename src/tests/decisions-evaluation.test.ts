@@ -7,7 +7,7 @@
 process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildDecision, type Decision } from "../decisions.js";
+import { buildDecision, validateDecision, type Decision } from "../decisions.js";
 import {
   buildCutBoard,
   buildEvaluationReport,
@@ -419,6 +419,30 @@ describe("closedTrades", () => {
     );
   });
 
+  describe("the snapshot guard is the validation's (#49)", () => {
+    // Unvalidated input: the closed trades must leave out exactly the exits `validateDecision` refuses.
+    for (const [name, change] of [
+      ["a whitespace-only entry_rules_version", { entry_rules_version: "   " }],
+      ["an entry_date after the exit", { entry_date: "2026-09-11" }],
+      ["a malformed entry_date", { entry_date: "03/08/2026" }],
+      ["an empty related_id", { related_id: "" }],
+      ["an empty entry_origin", { entry_origin: "" as Decision["entry_origin"] }],
+    ] satisfies [string, Partial<Decision>][]) {
+      it(`${name}: not measured, as validation refuses it`, () => {
+        const sale: Decision = { ...fullExit(), ...change }; // never validated
+        assert.throws(() => validateDecision(sale));
+        assert.deepEqual(closedTrades([sale]), []);
+        assert.equal(measureTrades([sale]).unmeasured.exitsWithoutSnapshot.length, 1);
+      });
+    }
+
+    it("a valid snapshot is measured and validates", () => {
+      const sale = fullExit();
+      assert.doesNotThrow(() => validateDecision(sale));
+      assert.equal(closedTrades([sale]).length, 1);
+    });
+  });
+
   describe("units of an exit (B1 of PR #56)", () => {
     // Price 27.98, lots 0.502 / 0.428 / 1.007 / 0.563 sold for 69.95 in all: the last exit absorbs the
     // cents of the others (15.74 → 0.562545 units by amount / price, off 0.000455 from 0.563).
@@ -773,8 +797,8 @@ describe("closedTrades", () => {
   });
 
   it("the counter starts with the first entry under C v1", () => {
-    assert.equal(counterStart([ownerEntry, entry]), "2026-09-02");
-    assert.equal(counterStart([ownerEntry]), null);
+    assert.equal(counterStart([ownerEntry, entry], []), "2026-09-02");
+    assert.equal(counterStart([ownerEntry], []), null);
   });
 });
 
@@ -912,37 +936,49 @@ describe("unmeasured exits and lots", () => {
     });
   });
 
-  it("the silo reconstruction warnings travel in the same list, rendered in the renderer's language", () => {
-    const board = buildCutBoard({ ...INPUT, bars: new Map() });
-    assert.equal(board.warnings.length, 1, "without bars the silos cannot be reconstructed");
-    const [w] = board.warnings;
-    assert.ok(w.kind === "reconstruction" && w.warnings.length > 0);
-    assert.ok(
-      w.warnings.every((x) => typeof x.kind === "string" && !("lines" in x)),
-      "data, not text",
-    );
-    assert.equal(boardWarnings(board, en)[0].title, en.evaluation.reconstructionMismatch);
-    assert.equal(boardWarnings(board, es)[0].title, es.evaluation.reconstructionMismatch);
-  });
-
-  it("a board whose warnings were produced under OUTPUT_LANGUAGE=es renders entirely in English", () => {
+  it("the silo reconstruction warnings are data held once on the board, whatever the language, and each renderer puts them into its own", () => {
+    const noBars = { ...INPUT, bars: new Map() };
+    // Without bars the silos cannot be reconstructed: both lose their shadow. The exact value, so prose
+    // in any other field would fail it.
+    const structured = [
+      {
+        kind: "reconstruction",
+        warnings: [
+          { kind: "noShadow", currency: "EUR", reference: "EXSA.DE" },
+          { kind: "noShadow", currency: "USD", reference: "VOO" },
+        ],
+      },
+    ];
     assert.equal(process.env.OUTPUT_LANGUAGE, "es");
-    const board = buildCutBoard({ ...INPUT, bars: new Map() });
-    const groups = boardWarnings(board, en);
+    const underEs = buildCutBoard(noBars);
+    assert.deepEqual(underEs.warnings, structured);
+    process.env.OUTPUT_LANGUAGE = "en";
+    let underEn: ReturnType<typeof buildCutBoard>;
+    try {
+      underEn = buildCutBoard(noBars);
+    } finally {
+      process.env.OUTPUT_LANGUAGE = "es";
+    }
+    assert.deepEqual(underEn.warnings, underEs.warnings, "the same data under es and en");
+
+    // Produced under es, rendered in English: the language is the renderer's.
+    const groups = boardWarnings(underEs, en);
     assert.equal(groups.length, 1);
     assert.equal(groups[0].title, en.evaluation.reconstructionMismatch);
     const english = groups[0].lines;
-    assert.ok(english.length > 0);
+    assert.equal(english.length, 2);
     assert.ok(
-      english.every((l) => /no closes for|cash on|would have/.test(l)),
+      english.every((l) => l.includes("no closes for")),
       english.join("\n"),
     );
-    assert.deepEqual(english, boardWarnings(board, en)[0].lines);
-    const spanish = boardWarnings(board, es)[0].lines;
-    assert.notDeepEqual(english, spanish);
-    const report = renderDecisionsEvaluation(buildEvaluationReport({ ...INPUT, bars: new Map() }), en);
+    const spanish = boardWarnings(underEs, es);
+    assert.equal(spanish[0].title, es.evaluation.reconstructionMismatch);
+    assert.notDeepEqual(english, spanish[0].lines);
+    const report = renderDecisionsEvaluation(buildEvaluationReport(noBars), en);
     assert.ok(report.includes(en.evaluation.reconstructionMismatch));
-    for (const line of spanish) assert.ok(!report.includes(line), "no Spanish warning line in the English report");
+    for (const line of spanish[0].lines) {
+      assert.ok(!report.includes(line), "no Spanish warning line in the English report");
+    }
   });
 
   it("the warnings are put into words by the renderer, in its language", () => {
@@ -993,10 +1029,11 @@ const heldLot = (fields: Partial<Lot> = {}): Lot => ({
   ...fields,
 });
 
-/** The cut board of a log and the USD silo's `Lots`; nothing else is held. */
+/** The board's warnings about the lots (the unmeasured exits and lots), without the silo reconstruction. */
 const lotWarnings = (board: ReturnType<typeof buildCutBoard>) =>
   board.warnings.filter((w) => w.kind !== "reconstruction");
 
+/** The cut board of a log and the USD silo's `Lots`; nothing else is held. */
 const boardOf = (decisions: Decision[], lots: Lot[]) =>
   buildCutBoard({
     ...INPUT,
@@ -1110,7 +1147,7 @@ describe("open trades come from Lots", () => {
 describe("counterStart reads the entries, the exits' snapshots and the lots", () => {
   it("a lot or an exit snapshot starts the counter when its entry line is archived", () => {
     assert.equal(counterStart([], [heldLot()]), "2026-08-03");
-    assert.equal(counterStart([lotExit()]), "2026-08-03");
+    assert.equal(counterStart([lotExit()], []), "2026-08-03");
   });
 
   it("is the earliest of the three, under the same origin and rules-version filter", () => {

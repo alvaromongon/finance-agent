@@ -201,8 +201,10 @@ them. It needs one history request per position with a stop; without ATR the pos
     `pnl` comes from the lot's entry price, costs not included. The lots a sale uses up are removed
     from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
-  - A sale of a ticker with no lots, of more units than are open, or with no `portfolio.md` is an
-    error.
+  - A sale of a ticker with no lots, of more units than are open, with no `portfolio.md`, or dated
+    before the entry of a lot it would consume (a lot cannot be sold before it was bought; the same
+    day is allowed) is an error. The last one is refused before any call to the market data
+    provider, naming both dates, and nothing is recorded.
 - **Reads / writes**: reads `logs/decisions.jsonl` (and the archive), `portfolio.md`, `watchlist.md`,
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and

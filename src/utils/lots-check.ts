@@ -7,10 +7,9 @@
 // every check that needs the log.
 import type { Decision } from "../decisions.js";
 import type { Lot, PortfolioSnapshot } from "../types.js";
+import { UNITS_TOLERANCE } from "./units.js";
 import { portfolioWhere } from "./vault-parser.js";
 
-/** Units are fractions: below this the difference is float noise, not a mismatch (nor units). */
-export const UNITS_TOLERANCE = 1e-8;
 /** Prices and stops are copied from the entry; below this the difference is formatting, not a mismatch. */
 const PRICE_TOLERANCE = 1e-6;
 

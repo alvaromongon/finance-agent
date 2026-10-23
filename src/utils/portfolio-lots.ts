@@ -6,7 +6,7 @@
 // - `applyLotChange`: the new `portfolio.md` text, with the silo's `Lots` and its `Positions` row edited.
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
-import { UNITS_TOLERANCE } from "./lots-check.js";
+import { UNITS_TOLERANCE } from "./units.js";
 import { normalizeEol } from "./parse.js";
 import { round2 } from "./round.js";
 import {

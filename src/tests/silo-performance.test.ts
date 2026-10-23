@@ -152,12 +152,10 @@ describe("reconstructSilo", () => {
     const unrecordedDeposit = reconstructSilo(
       input({ decisions: [...DECISIONS, decision({ type: "deposit", date: "2026-09-08", amount: 2000 })] }),
     );
-    assert.equal(unrecordedDeposit.warnings.length, 1);
-    const [cashWarning] = unrecordedDeposit.warnings;
-    assert.ok(
-      cashWarning.kind === "negativeCash" && cashWarning.currency === "EUR" && cashWarning.start === "2026-09-07",
-    );
-    assert.ok(cashWarning.kind === "negativeCash" && cashWarning.cash < 0);
+    // The log holds a 2,000 deposit that today's cash does not show: the base cash would be 1,000 − 2,000.
+    assert.deepEqual(unrecordedDeposit.warnings, [
+      { kind: "negativeCash", currency: "EUR", start: "2026-09-07", cash: -1000 },
+    ]);
   });
 
   it("without closes for an asset values it at the last known price and warns", () => {

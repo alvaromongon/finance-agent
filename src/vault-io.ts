@@ -674,8 +674,11 @@ const decisionArchiveDir = () => config.paths.decisionsArchiveDir();
 /**
  * Full log for measuring long periods: the archived quarters
  * (`decisions-AAAA-TN.jsonl`) and the live file. A decision that appears in
- * both (same id) counts once. In date order, ties in write order, so archiving
- * any quarter leaves the history, and everything measured from it, unchanged.
+ * both (same id) counts once. In date order, so archiving any quarter leaves the
+ * history, and everything measured from it, unchanged. Decisions of the same date keep a stated,
+ * deterministic order: the archive files in name order, then the live file, each in write order (the
+ * sort is stable). `findRelatedProposal` takes the last of the same-date proposals, so this order decides
+ * which proposal a trade cites.
  */
 export async function readDecisionHistory(archiveDir: string | undefined = decisionArchiveDir()): Promise<Decision[]> {
   const archived: Decision[] = [];
