@@ -80,6 +80,22 @@ describe("readDecisionHistory", () => {
     );
   });
 
+  it("ties on a date keep a stated order: archive files in order, then the live file, each in write order", async () => {
+    const day = "2026-08-03";
+    // The amount tells them apart; the ids are unique from buildDecision.
+    const [a1, a2, b1, l1, l2] = [1, 2, 3, 4, 5].map((amount) => ({ ...deposit(day), amount }));
+    // File names sort T2 before T3 whatever the order they are written in.
+    await writeFile(join(archiveDir, "decisions-2026-T3.jsonl"), line(b1), "utf8");
+    await writeFile(join(archiveDir, "decisions-2026-T2.jsonl"), line(a1) + line(a2), "utf8");
+    await writeFile(join(vaultDir, "logs", "decisions.jsonl"), line(l1) + line(l2), "utf8");
+
+    const history = await readDecisionHistory();
+    assert.deepEqual(
+      history.map((d) => d.amount),
+      [1, 2, 3, 4, 5],
+    );
+  });
+
   it("without archives, it is the live log", async () => {
     await writeFile(
       join(vaultDir, "logs", "decisions.jsonl"),

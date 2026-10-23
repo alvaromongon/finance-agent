@@ -254,6 +254,12 @@ export const isAssumptionList = (v: unknown): v is string[] => isStringList(v) &
 export const tradeUnits = (d: Decision): number => d.units ?? d.amount! / d.price!;
 
 /**
+ * The one rule "a lot cannot be sold before it was bought" (the same day is a round trip), for the
+ * validation of a recorded exit and for the refusal of a sale before it is recorded.
+ */
+export const entryAfterExit = (entryDate: string, exitDate: string): boolean => entryDate > exitDate;
+
+/**
  * What is wrong with the lot snapshot (`entry_*` and `related_id`) of a decision, if it has one: an empty
  * list is a complete and coherent snapshot of an `exit`. The one definition of "a snapshot a measurement
  * can use": `validateDecision` reports these problems and the evaluation's guard (`hasLotSnapshot`)
@@ -280,9 +286,8 @@ export function lotSnapshotProblems(raw: Record<string, unknown>): string[] {
     DATE_RE.test(raw.entry_date) &&
     typeof raw.date === "string" &&
     DATE_RE.test(raw.date) &&
-    raw.entry_date > raw.date
+    entryAfterExit(raw.entry_date, raw.date)
   ) {
-    // A lot cannot be sold before it was bought; the same day is a round trip.
     errors.push(`entry_date ${raw.entry_date} is after the exit's date ${raw.date}`);
   }
   if (raw.entry_origin != null && !DECISION_ORIGINS.includes(raw.entry_origin as DecisionOrigin)) {

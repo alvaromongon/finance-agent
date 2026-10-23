@@ -30,6 +30,7 @@ import {
   buildDecision,
   decisionFromRecommendation,
   entryRuleViolations,
+  entryAfterExit,
   findRelatedProposal,
   originOf,
   resolveFxConversion,
@@ -444,7 +445,7 @@ function planOwnerSale(
     },
     entryCostsTaken(history),
   );
-  const later = shares.find((share) => share.lot.date > date);
+  const later = shares.find((share) => entryAfterExit(share.lot.date, date));
   if (later) {
     throw new Error(
       `entry_date ${later.lot.date} is after the exit's date ${date}: a lot cannot be sold before it was bought (nothing was recorded)`,
