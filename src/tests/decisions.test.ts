@@ -547,6 +547,13 @@ describe("validateOwnerInput", () => {
       });
     }
 
+    // The parser reads `-` as an empty cell, so a row written with it would be skipped on the next read.
+    for (const bad of ["-", "--", "=", "^.-"]) {
+      it(`refuses ${JSON.stringify(bad)}`, () => {
+        assert.throws(() => validateOwnerInput(entryOf(bad)), /ticker .* letters, digits and \. - \^ =/);
+      });
+    }
+
     for (const good of ["BRK.B", "EXSA.DE", "^GSPC", "BTC-USD", "EURUSD=X", "TCK"]) {
       it(`accepts ${good}`, () => {
         assert.equal(validateOwnerInput(entryOf(good)).ticker, good);

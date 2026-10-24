@@ -675,10 +675,11 @@ export interface OwnerDecisionInput {
 
 /**
  * What a ticker may be written with: letters, digits and `. - ^ =` (`BRK.B`, `EXSA.DE`, `^GSPC`,
- * `BTC-USD`, `EURUSD=X`). Anything else (`|` breaks the Markdown table, a newline the log line) would be
+ * `BTC-USD`, `EURUSD=X`), with at least one letter or digit (the parser reads `-` as an empty cell).
+ * Anything else (`|` breaks the Markdown table, a newline the log line) would be
  * recorded and then refused by every later read.
  */
-const TICKER_RE = /^[A-Za-z0-9.\-^=]+$/;
+const TICKER_RE = /^(?=.*[A-Za-z0-9])[A-Za-z0-9.\-^=]+$/;
 
 /** Validates the `decision:record` input before touching the log; the ticker comes back trimmed. */
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {

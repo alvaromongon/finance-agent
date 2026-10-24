@@ -404,6 +404,19 @@ describe("volumeMismatches: one round of messages (#68)", () => {
     assert.ok(messages.some((m) => m.includes("tck: Volume 20 is not the sum of the Units of its lots (10)")));
   });
 
+  it("a Volume error is reported when Positions spells the ticker differently from the lot (issue 68, case B)", () => {
+    const messages = lotsMismatches(portfolio([position("TCK", 20)], [lot("a", 10, "tck")]), [entry("a", "TCK")]);
+    assert.equal(messages.length, 2, messages.join("\n"));
+    assert.ok(messages.some((m) => m.includes("differ only in case")));
+    assert.ok(messages.some((m) => m.includes("TCK: Volume 20 is not the sum of the Units of its lots (10)")));
+  });
+
+  it("two Positions rows differing only in case are one ticker to merge", () => {
+    const messages = volumeMismatches(portfolio([position("TCK", 10), position("tck", 5)], [lot("a", 15)]));
+    assert.equal(messages.length, 1, messages.join("\n"));
+    assert.match(messages[0], /on 2 rows.*Volume 10, 5.*merge them into one row/);
+  });
+
   it("an unreadable Lots row is the only message of its ticker: no Volume and no 'no lot' derived from it (PR #63 4)", () => {
     const p: PortfolioSnapshot = {
       ...portfolio([position("TCK", 16)], [lot("a", 10)]),

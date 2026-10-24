@@ -28,50 +28,59 @@ export function volumeMismatches(
   caseReported: ReadonlySet<string> = new Set(),
 ): string[] {
   const at = where(portfolio);
+  // Tickers are grouped case-insensitively: `TCK` and `tck` are one ticker, spelled differently.
   const lotUnits = new Map<string, number>();
-  for (const lot of portfolio.lots) lotUnits.set(lot.ticker, (lotUnits.get(lot.ticker) ?? 0) + lot.units);
-
-  const volumes = new Map<string, number>();
-  const rows = new Map<string, number[]>();
+  const lotSpelling = new Map<string, string>();
+  for (const lot of portfolio.lots) {
+    const key = lot.ticker.toLowerCase();
+    lotUnits.set(key, (lotUnits.get(key) ?? 0) + lot.units);
+    if (!lotSpelling.has(key)) lotSpelling.set(key, lot.ticker);
+  }
+  const rows = new Map<string, { spellings: Set<string>; volumes: number[] }>();
   for (const p of portfolio.positions) {
-    volumes.set(p.ticker, (volumes.get(p.ticker) ?? 0) + p.volume);
-    rows.set(p.ticker, [...(rows.get(p.ticker) ?? []), p.volume]);
+    const key = p.ticker.toLowerCase();
+    const row = rows.get(key) ?? { spellings: new Set<string>(), volumes: [] };
+    row.spellings.add(p.ticker);
+    row.volumes.push(p.volume);
+    rows.set(key, row);
   }
 
   const problems = (portfolio.skippedLotRows ?? []).map((row) => `${at}: ${row}`);
   // The tickers of the rows that do not read: their Volume is reported once those rows are fixed.
-  const unreadable = new Set((portfolio.unreadableLots?.tickers ?? []).map((t) => t.toLowerCase()));
-  for (const [ticker, volumesOfRows] of rows) {
-    if (volumesOfRows.length > 1) {
+  const unreadable = unreadableTickers(portfolio);
+  for (const row of rows.values()) {
+    if (row.volumes.length > 1) {
       problems.push(
-        `${at}: ${ticker} is on ${volumesOfRows.length} rows of "## ${portfolio.currency} — Positions" (Volume ${volumesOfRows.join(", ")}): merge them into one row`,
+        `${at}: ${[...row.spellings][0]} is on ${row.volumes.length} rows of "## ${portfolio.currency} — Positions" (Volume ${row.volumes.join(", ")}): merge them into one row`,
       );
     }
   }
-  const inCase = new Map<string, string>();
-  for (const ticker of volumes.keys()) inCase.set(ticker.toLowerCase(), ticker);
-  const apart = new Set<string>();
-  for (const ticker of lotUnits.keys()) {
-    if (unreadable.has(ticker.toLowerCase())) continue;
-    const position = inCase.get(ticker.toLowerCase());
-    if (position === undefined || position === ticker || volumes.has(ticker)) continue;
-    apart.add(position);
-    apart.add(ticker);
-    if (!caseReported.has(ticker)) {
-      problems.push(
-        `${at}: ${ticker} in Lots and ${position} in Positions differ only in case; write the ticker the same in both`,
-      );
-    }
+  const reportedCase = new Set<string>();
+  for (const lot of portfolio.lots) {
+    const row = rows.get(lot.ticker.toLowerCase());
+    if (!row || row.spellings.has(lot.ticker) || unreadable.has(lot.ticker.toLowerCase())) continue;
+    if (caseReported.has(lot.ticker) || reportedCase.has(lot.ticker)) continue;
+    reportedCase.add(lot.ticker);
+    problems.push(
+      `${at}: ${lot.ticker} in Lots and ${[...row.spellings][0]} in Positions differ only in case; write the ticker the same in both`,
+    );
   }
-  for (const ticker of new Set([...volumes.keys(), ...lotUnits.keys()])) {
-    if (apart.has(ticker) || unreadable.has(ticker.toLowerCase())) continue;
-    const volume = volumes.get(ticker) ?? 0;
-    const units = lotUnits.get(ticker) ?? 0;
+  for (const key of new Set([...rows.keys(), ...lotUnits.keys()])) {
+    if (unreadable.has(key)) continue;
+    const row = rows.get(key);
+    const volume = row ? row.volumes.reduce((sum, v) => sum + v, 0) : 0;
+    const units = lotUnits.get(key) ?? 0;
     if (Math.abs(volume - units) > UNITS_TOLERANCE) {
-      problems.push(`${at}: ${ticker}: Volume ${volume} is not the sum of the Units of its lots (${units})`);
+      const name = row ? [...row.spellings][0] : lotSpelling.get(key);
+      problems.push(`${at}: ${name}: Volume ${volume} is not the sum of the Units of its lots (${units})`);
     }
   }
   return problems;
+}
+
+/** Lower-cased tickers of the `Lots` rows that do not read. */
+function unreadableTickers(portfolio: PortfolioSnapshot): ReadonlySet<string> {
+  return new Set((portfolio.unreadableLots?.tickers ?? []).map((t) => t.toLowerCase()));
 }
 
 /**
@@ -196,7 +205,7 @@ function entriesWithoutLot(
   used: ReadonlySet<string | undefined>,
 ): string[] {
   const lotted = new Set([...portfolio.lots.map((l) => l.entryId), ...(portfolio.unreadableLots?.entryIds ?? [])]);
-  const unreadable = new Set((portfolio.unreadableLots?.tickers ?? []).map((t) => t.toLowerCase()));
+  const unreadable = unreadableTickers(portfolio);
   return decisions
     .filter(
       (d) =>
