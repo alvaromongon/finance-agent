@@ -50,7 +50,7 @@ function siloWarningLine(w: SiloWarning, m: Messages): string {
   const t = m.evaluation.siloWarnings;
   switch (w.kind) {
     case "negativeCash":
-      return t.negativeCash(w.currency, w.start, w.cash.toFixed(2));
+      return t.negativeCash(w.currency, w.start, fmtMoney(w.cash));
     case "oversold":
       return t.oversold(w.currency, w.ticker, w.units.toFixed(4), w.start);
     case "missingCloses":
@@ -67,41 +67,45 @@ function siloWarningLine(w: SiloWarning, m: Messages): string {
  */
 export function boardWarnings(board: CutBoard, m: Messages = messages()): { title: string; lines: string[] }[] {
   const t = m.evaluation;
-  const groups = board.warnings.map((w): { group: "reconstruction" | "unmeasured"; title: string; lines: string[] } => {
-    switch (w.kind) {
-      case "reconstruction":
-        return {
-          group: "reconstruction",
-          title: t.reconstructionMismatch,
-          lines: w.warnings.map((x) => siloWarningLine(x, m)),
-        };
-      case "exitsWithoutSnapshot": {
-        const shown = w.exits.slice(0, SKIPPED_EXITS_SHOWN);
-        const rest = w.exits.length - shown.length;
-        return {
-          group: "unmeasured",
-          title: t.unmeasured.title,
-          lines: [
-            t.unmeasured.exitsWithoutSnapshot(w.exits.length),
-            ...shown.map((e) => t.unmeasured.skippedExit(e.ticker ?? "—", e.date, e.lotId)),
-            ...(rest > 0 ? [t.unmeasured.moreSkippedExits(rest)] : []),
-          ],
-        };
+  const groups = board.warnings.map(
+    (w): { group: "reconstruction" | "unmeasured" | "missing"; title: string; lines: string[] } => {
+      switch (w.kind) {
+        case "decisionsMissing":
+          return { group: "missing", title: t.decisionsMissing.title, lines: [t.decisionsMissing.line(w.before)] };
+        case "reconstruction":
+          return {
+            group: "reconstruction",
+            title: t.reconstructionMismatch,
+            lines: w.warnings.map((x) => siloWarningLine(x, m)),
+          };
+        case "exitsWithoutSnapshot": {
+          const shown = w.exits.slice(0, SKIPPED_EXITS_SHOWN);
+          const rest = w.exits.length - shown.length;
+          return {
+            group: "unmeasured",
+            title: t.unmeasured.title,
+            lines: [
+              t.unmeasured.exitsWithoutSnapshot(w.exits.length),
+              ...shown.map((e) => t.unmeasured.skippedExit(e.ticker ?? "—", e.date, e.lotId)),
+              ...(rest > 0 ? [t.unmeasured.moreSkippedExits(rest)] : []),
+            ],
+          };
+        }
+        case "oversoldLots":
+          return {
+            group: "unmeasured",
+            title: t.unmeasured.title,
+            lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)),
+          };
+        case "inconsistentLots":
+          return {
+            group: "unmeasured",
+            title: t.unmeasured.title,
+            lines: w.lots.map((l) => t.unmeasured.inconsistentLot(l.ticker, l.lotId, l.reason)),
+          };
       }
-      case "oversoldLots":
-        return {
-          group: "unmeasured",
-          title: t.unmeasured.title,
-          lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)),
-        };
-      case "inconsistentLots":
-        return {
-          group: "unmeasured",
-          title: t.unmeasured.title,
-          lines: w.lots.map((l) => t.unmeasured.inconsistentLot(l.ticker, l.lotId, l.reason)),
-        };
-    }
-  });
+    },
+  );
   return groups
     .reduce<{ group: string; title: string; lines: string[] }[]>((merged, g) => {
       const same = merged.find((x) => x.group === g.group);

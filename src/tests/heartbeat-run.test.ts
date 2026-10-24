@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { bar, extend, uptrend } from "./fixtures/setup-bars.js";
 import type { IMarketDataProvider, HistoricalBar } from "../providers/types.js";
 import type { IAnalystProvider } from "../analyst/types.js";
-import type { Currency, Signal } from "../types.js";
+import type { Currency, PortfolioSnapshot, Signal } from "../types.js";
 import { parsePositions } from "../utils/vault-parser.js";
 import { entryLines, lotsSection, type HeldLot } from "./fixtures/lots.js";
 
@@ -106,6 +106,7 @@ describe("runHeartbeat", () => {
       analyst: IAnalystProvider;
       headlines?: (ticker: string) => Promise<string[]>;
       lastMarketDate?: (ticker: string) => Promise<Date | null>;
+      lotsCheck?: (portfolio: PortfolioSnapshot) => string[];
     },
   ) => Promise<void>;
   const escalated: Signal[] = [];
@@ -193,8 +194,24 @@ describe("runHeartbeat", () => {
       );
       const [email] = await outbox();
       assert.match(email.subject, /stop cruzado: CAT/, "the position is still watched for risk");
-      assert.match(email.subject, /lotes que no cuadran/);
+      assert.match(email.subject, /problema con los lotes/);
       assert.match(email.body, /CAT.*Volume 1/);
+    });
+
+    it("a lots check that throws does not lose the crossed stop: the digest goes out with it and the run fails", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await assert.rejects(
+        heartbeat({
+          lotsCheck: () => {
+            throw new Error("lots check blew up");
+          },
+        }),
+        /lots check blew up/,
+      );
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is in the digest that was sent");
+      assert.doesNotMatch(email.subject, /lotes/, "a check that failed is not reported as a warning");
     });
 
     it("the alerting path does not read the decision log: Volume is checked from portfolio.md alone (#52)", async () => {
@@ -210,7 +227,7 @@ describe("runHeartbeat", () => {
       );
       const [email] = await outbox();
       assert.match(email.subject, /stop ceñido: MSFT/);
-      assert.doesNotMatch(email.subject, /lotes que no cuadran/);
+      assert.doesNotMatch(email.subject, /problema con los lotes/);
     });
 
     it("a Volume that does not match is found by the lots' own Ticker column", async () => {
@@ -231,7 +248,7 @@ describe("runHeartbeat", () => {
       const emails = await outbox();
       assert.equal(emails.length, 2, "a lots warning alone still produces a digest, every run");
       for (const email of emails) {
-        assert.match(email.subject, /lotes que no cuadran/);
+        assert.match(email.subject, /problema con los lotes/);
         assert.match(email.body, /MSFT.*Volume 1/);
       }
       assert.doesNotMatch(emails[1].subject, /stop ceñido/, "what is deduplicated still is");
@@ -296,7 +313,7 @@ describe("runHeartbeat", () => {
         );
         const [email] = await outbox();
         assert.match(email.subject, /stop cruzado: CAT/);
-        assert.match(email.subject, /lotes que no cuadran/);
+        assert.match(email.subject, /problema con los lotes/);
         assert.match(email.body, /portfolio\.md \(USD\): ## USD — Lots: columns Entry units missing/);
       });
 

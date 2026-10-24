@@ -263,7 +263,10 @@ export const entryAfterExit = (entryDate: string, exitDate: string): boolean => 
  * What is wrong with the lot snapshot (`entry_*` and `related_id`) of a decision, if it has one: an empty
  * list is a complete and coherent snapshot of an `exit`. The one definition of "a snapshot a measurement
  * can use": `validateDecision` reports these problems and the evaluation's guard (`hasLotSnapshot`)
- * leaves out an exit that has any, so the two cannot disagree on input that was never validated.
+ * leaves out an exit that has any. This covers the snapshot's presence, its dates, origin, rules version and
+ * lot id; the numeric fields (entry price and units, initial stop, `lot_units_left`) are checked by
+ * `validateDecision` and, on a line that was never validated, only for being present by the guard, so on those
+ * the two can disagree.
  */
 export function lotSnapshotProblems(raw: Record<string, unknown>): string[] {
   const errors: string[] = [];

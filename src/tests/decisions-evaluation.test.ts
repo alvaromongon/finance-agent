@@ -11,6 +11,7 @@ import { buildDecision, validateDecision, type Decision } from "../decisions.js"
 import {
   buildCutBoard,
   buildEvaluationReport,
+  barsFrom,
   buyPlan,
   closedTrades,
   counterStart,
@@ -916,7 +917,7 @@ describe("unmeasured exits and lots", () => {
       lotExit({ ticker: "BAD", related_id: "lot-c", amount: 480, lot_units_left: 9 }),
     ]);
     for (const m of [en, es]) {
-      const groups = boardWarnings(report.board, m).filter((g) => g.title !== m.evaluation.reconstructionMismatch);
+      const groups = boardWarnings(report.board, m).filter((g) => g.title === m.evaluation.unmeasured.title);
       assert.equal(groups.length, 1, "one heading");
       assert.equal(groups[0].title, m.evaluation.unmeasured.title);
       assert.equal(groups[0].lines.length, 4, "the count and the exit, the oversold lot, the inconsistent lot");
@@ -925,7 +926,7 @@ describe("unmeasured exits and lots", () => {
 
   it("every kind goes through the board's one warnings list, as structured data", () => {
     const { report } = withBoard([bare("DDD"), fullExit({ ticker: "OVR", amount: 1440 })]);
-    const unmeasured = report.board.warnings.filter((w) => w.kind !== "reconstruction");
+    const unmeasured = lotWarnings(report.board);
     assert.deepEqual(unmeasured[0], {
       kind: "exitsWithoutSnapshot",
       exits: [{ currency: "USD", ticker: "DDD", date: "2026-09-12", lotId: "gone" }],
@@ -1031,7 +1032,7 @@ const heldLot = (fields: Partial<Lot> = {}): Lot => ({
 
 /** The board's warnings about the lots (the unmeasured exits and lots), without the silo reconstruction. */
 const lotWarnings = (board: ReturnType<typeof buildCutBoard>) =>
-  board.warnings.filter((w) => w.kind !== "reconstruction");
+  board.warnings.filter((w) => w.kind !== "reconstruction" && w.kind !== "decisionsMissing");
 
 /** The cut board of a log and the USD silo's `Lots`; nothing else is held. */
 const boardOf = (decisions: Decision[], lots: Lot[]) =>
@@ -1193,6 +1194,62 @@ describe("buildCutBoard", () => {
 
   it("without an EUR/USD rate there is no EUR total", () => {
     assert.equal(buildCutBoard({ ...INPUT, eurUsd: null }).totalEur, null);
+  });
+});
+
+describe("a log loaded without its archive (#69)", () => {
+  const archivedEntry = (): Parameters<typeof boardOf> => [[lotExit()], [heldLot()]];
+
+  it("warns when the counter started before the earliest decision loaded", () => {
+    const board = boardOf(...archivedEntry());
+    assert.equal(board.counterStart, "2026-08-03");
+    assert.deepEqual(
+      board.warnings.filter((w) => w.kind === "decisionsMissing"),
+      [{ kind: "decisionsMissing", before: "2026-09-10" }],
+    );
+  });
+
+  it("does not warn when the entry is in the log, nor when the counter has not started", () => {
+    const entryLine = decision({
+      type: "entry",
+      id: "lot-a",
+      ticker: "LOT",
+      date: "2026-08-03",
+      amount: 1000,
+      rules_version: "1.0",
+    });
+    const missing = (board: ReturnType<typeof boardOf>) => board.warnings.filter((w) => w.kind === "decisionsMissing");
+    assert.deepEqual(missing(boardOf([entryLine, lotExit()], [heldLot()])), []);
+    assert.deepEqual(missing(boardOf([ownerEntry], [])), []);
+    assert.deepEqual(missing(boardOf([], [])), []);
+  });
+
+  it("is worded in both languages, with the date and the variable to check", () => {
+    const board = boardOf(...archivedEntry());
+    const missing = (m: typeof en) =>
+      boardWarnings(board, m).filter((g) => g.title === m.evaluation.decisionsMissing.title);
+    const [es_, en_] = [missing(es), missing(en)];
+    assert.deepEqual(en_, [
+      {
+        title: "> [!warning] Part of the decision log was not loaded",
+        lines: ["decisions are missing before 2026-09-10: is `DECISIONS_ARCHIVE_DIR` set?"],
+      },
+    ]);
+    assert.deepEqual(es_, [
+      {
+        title: "> [!warning] Faltan decisiones del registro",
+        lines: ["faltan decisiones anteriores al 2026-09-10: ¿está definido `DECISIONS_ARCHIVE_DIR`?"],
+      },
+    ]);
+  });
+
+  it("the bars reach back to the counter start, not to the earliest decision loaded", () => {
+    const portfolios = { EUR: snapshot("EUR", 500), USD: { ...snapshot("USD", 2171), lots: [heldLot()] } };
+    assert.equal(barsFrom([lotExit()], portfolios), "2026-08-03");
+    // Decisions older than the counter (rehearsal, the owner's) still set how far back the bars go.
+    const older = decision({ type: "entry", origin: "propietario", date: "2026-07-01", amount: 500 });
+    assert.equal(barsFrom([older, lotExit()], portfolios), "2026-07-01");
+    assert.equal(barsFrom([], { EUR: snapshot("EUR", 0), USD: snapshot("USD", 0) }), null);
   });
 });
 
