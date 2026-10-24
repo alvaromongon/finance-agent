@@ -7,22 +7,17 @@
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
 import { UNITS_TOLERANCE } from "./units.js";
-import { normalizeEol } from "./parse.js";
 import { round2 } from "./round.js";
+import { parsePortfolio, serializePortfolio, setTableRows } from "./portfolio-codec.js";
 import {
-  isLotPlaceholderRow,
   isPositionPlaceholder,
-  isTableLine,
-  isTableSeparator,
   lotColumns,
-  lotOfRow,
+  parseLotRows,
+  portfolioWhere,
   positionColumns,
-  sectionRange,
-  splitTableRow,
   missingLotsSection,
   LotsTableError,
   type LotColumn,
-  type PortfolioSection,
 } from "./vault-parser.js";
 
 /** Decimals of an exit's amount: its exact share of the sale amount, with the float noise cleared. */
@@ -215,18 +210,22 @@ const NONE = "—";
 
 /**
  * `md` with the silo's `Lots` table holding exactly `lots` and the `Positions` row of `change.ticker`
- * updated, created or deleted. The cells keep the file's column order; nothing else in the file moves.
- * Returns the text with LF line ends, as the vault reads it.
+ * updated, created or deleted. The cells keep the file's column order; the rest of the file, line ends
+ * included, is the codec's to keep. Refuses (nothing is rewritten) a `Lots` table with a row that does not
+ * read as a lot, or a ticker on several `Positions` rows: neither is the recorder's to guess.
  */
 export function applyLotChange(md: string, currency: Currency, lots: readonly Lot[], change: PositionChange): string {
   const num = numberFormat(currency);
-  let out = normalizeEol(md);
+  const { skipped } = parseLotRows(md, currency);
+  if (skipped.length > 0) {
+    throw new Error(
+      `${portfolioWhere(currency)}: ${skipped.join("; ")} - the Lots table is not rewritten while a row does not read (nothing was recorded)`,
+    );
+  }
 
-  out = editTable(out, currency, "Lots", Object.values(LOT_HEADER), (header, current) => {
+  const withLots = setTableRows(parsePortfolio(md), currency, "Lots", Object.values(LOT_HEADER), (header) => {
     const col = lotColumns(header, currency);
-    // A row that does not read as a lot (a note, a half-typed row) is the owner's: it stays where it is.
-    const unreadable = current.filter((cells) => lotOfRow(cells, col) === null && !isLotPlaceholderRow(cells, col));
-    const written = lots.map((lot) => {
+    return lots.map((lot) => {
       const cells = header.map(() => NONE);
       const set = (key: LotColumn, value: string) => (cells[col[key]] = value);
       set("ticker", lot.ticker);
@@ -242,17 +241,22 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
       set("rulesViolations", lot.rulesViolations.length > 0 ? lot.rulesViolations.join(", ") : NONE);
       return cells;
     });
-    return [...written, ...unreadable];
   });
+  if (!withLots) throw new LotsTableError(missingLotsSection(currency));
 
-  return editTable(out, currency, "Positions", POSITION_HEADER, (header, rows) => {
+  const withPositions = setTableRows(withLots, currency, "Positions", POSITION_HEADER, (header, rows) => {
     const col = positionColumns(header, currency);
     const kept = rows.filter((cells) => !isPositionPlaceholder((cells[col.ticker] ?? "").trim()));
-    const at = kept.findIndex((cells) => (cells[col.ticker] ?? "").trim() === change.ticker);
-    if (change.volume <= UNITS_TOLERANCE) return at === -1 ? kept : kept.filter((_, i) => i !== at);
-    if (at !== -1) {
-      kept[at][col.volume] = num(change.volume, 0);
-      if (change.avgPrice != null) kept[at][col.avgPrice] = num(change.avgPrice, 2);
+    const at = kept.flatMap((cells, i) => ((cells[col.ticker] ?? "").trim() === change.ticker ? [i] : []));
+    if (at.length > 1) {
+      throw new Error(
+        `portfolio.md: ${change.ticker} is on ${at.length} rows of "## ${currency} — Positions": merge them into one row (nothing was recorded)`,
+      );
+    }
+    if (change.volume <= UNITS_TOLERANCE) return at.length === 0 ? kept : kept.filter((_, i) => i !== at[0]);
+    if (at.length === 1) {
+      kept[at[0]][col.volume] = num(change.volume, 0);
+      if (change.avgPrice != null) kept[at[0]][col.avgPrice] = num(change.avgPrice, 2);
       return kept;
     }
     const cells = header.map(() => NONE);
@@ -264,6 +268,10 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     cells[col.stopLoss] = change.newStopLoss == null ? NONE : num(change.newStopLoss, 2);
     return [...kept, cells];
   });
+  if (!withPositions) {
+    throw new Error(`portfolio.md: missing section "## ${currency} — Positions" (see docs/input-format.md)`);
+  }
+  return serializePortfolio(withPositions);
 }
 
 /**
@@ -278,50 +286,4 @@ function numberFormat(currency: Currency): (n: number, minDecimals: number) => s
     const trimmed = fraction.replace(/0+$/, "").padEnd(minDecimals, "0");
     return trimmed ? `${integer}${separator}${trimmed}` : integer;
   };
-}
-
-const lineOf = (cells: readonly string[]): string => `| ${cells.join(" | ")} |`;
-
-/**
- * Rewrites the data rows of the silo's `kind` table: `edit` gets the header cells and the current
- * data rows (the placeholder rows included) and returns the new ones. The header and separator lines
- * stay as they are; a section with no table gets one with the canonical `header`.
- */
-function editTable(
-  md: string,
-  currency: Currency,
-  kind: PortfolioSection,
-  canonicalHeader: readonly string[],
-  edit: (header: string[], rows: string[][]) => string[][],
-): string {
-  const range = sectionRange(md, currency, kind);
-  if (!range) {
-    if (kind === "Lots") throw new LotsTableError(missingLotsSection(currency));
-    throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
-  }
-  const lines = md.slice(range.start, range.end).split("\n");
-
-  const headerAt = lines.findIndex(isTableLine);
-  if (headerAt === -1) {
-    const table = [
-      lineOf(canonicalHeader),
-      lineOf(canonicalHeader.map(() => "---")),
-      ...edit([...canonicalHeader], []).map(lineOf),
-    ];
-    // What followed the heading stays after the table, a blank line apart (as before a next heading).
-    const rest = md.slice(range.start, range.end).trimStart();
-    const after = rest !== "" ? `\n${rest}` : range.end < md.length ? "\n" : "";
-    return md.slice(0, range.start) + `\n\n${table.join("\n")}\n` + after + md.slice(range.end);
-  }
-
-  const header = splitTableRow(lines[headerAt]);
-  let end = headerAt + 1;
-  if (end < lines.length && isTableLine(lines[end]) && isTableSeparator(splitTableRow(lines[end]))) end++;
-  const dataFrom = end;
-  while (end < lines.length && isTableLine(lines[end])) end++;
-  const rows = lines.slice(dataFrom, end).map(splitTableRow);
-
-  const written = edit(header, rows).map(lineOf);
-  const rebuilt = [...lines.slice(0, dataFrom), ...written, ...lines.slice(end)];
-  return md.slice(0, range.start) + rebuilt.join("\n") + md.slice(range.end);
 }

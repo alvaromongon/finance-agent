@@ -1,6 +1,6 @@
 // Reading/writing of the vault Markdown "brain".
 import { messages } from "./i18n/index.js";
-import { writeFile, readdir, mkdir, unlink, appendFile, rename } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, unlink, appendFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { config } from "./config.js";
@@ -8,6 +8,7 @@ import { validateDecision, type Decision, type ScreeningSelection } from "./deci
 import { describeTicket } from "./utils/sizing.js";
 import { describeConviction } from "./utils/conviction.js";
 import { parseMarkdownNumber } from "./utils/parse.js";
+import { mapTableRows, parsePortfolio, readTable, serializePortfolio } from "./utils/portfolio-codec.js";
 import { parseLastLog, type LastLog } from "./utils/cooldown.js";
 import {
   assertPortfolioSections,
@@ -19,14 +20,10 @@ import {
   isPositionPlaceholder,
   parseCash,
   parseLotRows,
-  splitTableRow,
-  isTableSeparator,
-  parseTableRows,
   parseTotalCash,
   parsePositions,
   parseScreeningLog,
   positionColumns,
-  sectionRange,
   SCHEMA_VERSION,
   applyAddWatchlistEntry,
   applyRetireWatchlistEntry,
@@ -189,9 +186,12 @@ function readLots(
   }
 }
 
-/** `portfolio.md` as text, for the writer of the lots; throws `ENOENT` if the file does not exist. */
+/**
+ * `portfolio.md` as it is, line ends included, for the writer of the lots; throws `ENOENT` if the file
+ * does not exist.
+ */
 export async function readPortfolioText(): Promise<string> {
-  return readTextFile(join(projectDir(), "portfolio.md"));
+  return readFile(join(projectDir(), "portfolio.md"), "utf8");
 }
 
 /** Replaces `portfolio.md` with `text`: `decision:record` rewrites the `Lots` and `Positions` tables (ADR-0015). */
@@ -217,45 +217,34 @@ export async function writePortfolioText(text: string): Promise<void> {
  */
 export async function updatePortfolioPrices(currency: Currency, prices: Map<string, number>): Promise<void> {
   const filePath = join(projectDir(), "portfolio.md");
-  const raw = await readTextFile(filePath).catch(() => null);
+  // As the file is, line ends included: the codec writes back every line it did not change.
+  const raw = await readFile(filePath, "utf8").catch(() => null);
   if (!raw) return;
   assertSchemaVersion(raw, "portfolio.md");
 
-  // Find the positions section and replace cell by cell; columns are read by
-  // their header, as in parsePositions.
-  const range = sectionRange(raw, currency, "Positions");
-  if (!range) return;
-  const { start: sectionStart, end: sectionEnd } = range;
-
-  const section = raw.slice(sectionStart, sectionEnd);
-  const header = parseTableRows(section)[0];
-  if (!header) return;
-  const col = positionColumns(header, currency);
-  const updatedSection = section.replace(/^\|(.+)\|$/gm, (line) => {
-    const cells = splitTableRow(line);
-
-    // Skip header and separator
-    if (isPositionPlaceholder(cells[col.ticker] ?? "")) return line;
-    if (isTableSeparator(cells)) return line;
-
+  const model = parsePortfolio(raw);
+  const table = readTable(model, currency, "Positions");
+  if (!table?.header) return;
+  // Columns are read by their header, as in parsePositions. Every row of a ticker is priced, the way
+  // the Volume check reads them (it sums all of them).
+  const col = positionColumns(table.header, currency);
+  const updated = mapTableRows(model, currency, "Positions", (cells) => {
+    if (isPositionPlaceholder(cells[col.ticker] ?? "")) return null;
     const current = prices.get(cells[col.ticker]);
-    if (current == null) return line; // ticker without a price: leave the row alone
+    if (current == null) return null; // ticker without a price: leave the row alone
 
     const avgPrice = parseMarkdownNumber(cells[col.avgPrice]);
     const volume = parseMarkdownNumber(cells[col.volume]);
-    if (avgPrice == null || volume == null) return line;
+    if (avgPrice == null || volume == null) return null;
 
-    const pl = (current - avgPrice) * volume;
-    cells[col.currentPrice] = fmtEU(current);
-    cells[col.pl] = fmtEU(pl);
-
-    return `| ${cells.join(" | ")} |`;
+    const next = [...cells];
+    next[col.currentPrice] = fmtEU(current);
+    next[col.pl] = fmtEU((current - avgPrice) * volume);
+    return next;
   });
+  if (!updated || updated === model) return; // nothing changed
 
-  if (updatedSection === section) return; // nothing changed
-
-  const updated = raw.slice(0, sectionStart) + updatedSection + raw.slice(sectionEnd);
-  await writeFile(filePath, updated, "utf8");
+  await writeFile(filePath, serializePortfolio(updated), "utf8");
   console.log(`[vault-io] portfolio.md: prices updated (${currency})`);
 }
 

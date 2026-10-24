@@ -158,8 +158,7 @@ rounds to 0.00, and then it is exact.
 
 A row of `—` (or empty cells) and a repeated header are not lots and are ignored.
 Any other row that does not read as a lot is **skipped**: it does not count towards
-its position's `Volume`, `decision:record` keeps it where it is when it rewrites
-the table, and the lots check reports it with its row number, its `Ticker` and
+its position's `Volume`, and the lots check reports it with its row number, its `Ticker` and
 `Entry id` (when it has them) and the reason, for example
 `portfolio.md (USD): Lots row 2 (XOM, xom-1): Origin "Sistema" is not sistema or propietario (write it "sistema"); the row is skipped`.
 The reasons:
@@ -173,17 +172,38 @@ The reasons:
 - `Rules version` is empty or `—`.
 
 A skipped row is a problem like any other of the checks below: `decision:record`
-and `decisions:evaluate` refuse the silo, naming it, and the heartbeat warns.
+and `decisions:evaluate` refuse the silo, naming it (`decision:record` never keeps
+such a row: it does not rewrite a `Lots` table that has one), and the heartbeat
+warns.
 A missing column is an error, not a skipped row: a file written before the
 `Ticker` column existed is refused with `add a "Ticker" column, first, to
 "## <CCY> — Lots"`.
+
+A table can be split by blank lines or notes: the first table line of a section is
+its header and the other table lines are its rows, wherever they are. The engine
+reads it as one table, and when it writes (`decision:record` the `Lots` and
+`Positions` rows, the heartbeat the `Current price` and `P/L` cells) the
+rows it rewrites end up in one block, with a note that sat between them moved
+under the table; every other line, blank lines and line ends (LF or CRLF) included, is
+written back as it was.
 
 `decision:record` also keeps `Positions`: the first entry of a ticker creates
 its row, with the lot's initial stop as `Stop loss` (`—` if there was none);
 later entries and sales only change `Volume` and `Avg price` (the units-weighted
 entry price of the open lots), and the row is deleted when the last lot is
 consumed. Recording a trade needs `portfolio.md`; without it an entry or a sale
-is refused.
+is refused. A ticker is on one `Positions` row: `decision:record` refuses a
+silo that has the ticker on several (merge them into one row), while the heartbeat
+prices every row of a ticker (the `Volume` check sums them all). `decision:record`
+reads `portfolio.md` again right before it writes, after the market-data calls,
+and applies its change to that text, so a write made to the file meanwhile on the
+same checkout (the owner's editor) is not lost; if the `Lots` changed meanwhile it
+refuses and records nothing. A write on another checkout is a git conflict, which
+stays visible ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)).
+
+The amount of a sale is shared across the lots it consumes to 8 decimals, so a lot
+whose share of a sale is worth under `1e-8` of the silo currency (a dust lot, beyond
+what a listed equity reaches) gets an `amount` of 0 and cannot be sold.
 
 The lots must add up to the positions and agree with the decision log
 (`logs/decisions.jsonl` and any archived quarter). A silo is **inconsistent**

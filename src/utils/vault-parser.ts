@@ -4,6 +4,18 @@ import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownNumber } from "./parse.js";
 import { DECISION_ORIGINS } from "../decisions.js";
 import type { Currency, Lot, Position } from "../types.js";
+import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
+
+// `portfolio.md`'s grammar lives in the codec; these are re-exported for the readers of other files.
+export {
+  isTableLine,
+  isTableSeparator,
+  parseTableRows,
+  sectionBody,
+  sectionRange,
+  splitTableRow,
+} from "./portfolio-codec.js";
+export type { PortfolioSection } from "./portfolio-codec.js";
 
 export function extractYamlBlock(md: string): string {
   const match = /```ya?ml\n([\s\S]*?)```/.exec(normalizeEol(md));
@@ -51,34 +63,6 @@ export function assertSchemaVersion(md: string, file: string): void {
 
 // ─── Portfolio ────────────────────────────────────────────────────────────────
 
-export type PortfolioSection = "Cash" | "Positions" | "Lots";
-
-/**
- * Range [start, end) of the body under the `## <CURRENCY> — <kind>` heading
- * up to the next `##` heading or `---` rule; `null` if it does not exist.
- * Accepts em dash, en dash or hyphen. `md` must have normalized EOLs
- * (readTextFile already normalizes them).
- */
-export function sectionRange(
-  md: string,
-  currency: Currency,
-  kind: PortfolioSection,
-): { start: number; end: number } | null {
-  const headingRe = new RegExp(`^##\\s+${currency}\\s+[—–-]\\s+${kind}\\b.*$`, "m");
-  const m = headingRe.exec(md);
-  if (!m) return null;
-  const start = m.index + m[0].length;
-  const next = md.slice(start).search(/^(?:##\s|---\s*$)/m);
-  return { start, end: next === -1 ? md.length : start + next };
-}
-
-/** Body of the `## <CURRENCY> — <kind>` section; empty string if it does not exist. */
-export function sectionBody(md: string, currency: Currency, kind: PortfolioSection): string {
-  const normalized = normalizeEol(md);
-  const range = sectionRange(normalized, currency, kind);
-  return range ? normalized.slice(range.start, range.end) : "";
-}
-
 /**
  * Checks the silo has the `Cash` and `Positions` sections and the `Available cash` row. Without this,
  * a misspelled heading or row (e.g. from the previous format) would read as an empty silo and the
@@ -87,48 +71,26 @@ export function sectionBody(md: string, currency: Currency, kind: PortfolioSecti
  * heartbeat tolerates and the strict readers do not.
  */
 export function assertPortfolioSections(md: string, currency: Currency): void {
-  const normalized = normalizeEol(md);
+  const model = parsePortfolio(md);
   for (const kind of ["Cash", "Positions"] as const) {
-    if (!sectionRange(normalized, currency, kind)) {
+    if (!hasSection(model, currency, kind)) {
       throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
     }
   }
-  const hasAvailableCash = parseTableRows(sectionBody(normalized, currency, "Cash")).some((cells) =>
-    AVAILABLE_CASH_RE.test(cells[0] ?? ""),
-  );
+  const hasAvailableCash = tableRows(md, currency, "Cash").some((cells) => AVAILABLE_CASH_RE.test(cells[0] ?? ""));
   if (!hasAvailableCash) {
     throw new Error(`portfolio.md: missing "Available cash" row in "## ${currency} — Cash" (see docs/input-format.md)`);
   }
 }
 
+/** The rows of the silo's table, header first; none if the section does not exist or has no table. */
+function tableRows(md: string, currency: Currency, kind: PortfolioSection): string[][] {
+  const table = readTable(parsePortfolio(md), currency, kind);
+  return table?.header ? [table.header, ...table.rows] : [];
+}
+
 /** `portfolio.md (USD)`: file and silo, the prefix of every message about the lots of one silo. */
 export const portfolioWhere = (currency: Currency): string => `portfolio.md (${currency})`;
-
-/** True for a line of a Markdown table (it starts with `|`). */
-export const isTableLine = (line: string): boolean => line.trim().startsWith("|");
-
-/** The trimmed cells of a table line, with or without the closing `|`. */
-export function splitTableRow(line: string): string[] {
-  const trimmed = line.trim();
-  return trimmed
-    .slice(1, trimmed.endsWith("|") ? -1 : undefined)
-    .split("|")
-    .map((c) => c.trim());
-}
-
-/** True for the `|---|:---:|` line under a table header. */
-export const isTableSeparator = (cells: readonly string[]): boolean => cells.every((c) => /^:?-+:?$/.test(c));
-
-/** Extracts the data rows of a Markdown table (skips the |---| separator). */
-export function parseTableRows(body: string): string[][] {
-  const rows: string[][] = [];
-  for (const line of normalizeEol(body).split("\n")) {
-    if (!isTableLine(line)) continue;
-    const cells = splitTableRow(line);
-    if (!isTableSeparator(cells)) rows.push(cells);
-  }
-  return rows;
-}
 
 /**
  * Reads "Available cash" from the `## <CURRENCY> — Cash` section: the capital
@@ -151,7 +113,7 @@ export function parseTotalCash(md: string, currency: Currency): number | null {
 }
 
 function cashRow(md: string, currency: Currency, label: RegExp): number | null {
-  const rows = parseTableRows(sectionBody(md, currency, "Cash"));
+  const rows = tableRows(md, currency, "Cash");
   const row = rows.find((cells) => label.test(cells[0] ?? ""));
   return row ? parseMarkdownNumber(row[1]) : null;
 }
@@ -326,7 +288,7 @@ export function isPositionPlaceholder(ticker: string): boolean {
  * rows without a numeric volume/average price.
  */
 export function parsePositions(md: string, currency: Currency): Position[] {
-  const [header, ...rows] = parseTableRows(sectionBody(md, currency, "Positions"));
+  const [header, ...rows] = tableRows(md, currency, "Positions");
   if (!header) return [];
   const col = positionColumns(header, currency);
   const positions: Position[] = [];
@@ -400,12 +362,10 @@ export function lotColumns(header: readonly string[], currency: Currency): Recor
   return indexes;
 }
 
-/** The silo's `Lots` section body; a `LotsTableError` if the section is missing. */
-function lotsBody(md: string, currency: Currency): string {
-  const normalized = normalizeEol(md);
-  const range = sectionRange(normalized, currency, "Lots");
-  if (!range) throw new LotsTableError(missingLotsSection(currency));
-  return normalized.slice(range.start, range.end);
+/** The rows of the silo's `Lots` table, header first; a `LotsTableError` if the section is missing. */
+function lotsTable(md: string, currency: Currency): string[][] {
+  if (!hasSection(parsePortfolio(md), currency, "Lots")) throw new LotsTableError(missingLotsSection(currency));
+  return tableRows(md, currency, "Lots");
 }
 
 /** What the `Lots` table of a silo reads as: the lots, and one message per row it skipped. */
@@ -424,7 +384,7 @@ export interface LotRows {
  * Cross-checks with the log are not made here: this parser is pure.
  */
 export function parseLotRows(md: string, currency: Currency): LotRows {
-  const [header, ...rows] = parseTableRows(lotsBody(md, currency));
+  const [header, ...rows] = lotsTable(md, currency);
   const result: LotRows = { lots: [], skipped: [] };
   if (!header) return result;
   const col = lotColumns(header, currency);
@@ -445,18 +405,6 @@ export function parseLotRows(md: string, currency: Currency): LotRows {
 /** The lots of the silo's `Lots` table; see `parseLotRows` for the rows it skips. */
 export function parseLots(md: string, currency: Currency): Lot[] {
   return parseLotRows(md, currency).lots;
-}
-
-/** True for a placeholder row (`—`) or a repeated header of the lots table: not a lot, and nothing to keep. */
-export function isLotPlaceholderRow(cells: readonly string[], col: Record<LotColumn, number>): boolean {
-  const entryId = (cells[col.entryId] ?? "").trim();
-  return isPlaceholder(entryId) || /^entry id$/i.test(entryId) || isPlaceholder((cells[col.ticker] ?? "").trim());
-}
-
-/** The lot a row of the lots table reads as; `null` for a placeholder or a row that does not read as a lot. */
-export function lotOfRow(cells: readonly string[], col: Record<LotColumn, number>): Lot | null {
-  const reading = readLotRow(cells, col);
-  return reading !== null && "lot" in reading ? reading.lot : null;
 }
 
 /**

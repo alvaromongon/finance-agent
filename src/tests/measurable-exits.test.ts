@@ -703,6 +703,26 @@ describe("measurable exits: the five R tests of spec #27", () => {
       assertRs(tradeRs(await evaluate()), [29 / 30]);
     });
 
+    it("the entry costs of a lot are shared across its exits even when an earlier exit sits in an archived quarter", async () => {
+      // 4 units at 100 with 4 of costs (1 per unit), stop 90 (1R = 10). Half is sold in 2026-T3, which is then
+      // archived; the other half is sold afterwards. The second exit takes what the first left of the
+      // costs, read from the archive: 2 and 2. Without the archive it would take all 4.
+      await entry(100, 4, 90, "2026-06-15", { costs: 4 });
+      await exit(110.6, 2, "2026-08-10");
+      await archiveQuarter("T3", "2026-07-01", "2026-09-30");
+      await exit(120.6, 2, "2026-10-12");
+
+      const live = (await readLog()).filter((d) => d.type === "exit");
+      assert.deepEqual(
+        live.map((e) => e.entry_costs),
+        [2],
+        "the second exit is the only one live, and takes half of the costs",
+      );
+      assert.equal(live[0].lot_units_left, 0);
+      // R = 0.5 × (110.6 − 100 − 1) / 10 + 0.5 × (120.6 − 100 − 1) / 10 = 0.5 × 0.96 + 0.5 × 1.96.
+      assertRs(tradeRs(await evaluate()), [1.46]);
+    });
+
     it("the amounts of a sale's exits add up to the sale amount", async () => {
       await entry(100, 1, 90, "2026-06-15");
       await entry(100, 1, 90, "2026-06-16");

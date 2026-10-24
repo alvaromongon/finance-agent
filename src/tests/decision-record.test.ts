@@ -183,6 +183,43 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.deepEqual([portfolio.positions, portfolio.lots], [[], []]);
   });
 
+  describe("portfolio.md is read again right before the record writes it (R1-E of #67)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 };
+    /** A provider that changes portfolio.md while the recorder waits on it for the ATR. */
+    const providerThatWrites = (change: (text: string) => string) => ({
+      ...fakeProvider,
+      getHistorical: async () => {
+        const path = join(vaultDir, "portfolio.md");
+        await writeFile(path, change(await readFile(path, "utf8")), "utf8");
+        return bars();
+      },
+    });
+
+    it("a write made while the recorder waits on the market-data provider survives the record", async () => {
+      const provider = providerThatWrites((text) =>
+        text.replace("| Available cash | 1000.00 |", "| Available cash | 1234.50 |"),
+      );
+      await recordOwnerDecision(entryOf, provider, TODAY);
+
+      const text = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      assert.match(text, /\| Available cash \| 1234\.50 \|/, "the concurrent write is not lost");
+      assert.match(text, /\| ADBE \| [^|]+ \| 2026-09-14 \|/, "and the lot is recorded");
+      assert.equal((await readLines()).length, 2);
+    });
+
+    it("a change to the Lots meanwhile (a unit sold at the broker and typed in by hand) is refused with nothing recorded", async () => {
+      await record({ ...entryOf, units: 2 });
+      const provider = providerThatWrites((text) =>
+        text.replace(/(\| ADBE \| [^|]+\| 2026-09-14 \| )2( \|)/, "$11$2").replace(/(\| ADBE \| )2( \|)/, "$11$2"),
+      );
+      await assert.rejects(
+        recordOwnerDecision({ ...entryOf, ticker: "CAT", stop: 440 }, provider, TODAY),
+        /Lots changed while the trade was being recorded.*nothing was recorded/,
+      );
+      assert.equal((await readLines()).length, 2, "the log has the proposal and the first entry, nothing else");
+    });
+  });
+
   it("portfolio.md is replaced atomically: a temp file renamed over it, nothing left behind", async () => {
     const { stat, readdir } = await import("node:fs/promises");
     const before = (await stat(join(vaultDir, "portfolio.md"))).ino;
