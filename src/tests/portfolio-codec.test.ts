@@ -183,6 +183,32 @@ describe("portfolio codec: one table per section, however it is split", () => {
     assert.equal(serializePortfolio(edited), "## EUR — Cash\n\n| a |\n|---|\n| 1 |\n| 2 |");
   });
 
+  it("rows written under a header/separator that is the last line of a file with no final line end go on their own lines", () => {
+    const md = "## USD — Lots\n\n| Ticker | Units |\n|---|---|";
+    const edited = setTableRows(parsePortfolio(md), "USD", "Lots", ["Ticker", "Units"], () => [["XOM", "1"]])!;
+    assert.equal(serializePortfolio(edited), "## USD — Lots\n\n| Ticker | Units |\n|---|---|\n| XOM | 1 |");
+    const headerOnly = setTableRows(parsePortfolio("## USD — Lots\n| Ticker |"), "USD", "Lots", ["Ticker"], () => [
+      ["X"],
+    ])!;
+    assert.equal(serializePortfolio(headerOnly), "## USD — Lots\n| Ticker |\n| X |");
+  });
+
+  it("a separator line anywhere in the table is written back where it was", () => {
+    const md = "## USD — Lots\n\n| a | b |\n| 1 | 2 |\n|---|---|\n| 3 | 4 |\n";
+    const out = serializePortfolio(setTableRows(parsePortfolio(md), "USD", "Lots", ["a", "b"], (_, rows) => rows)!);
+    assert.equal(out, md);
+    const split = "## USD — Lots\n| a | b |\n|---|---|\n| 1 | 2 |\n\n| a | b |\n|---|---|\n| 3 | 4 |\n";
+    const out2 = serializePortfolio(setTableRows(parsePortfolio(split), "USD", "Lots", ["a", "b"], (_, rows) => rows)!);
+    assert.equal(out2.match(/\|---\|---\|/g)?.length, 2, "both separators stay");
+    assert.ok(out2.startsWith("## USD — Lots\n| a | b |\n|---|---|\n"));
+  });
+
+  it("a section with no table at the end of a file with no final line end gets a table without one", () => {
+    const md = "## USD — Lots";
+    const out = serializePortfolio(setTableRows(parsePortfolio(md), "USD", "Lots", ["a"], () => [["1"]])!);
+    assert.equal(out, "## USD — Lots\n\n| a |\n| --- |\n| 1 |");
+  });
+
   it("mapTableRows rewrites only the rows it is given cells for, header and separators excepted, and returns the model itself when nothing changed", () => {
     const model = parsePortfolio(SPLIT);
     assert.equal(

@@ -220,6 +220,55 @@ describe("decision:record (recordOwnerDecision)", () => {
     });
   });
 
+  describe("the owner edits portfolio.md while the log is being appended (the window after the last check)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 };
+
+    /** Runs `during` once, at the moment the decisions log is appended to. */
+    async function withEditDuringAppend(during: (text: string) => string, run: () => Promise<unknown>) {
+      const fsp = (await import("node:fs/promises")).default;
+      const original = fsp.appendFile;
+      const path = join(vaultDir, "portfolio.md");
+      mock.method(fsp, "appendFile", async (...args: Parameters<typeof original>) => {
+        await writeFile(path, during(await readFile(path, "utf8")), "utf8");
+        return original(...args);
+      });
+      (await import("node:module")).syncBuiltinESMExports();
+      try {
+        await run();
+      } finally {
+        mock.restoreAll();
+        (await import("node:module")).syncBuiltinESMExports();
+      }
+    }
+
+    it("a change to the Lots in that window is not overwritten; the error says the entry is in the log", async () => {
+      await record({ ...entryOf, units: 2 });
+      const edited = (text: string) => text.replace(/(\| ADBE \| [^|]+\| 2026-09-14 \| )2( \|)/, "$11$2");
+      let after = "";
+      await assert
+        .rejects(
+          withEditDuringAppend(edited, () => recordAll({ ...entryOf, ticker: "CAT" })),
+          (err: Error) =>
+            err.message.includes("IS recorded in the log") && !err.message.includes("nothing was recorded"),
+        )
+        .finally(async () => {
+          after = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+        });
+      assert.ok(!after.includes("CAT"), "portfolio.md keeps the owner's edit, with no CAT lot written over it");
+      assert.equal((await readLines()).length, 3, "the CAT entry is in the log");
+    });
+
+    it("a half-typed Lots row in that window is reported as recorded, not as 'nothing was recorded'", async () => {
+      await assert.rejects(
+        withEditDuringAppend(
+          (text) => text.replace(/(## USD — Lots[\s\S]*?\|---[^\n]*\n)/, "$1| half-typed\n"),
+          () => recordAll(entryOf),
+        ),
+        (err: Error) => err.message.includes("IS recorded in the log") && !err.message.includes("nothing was recorded"),
+      );
+    });
+  });
+
   it("portfolio.md is replaced atomically: a temp file renamed over it, nothing left behind", async () => {
     const { stat, readdir } = await import("node:fs/promises");
     const before = (await stat(join(vaultDir, "portfolio.md"))).ino;

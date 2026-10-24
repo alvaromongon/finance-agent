@@ -179,12 +179,16 @@ export function setTableRows(
     const rest = lines.slice(span.start, span.end);
     while (rest.length > 0 && rest[0].text.trim() === "") rest.shift();
     const after = rest.length > 0 ? [newLine(""), ...rest] : span.end < lines.length ? [newLine("")] : [];
+    // A file with no final line end stays without one.
+    const endsBare = rest.length === 0 && span.end === lines.length && lines[lines.length - 1].eol === "";
+    const rendered = table.map(newLine);
+    if (endsBare) rendered[rendered.length - 1] = { text: rendered[rendered.length - 1].text, eol: "" };
     return {
       lines: [
         ...lines.slice(0, span.heading),
         { ...lines[span.heading], eol },
         newLine(""),
-        ...table.map(newLine),
+        ...rendered,
         ...after,
         ...lines.slice(span.end),
       ],
@@ -194,21 +198,28 @@ export function setTableRows(
   const headerAt = tableAt[0];
   const lastAt = tableAt[tableAt.length - 1];
   const header = splitTableRow(lines[headerAt].text);
-  const separatorAt = tableAt.length > 1 && isTableSeparator(splitTableRow(lines[tableAt[1]].text)) ? tableAt[1] : -1;
-  const rows = tableAt
-    .filter((i) => i !== headerAt && !isTableSeparator(splitTableRow(lines[i].text)))
-    .map((i) => splitTableRow(lines[i].text));
+  // Separators stay where they were: after as many data rows as they followed (clamped to what is written).
+  const separators: { line: PortfolioLine; after: number }[] = [];
+  const rows: string[][] = [];
+  for (const i of tableAt.slice(1)) {
+    const cells = splitTableRow(lines[i].text);
+    if (isTableSeparator(cells)) separators.push({ line: lines[i], after: rows.length });
+    else rows.push(cells);
+  }
   const notes = lines.slice(headerAt, lastAt + 1).filter((line) => !isTableLine(line.text) && line.text.trim() !== "");
 
-  const block = [
-    lines[headerAt],
-    ...(separatorAt === -1 ? [] : [lines[separatorAt]]),
-    ...edit(header, rows).map((cells) => newLine(renderTableRow(cells))),
-    ...notes,
-  ];
-  // The last line of a file without a final line end stays the last line, without one.
-  if (lines[lastAt].eol === "") block[block.length - 1] = { ...block[block.length - 1], eol: "" };
-  return { lines: [...lines.slice(0, headerAt), ...block, ...lines.slice(lastAt + 1)] };
+  const written = edit(header, rows);
+  const block: PortfolioLine[] = [lines[headerAt]];
+  for (let r = 0; r <= written.length; r++) {
+    for (const sep of separators) if (Math.min(sep.after, written.length) === r) block.push(sep.line);
+    if (r < written.length) block.push(newLine(renderTableRow(written[r])));
+  }
+  block.push(...notes);
+  // Lines that were the file's last (no line end) now have lines after them; the block's last line takes
+  // the line end of the table's last line, so a file without a final line end stays without one.
+  const closed = block.map((line) => (line.eol === "" ? { ...line, eol } : line));
+  closed[closed.length - 1] = { ...closed[closed.length - 1], eol: lines[lastAt].eol };
+  return { lines: [...lines.slice(0, headerAt), ...closed, ...lines.slice(lastAt + 1)] };
 }
 
 /**

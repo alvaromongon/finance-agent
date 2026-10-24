@@ -332,8 +332,26 @@ export async function recordOwnerDecision(
   // Log first, portfolio second (ADR-0015): a stop in between leaves an exit whose lot did not
   // shrink, which the owner fixes by hand; the other way round would leave a lot the log cannot explain.
   await appendDecisions(decisions);
-  // Read again, right before writing: only the log append lies between this read and the write.
-  if (editPortfolio) await writePortfolioText(editPortfolio(await readPortfolioText()));
+  // Read again, right before writing: only the log append lies between the checked read and this one.
+  // The entry is in the log now, so whatever stops the write is reported as that, never as "nothing
+  // was recorded".
+  if (editPortfolio) {
+    let edited: string;
+    try {
+      const text = await readPortfolioText();
+      if (JSON.stringify(parsePortfolioText(text, input.currency).lots) !== JSON.stringify(book!.portfolio.lots)) {
+        throw new Error("Lots changed meanwhile");
+      }
+      edited = editPortfolio(text);
+    } catch (err) {
+      throw new Error(
+        `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
+          `(${(err as Error).message.replace(/\s*\(nothing was recorded\)/g, "")}); apply the lot change by hand (ADR-0015)`,
+        { cause: err },
+      );
+    }
+    await writePortfolioText(edited);
+  }
   return decisions;
 }
 
