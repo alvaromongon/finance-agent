@@ -448,10 +448,7 @@ last_manual_sync: 2026-10-16T18:00:00Z
     const rowOf = (id: string, date: string) =>
       `| TCK | ${id} | ${date} | 10 | 10 | 100,00 | — | — | sistema | 1.0 | — |`;
     const split = (rows: string[]) =>
-      PORTFOLIO.replace(/(## USD — Lots\n\n\|[^\n]*\n\|[^\n]*\n)/, (head) => `${head}${rows.join("\n")}\n`).replace(
-        "USD — Cash",
-        "USD — Cash",
-      );
+      PORTFOLIO.replace(/(## USD — Lots\n\n\|[^\n]*\n\|[^\n]*\n)/, (head) => `${head}${rows.join("\n")}\n`);
     const lotIds = (md: string) => parseLots(md, "USD").map((l) => l.entryId);
 
     it("a blank line between the separator and the first lot: the next entry is added once, the table is contiguous", () => {
