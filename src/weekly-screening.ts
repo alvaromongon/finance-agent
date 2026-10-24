@@ -33,7 +33,7 @@ import { fetchHeadlines } from "./providers/news-provider.js";
 import { computeTechnicals } from "./utils/technicals.js";
 import {
   appendDecisions,
-  readPortfolio,
+  readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
   readWatchlist,
@@ -339,8 +339,8 @@ export async function prepareScreening(
       readScreeningLog(),
       readRoutinePrompt("weekly-screening"),
       readTextFile(join(vaultDir, "watchlist.md")).catch(() => ""),
-      readPortfolio("EUR"),
-      readPortfolio("USD"),
+      readPortfolioIgnoringLots("EUR"),
+      readPortfolioIgnoringLots("USD"),
     ]);
   const portfolios: Record<Currency, PortfolioSnapshot> = { EUR: eurPortfolio, USD: usdPortfolio };
 

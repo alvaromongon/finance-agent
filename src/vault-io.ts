@@ -122,6 +122,16 @@ export async function readPortfolioTolerantOfLots(
 }
 
 /**
+ * `readPortfolio` for the readers that use positions, cash and silo value but not the lots
+ * (`pending:resolve`, the Monday briefing, the weekly screening): a `Lots` table that does not read
+ * does not stop them. `decision:record` (every decision type) and `decisions:evaluate` keep the
+ * strict `readPortfolio` and refuse; the heartbeat reports the problem on every run.
+ */
+export async function readPortfolioIgnoringLots(currency: Currency): Promise<PortfolioSnapshot> {
+  return (await readPortfolioTolerantOfLots(currency)).portfolio;
+}
+
+/**
  * The silo's snapshot of a `portfolio.md` text already read, with the checks and warnings of
  * `readPortfolio`: a caller that also rewrites the text parses the very text it will rewrite.
  */

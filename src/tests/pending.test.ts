@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { lotsSection } from "./fixtures/lots.js";
+import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -229,6 +229,29 @@ describe("pending.ts", () => {
       // The pending file is deleted whether the ticket is valid or blocked.
       await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
     });
+
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
+      it(`resolvePending resolves a signal with ${label}: recorded, alert sent, file deleted`, async () => {
+        const portfolioPath = join(vaultDir, "portfolio.md");
+        await writeFile(portfolioPath, broken, "utf8");
+        await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
+        const log = mock.method(console, "log", () => {});
+        const warn = mock.method(console, "warn", () => {});
+        try {
+          await resolvePending(PENDING_FILENAME, validRecommendation());
+        } finally {
+          log.mock.restore();
+          warn.mock.restore();
+          await writeFile(portfolioPath, PORTFOLIO_MD, "utf8");
+        }
+
+        const decision = await lastDecision();
+        assert.equal(decision.type, "buy_proposal");
+        const smtpWarned = warn.mock.calls.some((c) => String(c.arguments[0]).includes("SMTP_USER/SMTP_PASS"));
+        assert.ok(smtpWarned, "the alert was attempted");
+        await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
+      });
+    }
 
     it("resolvePending with R:R below the minimum records blocked:true and sends no alert", async () => {
       await writeFile(

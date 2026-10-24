@@ -27,7 +27,7 @@ import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import {
   appendDecisions,
   readDecisions,
-  readPortfolio,
+  readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
   readWatchlist,
@@ -94,7 +94,10 @@ export async function prepareBriefing(
 
   // Cash and positions/watchlist of both silos (portfolio.md/watchlist.md are
   // single files with EUR/USD sections, but vault-io exposes them per currency).
-  const [initialEur, initialUsd] = await Promise.all([readPortfolio("EUR"), readPortfolio("USD")]);
+  const [initialEur, initialUsd] = await Promise.all([
+    readPortfolioIgnoringLots("EUR"),
+    readPortfolioIgnoringLots("USD"),
+  ]);
   const [eurWatchlist, usdWatchlist] = await Promise.all([readWatchlist("EUR"), readWatchlist("USD")]);
 
   const allTickers = [
@@ -120,7 +123,10 @@ export async function prepareBriefing(
   // Re-read with the prices already written: the prompt, the weight breakdown
   // and the USD buffer must all describe the same state.
   const portfolioMd = await safeRead(join(vaultDir, "portfolio.md"));
-  const [eurPortfolio, usdPortfolio] = await Promise.all([readPortfolio("EUR"), readPortfolio("USD")]);
+  const [eurPortfolio, usdPortfolio] = await Promise.all([
+    readPortfolioIgnoringLots("EUR"),
+    readPortfolioIgnoringLots("USD"),
+  ]);
 
   console.error(`[monday-briefing] Computing technicals for ${allTickers.length} assets...`);
   // Entries of both silos: buildTechnicalsSection looks for the candidates'
@@ -279,8 +285,8 @@ export async function finalizeBriefing(
   const m = messages();
 
   const [eurPortfolio, usdPortfolio, eurWatchlist, usdWatchlist, rulesVersion, history] = await Promise.all([
-    readPortfolio("EUR"),
-    readPortfolio("USD"),
+    readPortfolioIgnoringLots("EUR"),
+    readPortfolioIgnoringLots("USD"),
     readWatchlist("EUR"),
     readWatchlist("USD"),
     readRulesVersion(),
