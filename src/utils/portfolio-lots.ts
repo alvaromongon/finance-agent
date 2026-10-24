@@ -16,6 +16,7 @@ import {
   portfolioWhere,
   positionColumns,
   missingLotsSection,
+  missingSection,
   LotsTableError,
   type LotColumn,
 } from "./vault-parser.js";
@@ -250,7 +251,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     const at = kept.flatMap((cells, i) => ((cells[col.ticker] ?? "").trim() === change.ticker ? [i] : []));
     if (at.length > 1) {
       throw new Error(
-        `portfolio.md: ${change.ticker} is on ${at.length} rows of "## ${currency} — Positions": merge them into one row (nothing was recorded)`,
+        `${portfolioWhere(currency)}: ${change.ticker} is on ${at.length} rows of "## ${currency} — Positions": merge them into one row (nothing was recorded)`,
       );
     }
     if (change.volume <= UNITS_TOLERANCE) return at.length === 0 ? kept : kept.filter((_, i) => i !== at[0]);
@@ -269,7 +270,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     return [...kept, cells];
   });
   if (!withPositions) {
-    throw new Error(`portfolio.md: missing section "## ${currency} — Positions" (see docs/input-format.md)`);
+    throw new Error(missingSection(currency, "Positions"));
   }
   return serializePortfolio(withPositions);
 }

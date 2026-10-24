@@ -538,6 +538,37 @@ describe("validateOwnerInput", () => {
     );
     assert.throws(() => validateOwnerInput({ type: "buy_proposal", currency: "EUR" }), /type must be one of/);
   });
+  describe("the ticker (#68, PR #56 S1)", () => {
+    const entryOf = (ticker: unknown) => ({ type: "entry", ticker, currency: "USD", price: 30, units: 2, stop: 27 });
+
+    for (const bad of ["TC|K", "TC\nK", "T CK", "TCK ; rm", "TC/K", "TCK$"]) {
+      it(`refuses ${JSON.stringify(bad)}`, () => {
+        assert.throws(() => validateOwnerInput(entryOf(bad)), /ticker .* letters, digits and \. - \^ =/);
+      });
+    }
+
+    for (const good of ["BRK.B", "EXSA.DE", "^GSPC", "BTC-USD", "EURUSD=X", "TCK"]) {
+      it(`accepts ${good}`, () => {
+        assert.equal(validateOwnerInput(entryOf(good)).ticker, good);
+      });
+    }
+
+    it("a ticker that is only whitespace is a missing ticker", () => {
+      assert.throws(() => validateOwnerInput(entryOf("\n")), /ticker is required in entry/);
+    });
+
+    it("trims leading and trailing whitespace and accepts what is left", () => {
+      assert.equal(validateOwnerInput(entryOf(" TCK ")).ticker, "TCK");
+      assert.equal(validateOwnerInput(entryOf("\tTCK\n")).ticker, "TCK");
+    });
+
+    it("applies to exit and adjust_stop too", () => {
+      assert.throws(
+        () => validateOwnerInput({ type: "adjust_stop", ticker: "TC|K", currency: "USD", stop: 27 }),
+        /letters, digits/,
+      );
+    });
+  });
 });
 
 describe("resolveFxConversion", () => {

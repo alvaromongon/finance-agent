@@ -174,10 +174,10 @@ function readLots(
   raw: string,
   currency: Currency,
   onError?: (err: Error) => void,
-): Pick<PortfolioSnapshot, "lots" | "skippedLotRows"> {
+): Pick<PortfolioSnapshot, "lots" | "skippedLotRows" | "unreadableLots"> {
   try {
-    const { lots, skipped } = parseLotRows(raw, currency);
-    return skipped.length > 0 ? { lots, skippedLotRows: skipped } : { lots };
+    const { lots, skipped, unreadable } = parseLotRows(raw, currency);
+    return skipped.length > 0 ? { lots, skippedLotRows: skipped, unreadableLots: unreadable } : { lots };
   } catch (err) {
     // Only the parser's own verdict on the table; anything else is a bug and must crash.
     if (!onError || !(err instanceof LotsTableError)) throw err;

@@ -74,12 +74,14 @@ export function assertPortfolioSections(md: string, currency: Currency): void {
   const model = parsePortfolio(md);
   for (const kind of ["Cash", "Positions"] as const) {
     if (!hasSection(model, currency, kind)) {
-      throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
+      throw new Error(missingSection(currency, kind));
     }
   }
   const hasAvailableCash = tableRows(md, currency, "Cash").some((cells) => AVAILABLE_CASH_RE.test(cells[0] ?? ""));
   if (!hasAvailableCash) {
-    throw new Error(`portfolio.md: missing "Available cash" row in "## ${currency} — Cash" (see docs/input-format.md)`);
+    throw new Error(
+      `${portfolioWhere(currency)}: missing "Available cash" row in "## ${currency} — Cash" (see docs/input-format.md)`,
+    );
   }
 }
 
@@ -346,9 +348,12 @@ export class LotsTableError extends Error {
   }
 }
 
-/** The message for a silo without its `## <CURRENCY> — Lots` section: the one place it is worded. */
-export const missingLotsSection = (currency: Currency): string =>
-  `${portfolioWhere(currency)}: missing section "## ${currency} — Lots" (see docs/input-format.md)`;
+/** The message for a silo without a section of `portfolio.md`: the one place it is worded. */
+export const missingSection = (currency: Currency, kind: PortfolioSection): string =>
+  `${portfolioWhere(currency)}: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`;
+
+/** The message for a silo without its `## <CURRENCY> — Lots` section. */
+export const missingLotsSection = (currency: Currency): string => missingSection(currency, "Lots");
 
 export function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
   const { indexes, missing } = columnIndexes(header, LOT_COLUMNS);
@@ -373,6 +378,17 @@ export interface LotRows {
   lots: Lot[];
   /** One message per skipped row (`Lots row 2 (AAPL, id): <reason>; the row is skipped`), without the file prefix. */
   skipped: string[];
+  /**
+   * The tickers and entry ids the skipped rows name (those that have them): what the lots check must not
+   * report again as a `Volume` that does not add up or an entry with no lot.
+   */
+  unreadable: UnreadableLots;
+}
+
+/** The tickers and entry ids named by the `Lots` rows that do not read. */
+export interface UnreadableLots {
+  tickers: string[];
+  entryIds: string[];
 }
 
 /**
@@ -385,7 +401,7 @@ export interface LotRows {
  */
 export function parseLotRows(md: string, currency: Currency): LotRows {
   const [header, ...rows] = lotsTable(md, currency);
-  const result: LotRows = { lots: [], skipped: [] };
+  const result: LotRows = { lots: [], skipped: [], unreadable: { tickers: [], entryIds: [] } };
   if (!header) return result;
   const col = lotColumns(header, currency);
   rows.forEach((cells, i) => {
@@ -398,6 +414,13 @@ export function parseLotRows(md: string, currency: Currency): LotRows {
     const named = [cells[col.ticker], cells[col.entryId]].map((c) => (c ?? "").trim()).filter((c) => !isPlaceholder(c));
     const name = named.length > 0 ? ` (${named.join(", ")})` : "";
     result.skipped.push(`Lots row ${i + 1}${name}: ${reading.reason}; the row is skipped`);
+    for (const [list, value] of [
+      [result.unreadable.tickers, cells[col.ticker]],
+      [result.unreadable.entryIds, cells[col.entryId]],
+    ] as const) {
+      const text = (value ?? "").trim();
+      if (!isPlaceholder(text) && !list.includes(text)) list.push(text);
+    }
   });
   return result;
 }

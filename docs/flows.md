@@ -174,9 +174,11 @@ them. It needs one history request per position with a stop; without ATR the pos
   4. Blocked ticket: write the Markdown log and the decision line with the reasons; send no email.
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
-- **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match the
+- **Steps (owner trade)**: validate the input (the ticker is trimmed and refused unless it is made of
+  letters, digits and `. - ^ =`, before anything is written) and refuse the portfolio if its lots do not match the
   decision history (a `Volume` that is not the sum of its lots' units, a lot that disagrees with its
-  entry, or an entry still open in the log with no lot), then fill what the owner need not know: id,
+  entry or its costs, a ticker on several `Positions` rows, or an entry still open in the log with no
+  lot; all the problems come in one round), then fill what the owner need not know: id,
   rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
   `overrode_block`. The engine also keeps the [lots](glossary.md#lot):

@@ -193,8 +193,9 @@ later entries and sales only change `Volume` and `Avg price` (the units-weighted
 entry price of the open lots), and the row is deleted when the last lot is
 consumed. Recording a trade needs `portfolio.md`; without it an entry or a sale
 is refused. A ticker is on one `Positions` row: `decision:record` refuses a
-silo that has the ticker on several (merge them into one row), while the heartbeat
-prices every row of a ticker (the `Volume` check sums them all). `decision:record`
+silo that has the ticker on several (merge them into one row), and so do the lots
+check and `decisions:evaluate`, while the heartbeat prices every row of a ticker (the
+`Volume` check sums them all) and warns about it. `decision:record`
 reads `portfolio.md` again right before it writes, after the market-data calls,
 and applies its change to that text, so a write made to the file meanwhile on the
 same checkout (the owner's editor) is not lost; if the `Lots` changed meanwhile it
@@ -210,13 +211,16 @@ The lots must add up to the positions and agree with the decision log
 when:
 
 - a position's `Volume` is not the sum of the `Units` of its lots (a position
-  with no lots, or lots of a ticker with no position row, count too);
+  with no lots, or lots of a ticker with no position row, count too; a ticker whose
+  `Lots` row does not read is reported through that row alone, until it is fixed);
+- a ticker is on several `Positions` rows (the message names the ticker and the
+  `Volume` of each row; merge them into one row);
 - a lot has more `Units` than `Entry units`, or an `Entry id` is on two rows;
 - a lot's `Entry id` is not an `entry` of that currency in the decision log, its
   `Ticker` is not the ticker of that entry (one that differs only in case is
   reported as such, once), or its entry price, entry units,
-  initial stop, date, origin, rules version or rules violations differ from the
-  entry's; or
+  initial stop, date, origin, rules version, rules violations or `Entry costs`
+  (to the cent; none and 0 are the same) differ from the entry's; or
 - an entry in the decision log is still open and has no lot. An entry is open
   until an exit that cites it has `lot_units_left` 0. An entry whose log line has
   no `units` was recorded before the lots existed and is not checked
@@ -254,7 +258,15 @@ original within a tolerance of 1e-6, and the exits of a lot sold before and
 after the split are measured as one trade only if their snapshots differ by that
 same ratio.
 
-To correct a mistaken entry (a wrong ticker, price or units), the entry line
+`decision:record` trims the `ticker` of its input and refuses one that is not made of
+letters, digits and `. - ^ =` (`BRK.B`, `EXSA.DE`, `^GSPC`, `BTC-USD`, `EURUSD=X` are
+fine; `TC|K` is not), before anything is written: such a ticker would break the
+`Positions` table or the log line and lock every later read.
+
+All the messages about one silo start with `portfolio.md (<CCY>): `, including a missing
+section (`Cash`, `Positions`, `Lots`).
+
+To correct a mistaken entry (a wrong ticker, price, units or costs), the entry line
 stays in the decision log, so a lot deleted by hand would leave the silo
 refused (an open entry with no lot). Correct it in a correction commit
 ([ADR-0006](decisions/0006-single-append-only-decision-log.md)): fix or remove the entry's
