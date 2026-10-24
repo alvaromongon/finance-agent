@@ -100,6 +100,8 @@ export interface PortfolioSnapshot {
   lots: Lot[];
   /** One message per row of `Lots` the reader skipped because it does not read as a lot; absent if none. */
   skippedLotRows?: string[];
+  /** The tickers and entry ids those rows name: their derived `Volume` and "no lot" messages are not repeated. */
+  unreadableLots?: { tickers: string[]; entryIds: string[] };
   syncedAt: string; // ISO timestamp
 }
 

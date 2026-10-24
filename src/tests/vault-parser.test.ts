@@ -328,6 +328,23 @@ describe("assertPortfolioSections", () => {
     }, /portfolio\.md.*## EUR — Positions/);
   });
 
+  it("every missing-section error carries the silo prefix of the lots messages (#68, PR #63 7)", () => {
+    for (const [from, to, section] of [
+      ["## EUR — Positions", "## EUR — Posiciones", "Positions"],
+      ["## EUR — Cash", "## EUR — Caja", "Cash"],
+    ] as const) {
+      assert.throws(
+        () => {
+          assertPortfolioSections(PORTFOLIO_MD.replace(from, to), "EUR");
+        },
+        new RegExp(`^Error: portfolio\\.md \\(EUR\\): missing section "## EUR — ${section}"`),
+      );
+    }
+    assert.throws(() => {
+      assertPortfolioSections(PORTFOLIO_MD.replace("| Available cash | 3,24 € |", "| Saldo | 3,24 € |"), "EUR");
+    }, /^Error: portfolio\.md \(EUR\): missing "Available cash" row/);
+  });
+
   it("rejects a silo without a Cash section", () => {
     const md = PORTFOLIO_MD.replace("## USD — Cash", "## USD — Caja");
     assert.throws(() => {
@@ -562,6 +579,11 @@ describe("parseLotRows", () => {
       assert.match(skipped[0], reason);
     });
   }
+
+  it("names the ticker and entry id of every skipped row for the lots check (#68)", () => {
+    const { unreadable } = parseLotRows(mdWith(edited(2, "01/04/2026"), edited(0, "—"), edited(1, "—")), "USD");
+    assert.deepEqual(unreadable, { tickers: ["XOM"], entryIds: ["xom-1"] });
+  });
 
   it("names the ticker and entry id of the skipped row when it has them", () => {
     const { skipped } = parseLotRows(mdWith(edited(2, "01/04/2026")), "USD");

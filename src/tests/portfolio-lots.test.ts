@@ -440,7 +440,15 @@ last_manual_sync: 2026-10-16T18:00:00Z
     );
     assert.throws(
       () => applyLotChange(twice, "EUR", parseLots(twice, "EUR"), { ticker: "SAP.DE", volume: 2, avgPrice: 180 }),
-      /SAP\.DE is on 2 rows of "## EUR — Positions".*nothing was recorded/,
+      /^Error: portfolio\.md \(EUR\): SAP\.DE is on 2 rows of "## EUR — Positions".*nothing was recorded/,
+    );
+  });
+
+  it("a missing Positions section is refused with the silo prefix too (#68, PR #73 C6)", () => {
+    const noPositions = PORTFOLIO.replace("## EUR — Positions", "## EUR — Posiciones");
+    assert.throws(
+      () => applyLotChange(noPositions, "EUR", [], { ticker: "SAP.DE", volume: 2, avgPrice: 180 }),
+      /^Error: portfolio\.md \(EUR\): missing section "## EUR — Positions"/,
     );
   });
 

@@ -673,7 +673,15 @@ export interface OwnerDecisionInput {
   related_id?: string;
 }
 
-/** Validates the `decision:record` input before touching the log. */
+/**
+ * What a ticker may be written with: letters, digits and `. - ^ =` (`BRK.B`, `EXSA.DE`, `^GSPC`,
+ * `BTC-USD`, `EURUSD=X`), with at least one letter or digit (the parser reads `-` as an empty cell).
+ * Anything else (`|` breaks the Markdown table, a newline the log line) would be
+ * recorded and then refused by every later read.
+ */
+const TICKER_RE = /^(?=.*[A-Za-z0-9])[A-Za-z0-9.\-^=]+$/;
+
+/** Validates the `decision:record` input before touching the log; the ticker comes back trimmed. */
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
@@ -705,8 +713,17 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   }
 
   const has = (f: string) => raw[f] != null;
-  if (["entry", "exit", "adjust_stop"].includes(type) && (typeof raw.ticker !== "string" || raw.ticker.trim() === "")) {
-    errors.push(`ticker is required in ${type}`);
+  let ticker: string | undefined;
+  if (["entry", "exit", "adjust_stop"].includes(type)) {
+    if (typeof raw.ticker !== "string" || raw.ticker.trim() === "") {
+      errors.push(`ticker is required in ${type}`);
+    } else if (!TICKER_RE.test(raw.ticker.trim())) {
+      errors.push(
+        `ticker ${JSON.stringify(raw.ticker)} is not a ticker: use letters, digits and . - ^ = only (e.g. BRK.B, EXSA.DE, ^GSPC, BTC-USD, EURUSD=X)`,
+      );
+    } else {
+      ticker = raw.ticker.trim();
+    }
   }
   if (FLOW_TYPES.includes(type) && has("ticker")) errors.push(`ticker does not apply in ${type}`);
   if ((type === "entry" || type === "exit") && !has("price")) errors.push(`price is required in ${type}`);
@@ -736,7 +753,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (errors.length > 0) {
     throw new Error(`Invalid decision:record input:\n- ${errors.join("\n- ")}`);
   }
-  return raw as unknown as OwnerDecisionInput;
+  return (ticker === undefined ? raw : { ...raw, ticker }) as unknown as OwnerDecisionInput;
 }
 
 /**

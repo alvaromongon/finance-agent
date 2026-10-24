@@ -359,6 +359,110 @@ describe("volumeMismatches: Volume against the lots, from portfolio.md alone", (
   });
 });
 
+describe("lotsMismatches: Entry costs against the entry's costs (#68, PR #56 C8)", () => {
+  const withCosts = (costs: number): Decision => ({ ...entry("a", "TCK"), costs });
+  const lotWithCosts = (entryCosts: number | null): PortfolioSnapshot =>
+    portfolio([position("TCK", 10)], [{ ...lot("a", 10), entryCosts }]);
+
+  for (const wrong of [40, 0.4, null]) {
+    it(`Entry costs ${wrong ?? "—"} against costs 4 is refused, naming both`, () => {
+      const messages = lotsMismatches(lotWithCosts(wrong), [withCosts(4)]);
+      assert.equal(messages.length, 1, messages.join("\n"));
+      assert.match(messages[0], new RegExp(`lot a: Entry costs ${wrong ?? "—"} differs from 4 \\(the entry`));
+    });
+  }
+
+  it("Entry costs 4.00 against costs 4 passes", () => {
+    assert.deepEqual(lotsMismatches(lotWithCosts(4), [withCosts(4)]), []);
+  });
+
+  it("a value against an empty cell in the log is a difference", () => {
+    const [message] = lotsMismatches(lotWithCosts(4), [entry("a", "TCK")]);
+    assert.match(message, /Entry costs 4 differs from —/);
+  });
+
+  it("no costs on either side, or costs of 0 against an empty cell, pass", () => {
+    assert.deepEqual(lotsMismatches(lotWithCosts(null), [entry("a", "TCK")]), []);
+    assert.deepEqual(lotsMismatches(lotWithCosts(null), [withCosts(0)]), []);
+  });
+
+  it("a 2:1 split with the costs unchanged passes", () => {
+    const split: PortfolioSnapshot = portfolio(
+      [position("TCK", 20)],
+      [{ ...lot("a", 20), entryUnits: 20, entryPrice: 50, initialStop: 45, entryCosts: 4 }],
+    );
+    assert.deepEqual(lotsMismatches(split, [withCosts(4)]), []);
+  });
+});
+
+describe("volumeMismatches: one round of messages (#68)", () => {
+  it("a case-only difference with the log and a Volume error are both reported (PR #63 1)", () => {
+    // Lots on `tck`, the log on `TCK`, Volume 20 for lots summing 10.
+    const messages = lotsMismatches(portfolio([position("tck", 20)], [lot("a", 10, "tck")]), [entry("a", "TCK")]);
+    assert.equal(messages.length, 2, messages.join("\n"));
+    assert.ok(messages.some((m) => m.includes("differ only in case")));
+    assert.ok(messages.some((m) => m.includes("tck: Volume 20 is not the sum of the Units of its lots (10)")));
+  });
+
+  it("a Volume error is reported when Positions spells the ticker differently from the lot (issue 68, case B)", () => {
+    const messages = lotsMismatches(portfolio([position("TCK", 20)], [lot("a", 10, "tck")]), [entry("a", "TCK")]);
+    assert.equal(messages.length, 2, messages.join("\n"));
+    assert.ok(messages.some((m) => m.includes("differ only in case")));
+    assert.ok(messages.some((m) => m.includes("TCK: Volume 20 is not the sum of the Units of its lots (10)")));
+  });
+
+  it("two Positions rows differing only in case are one ticker to merge", () => {
+    const messages = volumeMismatches(portfolio([position("TCK", 10), position("tck", 5)], [lot("a", 15)]));
+    assert.equal(messages.length, 1, messages.join("\n"));
+    assert.match(messages[0], /on 2 rows.*Volume 10, 5.*merge them into one row/);
+  });
+
+  it("an unreadable Lots row is the only message of its ticker: no Volume and no 'no lot' derived from it (PR #63 4)", () => {
+    const p: PortfolioSnapshot = {
+      ...portfolio([position("TCK", 16)], [lot("a", 10)]),
+      skippedLotRows: ['Lots row 2 (TCK, b): Units "6x" is not a number; the row is skipped'],
+      unreadableLots: { tickers: ["TCK"], entryIds: ["b"] },
+    };
+    const messages = lotsMismatches(p, [entry("a", "TCK"), entry("b", "TCK")]);
+    assert.deepEqual(messages, [
+      'portfolio.md (USD): Lots row 2 (TCK, b): Units "6x" is not a number; the row is skipped',
+    ]);
+  });
+
+  it("other tickers' problems are still reported next to an unreadable row", () => {
+    const p: PortfolioSnapshot = {
+      ...portfolio([position("TCK", 16), position("OTH", 9)], [lot("a", 10), lot("c", 5, "OTH")]),
+      skippedLotRows: ['Lots row 2 (TCK, b): Units "6x" is not a number; the row is skipped'],
+      unreadableLots: { tickers: ["TCK"], entryIds: ["b"] },
+    };
+    const messages = lotsMismatches(p, [entry("a", "TCK"), entry("b", "TCK"), entry("c", "OTH")]);
+    assert.equal(messages.length, 2, messages.join("\n"));
+    assert.match(messages[1], /OTH: Volume 9.*\(5\)/);
+  });
+
+  it("a ticker on several Positions rows is named up front, with its Volumes, from portfolio.md alone", () => {
+    const p = portfolio([position("TCK", 4), position("TCK", 6)], [lot("a", 10)]);
+    const messages = volumeMismatches(p);
+    assert.equal(messages.length, 1, messages.join("\n"));
+    assert.match(messages[0], /^portfolio\.md \(USD\): TCK is on 2 rows of "## USD — Positions" \(Volume 4, 6\)/);
+  });
+
+  it("the several-rows message comes in the same round as the other lots messages, and refuses the file", () => {
+    const p = portfolio([position("TCK", 4), position("TCK", 6)], [lot("a", 10), lot("zz", 1, "OTH")]);
+    const messages = lotsMismatches(p, [entry("a", "TCK")]);
+    assert.ok(messages.some((m) => m.includes("TCK is on 2 rows")));
+    assert.ok(messages.some((m) => m.includes("lot zz is not in the decision log")));
+    assert.throws(() => assertLotsMatch(p, [entry("a", "TCK")]), /TCK is on 2 rows/);
+  });
+
+  it("every message of one silo carries the same prefix", () => {
+    const p = portfolio([position("TCK", 4), position("TCK", 6)], [lot("a", 10), lot("zz", 1, "OTH")]);
+    const messages = lotsMismatches(p, [entry("a", "TCK")]);
+    assert.ok(messages.length >= 2);
+    for (const m of messages) assert.ok(m.startsWith("portfolio.md (USD): "), m);
+  });
+});
+
 describe("assertLotsMatch", () => {
   it("throws one error naming every problem", () => {
     const p = portfolio([position("TCK", 7)], [lot("ghost", 2)]);
