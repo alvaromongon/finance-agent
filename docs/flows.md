@@ -209,7 +209,9 @@ them. It needs one history request per position with a stop; without ATR the pos
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
-  it), so a stop never leaves `portfolio.md` cut short.
+  it), so a stop never leaves `portfolio.md` cut short. The portfolio is read again after the
+  market-data calls, right before it is written, and the lot change is applied to that text; if the
+  lots moved meanwhile the record is refused with nothing written.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the
   record, because a Markdown log without its decision line would mean measuring halfway. If the
   process stops between the log and the portfolio, an exit exists whose lot did not shrink; the

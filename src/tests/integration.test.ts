@@ -364,6 +364,37 @@ describe("Integration — engine", () => {
       assert.ok(updated.includes("42,00"), "stop-loss unchanged");
     });
 
+    it("prices every Positions row of a ticker, the way the Volume check reads them (it sums all of them)", async () => {
+      const twice = PORTFOLIO_MD.replace(
+        "| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
+        "| TEST.EU | 4 | 45,00 | 45,00 | 0,00 | 42,00 |\n| TEST.EU | 6 | 40,00 | 40,00 | 0,00 | 42,00 |",
+      );
+      await writeFile(join(tempDir, "portfolio.md"), twice, "utf8");
+      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.match(updated, /\| TEST\.EU \| 4 \| 45,00 \| 48,00 \| 12,00 \| 42,00 \|/);
+      assert.match(updated, /\| TEST\.EU \| 6 \| 40,00 \| 48,00 \| 48,00 \| 42,00 \|/);
+    });
+
+    it("a Positions table split by a blank line is one table: the rows under the split are priced too", async () => {
+      const split = PORTFOLIO_MD.replace(
+        "| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
+        "\n| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
+      );
+      await writeFile(join(tempDir, "portfolio.md"), split, "utf8");
+      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.equal(updated, split.replace("| 45,00 | 45,00 | 0,00 |", "| 45,00 | 48,00 | 30,00 |"));
+    });
+
+    it("keeps the line ends of the file: a CRLF file stays CRLF", async () => {
+      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace(/\n/g, "\r\n"), "utf8");
+      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.ok(!/[^\r]\n/.test(updated), "no bare LF");
+      assert.ok(updated.includes("48,00"));
+    });
+
     it("does not modify the file if no ticker has a price", async () => {
       const before = await readFile(join(tempDir, "portfolio.md"), "utf8");
       await updatePortfolioPrices("EUR", new Map()); // no prices

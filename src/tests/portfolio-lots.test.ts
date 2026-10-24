@@ -422,23 +422,65 @@ last_manual_sync: 2026-10-16T18:00:00Z
     assert.equal(usdLots(md)[0].entryId, "a");
   });
 
-  it("keeps a row that does not read as a lot, the owner's note, where it is", () => {
-    const withNote = PORTFOLIO.replace(
+  it("refuses a Lots table with a row that does not read: it is never rewritten around the row", () => {
+    const withBadRow = PORTFOLIO.replace(
       "| SAP.DE | sap-1 |",
       "| SAP.DE | sap-0 | 2026-09-01 | TBD | 5 | 1 | — | — | sistema | 1.0 | — |\n| SAP.DE | sap-1 |",
     );
-    const md = applyLotChange(withNote, "EUR", parseLots(withNote, "EUR"), {
-      ticker: "SAP.DE",
-      volume: 2,
-      avgPrice: 180,
+    assert.throws(
+      () => applyLotChange(withBadRow, "EUR", [], { ticker: "SAP.DE", volume: 2, avgPrice: 180 }),
+      /portfolio\.md \(EUR\): Lots row 1 \(SAP\.DE, sap-0\): Units "TBD" is not a number.*nothing was recorded/,
+    );
+  });
+
+  it("refuses a ticker on several Positions rows: which one to update is the owner's to say", () => {
+    const twice = PORTFOLIO.replace(
+      "| SAP.DE | 2 | 180,00 | 186,40 | 12,80 | 168,00 |",
+      "| SAP.DE | 1 | 180,00 | 186,40 | 6,40 | 168,00 |\n| SAP.DE | 1 | 180,00 | 186,40 | 6,40 | 168,00 |",
+    );
+    assert.throws(
+      () => applyLotChange(twice, "EUR", parseLots(twice, "EUR"), { ticker: "SAP.DE", volume: 2, avgPrice: 180 }),
+      /SAP\.DE is on 2 rows of "## EUR — Positions".*nothing was recorded/,
+    );
+  });
+
+  describe("a Lots table split by blank lines or notes is one table", () => {
+    const rowOf = (id: string, date: string) =>
+      `| TCK | ${id} | ${date} | 10 | 10 | 100,00 | — | — | sistema | 1.0 | — |`;
+    const split = (rows: string[]) =>
+      PORTFOLIO.replace(/(## USD — Lots\n\n\|[^\n]*\n\|[^\n]*\n)/, (head) => `${head}${rows.join("\n")}\n`);
+    const lotIds = (md: string) => parseLots(md, "USD").map((l) => l.entryId);
+
+    it("a blank line between the separator and the first lot: the next entry is added once, the table is contiguous", () => {
+      const md = split(["", rowOf("a", "2026-06-01"), rowOf("b", "2026-06-02")]);
+      assert.deepEqual(lotIds(md), ["a", "b"], "the reader sees one table");
+      const out = applyLotChange(md, "USD", [...parseLots(md, "USD"), lot("c", 10)], change({ currentPrice: 100 }));
+      assert.deepEqual(lotIds(out), ["a", "b", "c"]);
+      assert.equal(out.match(/^\| TCK \| [abc] \|/gm)?.length, 3, "no lot is written twice");
+      assert.match(out, /\|---\|\n\| TCK \| a \|[^\n]*\n\| TCK \| b \|[^\n]*\n\| TCK \| c \|/, "one block");
     });
-    assert.ok(md.includes("| SAP.DE | sap-0 | 2026-09-01 | TBD |"), md);
-    assert.equal(parseLots(md, "EUR").length, 1);
+
+    it("a blank line between two lots: the same", () => {
+      const md = split([rowOf("a", "2026-06-01"), "", rowOf("b", "2026-06-02")]);
+      assert.deepEqual(lotIds(md), ["a", "b"]);
+      const out = applyLotChange(md, "USD", [...parseLots(md, "USD"), lot("c", 10)], change({ currentPrice: 100 }));
+      assert.deepEqual(lotIds(out), ["a", "b", "c"]);
+      assert.equal(out.match(/^\| TCK \| [abc] \|/gm)?.length, 3, "no lot is written twice");
+      assert.match(out, /\|---\|\n\| TCK \| a \|[^\n]*\n\| TCK \| b \|[^\n]*\n\| TCK \| c \|/, "one block");
+    });
+
+    it("a note between two lots stays, under the table", () => {
+      const md = split([rowOf("a", "2026-06-01"), "Checked with the broker.", rowOf("b", "2026-06-02")]);
+      const out = applyLotChange(md, "USD", parseLots(md, "USD"), change({ currentPrice: 100 }));
+      assert.deepEqual(lotIds(out), ["a", "b"]);
+      assert.match(out, /\| TCK \| b \|[^\n]*\nChecked with the broker\.\n/);
+    });
   });
 
   it("works with CRLF line ends, as the rest of the vault reads them", () => {
     const md = applyLotChange(PORTFOLIO.replace(/\n/g, "\r\n"), "USD", [lot("a", 10)], change({ newStopLoss: 90 }));
     assert.equal(usdLots(md).length, 1);
+    assert.ok(!/[^\r]\n/.test(md), "every line end of the file is still CRLF");
   });
 });
 
