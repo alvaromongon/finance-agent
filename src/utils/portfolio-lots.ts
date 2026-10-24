@@ -90,7 +90,10 @@ export interface SalePlanInput {
   amount: number;
   /** Costs of the whole sale; absent if none were given. */
   costs?: number;
-  /** Realized result of the whole sale if the owner gave it; otherwise each lot's own is computed. */
+  /**
+   * Realized result of the whole sale if the owner gave it: each lot keeps its own computed result and
+   * the difference to the owner's total is shared by units. Otherwise each lot's own is computed.
+   */
   pnl?: number;
 }
 
@@ -110,8 +113,10 @@ export interface SaleShare {
 
 /**
  * Consumes the ticker's lots first in, first out (oldest entry date first, ties in the order of the
- * table) until `sale.units` are sold. The amount, the costs and the result of the sale are shared
- * across the lots pro rata to the units, so the exits add up to the sale (`allocateByWeight`: never a negative share).
+ * table) until `sale.units` are sold. The amount and the costs of the sale are shared across the lots
+ * pro rata to the units; each exit's result is its lot's own (from its entry price), plus, when the owner
+ * gave the result of the whole sale, its units' share of the difference to the computed sum. The exits
+ * add up to the sale (`allocateByWeight`: never a negative share).
  * The amount is shared exactly (not to the cent: a lot of a few units of a low-priced asset would get
  * 0.00); the costs and the result, which are settled money, go to the cent.
  * A lot's entry costs go pro rata too, and the exit that uses the lot up takes what is left of them
@@ -158,13 +163,19 @@ export function planSale(
     total === undefined ? taken.map(() => undefined) : allocateByWeight(total, weights, decimals);
   const amounts = split(sale.amount, AMOUNT_DECIMALS);
   const costs = split(sale.costs);
-  const owned = split(sale.pnl);
+  // Each exit keeps its lot's own result (from the entry price). A result the owner gave for the whole
+  // sale only moves them by the difference to the computed sum (costs, FX), shared by units in whole cents,
+  // so a losing lot stays a loss when the sale as a whole is a gain.
+  const computed = taken.map((t) => round2((sale.price - t.lot.entryPrice) * t.unitsSold));
+  const difference =
+    sale.pnl === undefined ? undefined : round2(sale.pnl - computed.reduce((sum, pnl) => sum + pnl, 0));
+  const adjustments = split(difference);
 
   return taken.map((t, i) => ({
     ...t,
     amount: amounts[i]!,
     costs: costs[i],
-    pnl: owned[i] ?? round2((sale.price - t.lot.entryPrice) * t.unitsSold),
+    pnl: round2(computed[i] + (adjustments[i] ?? 0)),
     entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? 0),
   }));
 }
