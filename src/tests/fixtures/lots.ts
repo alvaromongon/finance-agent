@@ -72,3 +72,45 @@ export function entryLines(currency: Silo, held: HeldLot[]): string {
     .map((line) => `${line}\n`)
     .join("");
 }
+
+/** Applies `edit` to the `## USD — Lots` section of a portfolio.md text (up to the next `## ` heading or the end). */
+function inUsdLots(portfolioMd: string, edit: (section: string) => string): string {
+  const start = portfolioMd.indexOf("## USD — Lots");
+  if (start < 0) throw new Error("the fixture has no `## USD — Lots` section");
+  const next = portfolioMd.indexOf("\n## ", start + 1);
+  const end = next < 0 ? portfolioMd.length : next;
+  return portfolioMd.slice(0, start) + edit(portfolioMd.slice(start, end)) + portfolioMd.slice(end);
+}
+
+/**
+ * The same portfolio.md with the USD silo's `Lots` broken in the three ways the tolerant readers
+ * (`pending:resolve`, the Monday briefing, the weekly screening) must carry on through: a misspelled
+ * heading (the section is missing), an unreadable table header (a column is missing: a
+ * `LotsTableError`), and one unreadable row (Units "TBD": the row is skipped, the header reads).
+ * The USD silo is the one that holds a position and a lot in the flow fixtures.
+ */
+export function brokenUsdLots(portfolioMd: string): [label: string, brokenMd: string][] {
+  return [
+    ["a misspelled Lots heading", portfolioMd.replace("## USD — Lots", "## USD — Lotes")],
+    [
+      "an unreadable Lots table header",
+      inUsdLots(portfolioMd, (section) => section.replace("| Entry price |", "| Precio |")),
+    ],
+    [
+      "an unreadable Lots row",
+      inUsdLots(portfolioMd, (section) => {
+        const lines = section.replace(/\n$/, "").split("\n");
+        const firstRow = lines.findIndex((line, i) => i >= 4 && line.startsWith("|"));
+        if (firstRow >= 0) {
+          // Units is the fourth cell: `| Ticker | Entry id | Date | Units | ...`.
+          const cells = lines[firstRow].split("|");
+          cells[4] = " TBD ";
+          lines[firstRow] = cells.join("|");
+        } else {
+          lines.push("| BAD | lot-bad | 2026-06-15 | TBD | 1 | 10 | — | — | sistema | 1.0 | — |");
+        }
+        return `${lines.join("\n")}\n`;
+      }),
+    ],
+  ];
+}

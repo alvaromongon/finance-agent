@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { TechnicalsProvider } from "../utils/monday-briefing-helpers.js";
 import type { HistoricalBar } from "../providers/types.js";
-import { lotsSection } from "./fixtures/lots.js";
+import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -203,14 +203,8 @@ describe("monday-briefing prepare/finalize", () => {
     }
   }
 
-  /** A portfolio.md whose USD `Lots` does not read, in the two ways the heartbeat tolerates. */
-  const brokenLots: [string, string][] = [
-    ["a misspelled Lots heading", PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes")],
-    ["an unreadable Lots table", PORTFOLIO_MD.replace("| Entry price |", "| Precio |")],
-  ];
-
   describe("prepareBriefing", () => {
-    for (const [label, broken] of brokenLots) {
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
       it(`builds the prompt with ${label}: positions, cash and silo value are read as before`, async () => {
         await writeFile(join(vaultDir, "portfolio.md"), broken, "utf8");
         const error = mock.method(console, "error", () => {});
@@ -333,7 +327,7 @@ describe("monday-briefing prepare/finalize", () => {
   describe("finalizeBriefing", () => {
     const today = new Date().toISOString().slice(0, 10);
 
-    for (const [label, broken] of brokenLots) {
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
       it(`finalizes with ${label}: the log is saved and a hold is recorded for the position`, async () => {
         await writeFile(join(vaultDir, "portfolio.md"), broken, "utf8");
         await quietly(() => finalizeBriefing(VALID_REPORT, fakeProvider));

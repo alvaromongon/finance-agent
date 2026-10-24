@@ -231,14 +231,16 @@ a warning in its output and in the digest, because a typo must not switch off
 the stop alerts. That includes a `Lots` table that does not read (a misspelled or
 missing column in its header) and a `Lots` section that is missing (a misspelled
 heading, or a deleted empty section): the warning names `portfolio.md` and the
-section (`## USD — Lots`), and the lots count as empty for that run. A missing
+section (`## USD — Lots`), and the lots count as empty for that run. The warning
+is not deduplicated: it is in every digest while the problem lasts. A missing
 `Cash` or `Positions` section still stops the heartbeat, as every other problem of
-the file. Only `decision:record` and `decisions:evaluate` need the lots, and they
-keep the strict reader: they refuse a `Lots` table or section that does not read.
-`pending:resolve`, the Monday briefing and the weekly screening use positions,
-cash and silo value only, so they read the file like the heartbeat and carry on
-with the lots counted as empty (the heartbeat's digest reports the problem on
-every run; these commands do not repeat it). The warning is not deduplicated: it is in every digest while the problem lasts.
+the file. `decision:record` (for every decision type, including a deposit or an
+`adjust_stop`, which read the lots before looking at the type) and
+`decisions:evaluate` keep the strict reader: they refuse a `Lots` table or
+section that does not read. `pending:resolve`, the Monday briefing and the weekly
+screening use positions, cash and silo value only, so they read the file like the
+heartbeat and carry on with the lots counted as empty; unlike the heartbeat, they
+send no warning.
 
 A stock split is corrected by hand, in a correction commit, by scaling the lot
 by one ratio r > 0: `Units` and `Entry units` × r, `Entry price` and

@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { lotsSection } from "./fixtures/lots.js";
+import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -230,10 +230,7 @@ describe("pending.ts", () => {
       await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
     });
 
-    for (const [label, broken] of [
-      ["a misspelled Lots heading", PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes")],
-      ["an unreadable Lots table", PORTFOLIO_MD.replace("| Entry price |", "| Precio |")],
-    ] as const) {
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
       it(`resolvePending resolves a signal with ${label}: recorded, alert sent, file deleted`, async () => {
         const portfolioPath = join(vaultDir, "portfolio.md");
         await writeFile(portfolioPath, broken, "utf8");
