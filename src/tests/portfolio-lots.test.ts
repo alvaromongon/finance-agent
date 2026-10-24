@@ -239,6 +239,35 @@ describe("planSale: what each exit carries", () => {
     );
   });
 
+  describe("an owner-given pnl keeps each lot's own result and shares only the difference (#71)", () => {
+    // Two lots of 5 units sold together at 120.
+    const gain = [lot("a", 5, { entryPrice: 100 }), lot("b", 5, { entryPrice: 130, date: "2026-06-22" })];
+    const loss = [lot("a", 5, { entryPrice: 110 }), lot("b", 5, { entryPrice: 150, date: "2026-06-22" })];
+    const pnls = (lots: Lot[], pnl?: number) =>
+      planSale(lots, sale(10, { price: 120, ...(pnl === undefined ? {} : { pnl }) }), new Map()).map((s) => s.pnl);
+
+    it("net gain, computed: +100 and -50", () => assert.deepEqual(pnls(gain), [100, -50]));
+    it("net gain, +50 given: the same, the losing lot stays a loss", () =>
+      assert.deepEqual(pnls(gain, 50), [100, -50]));
+    it("net loss, computed: +50 and -150", () => assert.deepEqual(pnls(loss), [50, -150]));
+    it("net loss, -100 given: the same, the winning lot stays a gain", () =>
+      assert.deepEqual(pnls(loss, -100), [50, -150]));
+
+    it("a total that differs by costs (+48 against +50): each lot keeps its sign and they add up to +48", () => {
+      // Difference -2 shared 5/5: -1 each.
+      assert.deepEqual(pnls(gain, 48), [99, -51]);
+    });
+
+    it("the difference is shared by units in whole cents, adding up to the owner's total", () => {
+      // Lots of 1 and 2 units (entry 100): computed 20 and 40 at 120; +61 given: difference +1 -> 0.33/0.67.
+      const lots = [lot("a", 1), lot("b", 2, { date: "2026-06-22" })];
+      assert.deepEqual(
+        planSale(lots, sale(3, { price: 120, pnl: 61 }), new Map()).map((s) => s.pnl),
+        [20.33, 40.67],
+      );
+    });
+  });
+
   it("the entry costs are shared pro rata to the units sold, the remainder on the last exit of the lot", () => {
     // Entry costs 1 over 3 units: 0.33 + 0.33 + 0.34, so the three exits add up exactly to 1.
     const l = lot("a", 3, { entryCosts: 1 });
@@ -563,9 +592,10 @@ describe("planSale: the costs of a sale never go negative (BLOCKING of the 4th r
     assert.deepEqual(costs, [0, 0.01, 0.01, 0]);
   });
 
-  it("an owner-given pnl is split by the same helper: whole cents, adding up to the sale's", () => {
+  it("the difference to an owner-given pnl is split by the same helper: whole cents, adding up to the sale's", () => {
+    // Sold at the entry price (computed 0 each), so the whole 0.02 is the difference.
     const lots = [lot("a", 30), lot("b", 30), lot("c", 30), lot("d", 10)];
-    const pnl = planSale(lots, sale(100, { pnl: 0.02 }), new Map()).map((s) => s.pnl);
+    const pnl = planSale(lots, sale(100, { price: 100, pnl: 0.02 }), new Map()).map((s) => s.pnl);
     assert.deepEqual(pnl, [0, 0.01, 0.01, 0]);
   });
 });

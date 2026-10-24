@@ -796,6 +796,29 @@ describe("measurable exits: the five R tests of spec #27", () => {
       assert.ok(warning?.includes("-25"), String(warning));
     });
 
+    it("a sale with an owner-given net gain still warns of the losing lot's loss (#71)", async () => {
+      // Sale of 10 at 120: A (entry 100, +100) and B (entry 130, -50); the owner gives +50 for the sale.
+      await entry(100, 5, 90, "2026-06-15");
+      await entry(130, 5, 120, "2026-06-22");
+      await record({
+        type: "exit",
+        ticker: "TCK",
+        currency: "USD",
+        price: 120,
+        units: 10,
+        pnl: 50,
+        date: "2026-08-10",
+      });
+
+      const log = await readLog();
+      assert.deepEqual(
+        log.filter((d) => d.type === "exit").map((e) => e.pnl),
+        [100, -50],
+      );
+      const warning = twoMonthRuleWarning(log as unknown as Decision[], "TCK", "2026-08-20", "real");
+      assert.ok(warning?.includes("-50"), String(warning));
+    });
+
     describe("errors write nothing", () => {
       /** The log and the portfolio as files, to compare before and after a refused trade. */
       const files = async () => ({

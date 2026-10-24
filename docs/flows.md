@@ -203,7 +203,12 @@ them. It needs one history request per position with a stop; without ATR the pos
     is negative, they add up to the total). An exit's `amount` is its exact share of the sale amount
     and can have sub-cent decimals (owner decision of 2026-10-22 in #27); when only units are given,
     the sale amount derived is to the cent unless that rounds to 0.00, then exact. Its
-    `pnl` comes from the lot's entry price, costs not included. The lots a sale uses up are removed
+    `pnl` comes from the lot's entry price, costs not included. When the owner gives the `pnl` of
+    the whole sale, each exit still keeps its own lot's result and only the difference between the
+    owner's total and the computed sum (costs, FX) is shared by units, in whole cents (largest
+    remainder), so the exits add up to the owner's total and a losing lot stays a loss (lots bought
+    at 100 and 130, sold together at 120 with +50 given: the exits get +100 and −50, and the
+    two-month warning cites the −50). The lots a sale uses up are removed
     from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
   - A sale of a ticker with no lots, of more units than are open, with no `portfolio.md`, or dated
