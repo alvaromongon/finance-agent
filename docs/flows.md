@@ -32,6 +32,8 @@ parentheses so a code comment that cites it can be found here.
      section) do not stop the run: the lots count as empty for that run and the warning names
      `portfolio.md` and the expected section. Only the `Lots` reading is tolerant: a missing `Cash`
      or `Positions` section, or a table of them that does not read, still stops the run.
+     The same tolerance applies to `pending:resolve`, the Monday briefing and the weekly screening,
+     which do not use the lots; only `decision:record` and `decisions:evaluate` refuse a broken `Lots`.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,

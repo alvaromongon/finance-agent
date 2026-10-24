@@ -260,6 +260,17 @@ describe("weekly-screening prepare/resolve/summarize", () => {
   }
 
   describe("screening:prepare", () => {
+    for (const [label, broken] of [
+      ["a misspelled Lots heading", PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes")],
+      ["an unreadable Lots table", PORTFOLIO_MD.replace("| Entry price |", "| Precio |")],
+    ]) {
+      it(`builds the candidates' files with ${label}`, async () => {
+        await writeFile(join(vaultDir, "portfolio.md"), broken, "utf8");
+        const files = await prepare();
+        assert.deepEqual(files.sort(), [`${today}-asml.as.md`, `${today}-nvda.md`]);
+      });
+    }
+
     it("writes one file per candidate, excluding the watchlist and recent not-interesting ones", async () => {
       const files = await prepare();
 

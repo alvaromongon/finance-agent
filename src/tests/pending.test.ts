@@ -230,6 +230,32 @@ describe("pending.ts", () => {
       await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
     });
 
+    for (const [label, broken] of [
+      ["a misspelled Lots heading", PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes")],
+      ["an unreadable Lots table", PORTFOLIO_MD.replace("| Entry price |", "| Precio |")],
+    ] as const) {
+      it(`resolvePending resolves a signal with ${label}: recorded, alert sent, file deleted`, async () => {
+        const portfolioPath = join(vaultDir, "portfolio.md");
+        await writeFile(portfolioPath, broken, "utf8");
+        await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
+        const log = mock.method(console, "log", () => {});
+        const warn = mock.method(console, "warn", () => {});
+        try {
+          await resolvePending(PENDING_FILENAME, validRecommendation());
+        } finally {
+          log.mock.restore();
+          warn.mock.restore();
+          await writeFile(portfolioPath, PORTFOLIO_MD, "utf8");
+        }
+
+        const decision = await lastDecision();
+        assert.equal(decision.type, "buy_proposal");
+        const smtpWarned = warn.mock.calls.some((c) => String(c.arguments[0]).includes("SMTP_USER/SMTP_PASS"));
+        assert.ok(smtpWarned, "the alert was attempted");
+        await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
+      });
+    }
+
     it("resolvePending with R:R below the minimum records blocked:true and sends no alert", async () => {
       await writeFile(
         join(vaultDir, "logs", "pending", PENDING_FILENAME),
