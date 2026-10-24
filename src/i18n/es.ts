@@ -85,7 +85,7 @@ export const es: Messages = {
     subject: (currency, sections) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
       breaches: "stop cruzado",
-      lots: "lotes que no cuadran",
+      lots: "problema con los lotes",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -109,17 +109,17 @@ export const es: Messages = {
       `de razonar sobre una posición que ya no existe.`,
     ],
     lotsIntro: [
-      `## \`portfolio.md\`: los lotes no cuadran`,
+      `## \`portfolio.md\`: problema con los lotes`,
       ``,
-      `La tabla \`Lots\` no concuerda con \`Positions\` o con el registro de decisiones. El heartbeat sigue`,
-      `vigilando tus posiciones (stops, \`Volume\`, \`Avg price\`), pero \`decision:record\` y la`,
+      `La tabla \`Lots\` no se puede leer, falta, o no concuerda con \`Positions\` o con el registro de decisiones. El`,
+      `heartbeat sigue vigilando tus posiciones (stops, \`Volume\`, \`Avg price\`), pero \`decision:record\` y la`,
       `evaluación rechazan el archivo hasta que se corrija:`,
       ``,
     ],
     lotsOutro: [
       ``,
-      `Corrige \`Lots\` a mano para que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
-      `\`Entry id\` sea una entrada de \`logs/decisions.jsonl\` (\`docs/input-format.md\`).`,
+      `Corrige \`Lots\` a mano: que exista y se lea, que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
+      `\`Entry id\` sea una entrada del registro (\`logs/decisions.jsonl\`; ver \`docs/input-format.md\`).`,
     ],
     tightIntro: (minAtr) => [
       `## Stops demasiado ceñidos`,
@@ -225,6 +225,10 @@ export const es: Messages = {
       "> [!warning] Muestra pequeña",
       `> Con menos de ${min} operaciones, la esperanza describe, no decide.`,
     ],
+    decisionsMissing: {
+      title: "> [!warning] Faltan decisiones del registro",
+      line: (before) => `faltan decisiones anteriores al ${before}: ¿está definido \`DECISIONS_ARCHIVE_DIR\`?`,
+    },
     reconstructionMismatch: "> [!warning] La reconstrucción de los silos no cuadra",
     unmeasured: {
       title: "> [!warning] Salidas y lotes sin medir",

@@ -243,11 +243,15 @@ export interface ClosedTrade {
   exits: Decision[];
 }
 
+/** Float noise, in units, added to the slack of an exit whose units are derived from its amount rounded to the cent. */
+const DERIVED_UNITS_NOISE = 1e-9;
+
 /**
  * Slack, in units, in the units an exit sold. None to speak of when it carries its `units` (float
  * noise); without them its amount is rounded to the cent, so they are only known to a cent of price.
  */
-const exitSlack = (exit: Decision): number => (exit.units != null ? UNITS_TOLERANCE : 0.01 / exit.price! + 1e-9);
+const exitSlack = (exit: Decision): number =>
+  exit.units != null ? UNITS_TOLERANCE : 0.01 / exit.price! + DERIVED_UNITS_NOISE;
 
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
@@ -682,6 +686,8 @@ function compareVersions(a: string, b: string): number {
  */
 export type BoardWarning =
   | { kind: "reconstruction"; warnings: SiloWarning[] }
+  /** The counter started before the earliest decision loaded: part of the log (an archive) was not read. */
+  | { kind: "decisionsMissing"; before: string }
   | { kind: "exitsWithoutSnapshot"; exits: SkippedExit[] }
   | { kind: "oversoldLots"; lots: OversoldLot[] }
   | { kind: "inconsistentLots"; lots: InconsistentLot[] };
@@ -772,6 +778,26 @@ export function counterStart(decisions: readonly Decision[], lots: readonly Lot[
   return dates.sort()[0] ?? null;
 }
 
+/** Date of the earliest decision loaded; null for an empty log. */
+const earliestDecisionDate = (decisions: readonly Decision[]): string | null =>
+  decisions.map((d) => d.date).sort()[0] ?? null;
+
+/**
+ * The date the bars must reach back to: the earliest decision loaded or, if the counter started
+ * before it (the log was loaded without its archive), the counter start, which is where the portfolios are measured from.
+ */
+export function barsFrom(
+  decisions: readonly Decision[],
+  portfolios: Record<Currency, PortfolioSnapshot>,
+): string | null {
+  const start = counterStart(
+    decisions,
+    heldLots(portfolios).map(({ lot }) => lot),
+  );
+  const earliest = earliestDecisionDate(decisions);
+  return start != null && (earliest == null || start < earliest) ? start : earliest;
+}
+
 export interface EvaluationInput {
   decisions: readonly Decision[];
   /** Today's state of each silo per portfolio.md. */
@@ -827,6 +853,9 @@ export function buildCutBoard(
 
   const siloWarnings = measurements.flatMap((x) => x.warnings);
   const warnings: BoardWarning[] = [];
+  const earliest = earliestDecisionDate(input.decisions);
+  if (start != null && earliest != null && start < earliest)
+    warnings.push({ kind: "decisionsMissing", before: earliest });
   if (siloWarnings.length > 0) warnings.push({ kind: "reconstruction", warnings: siloWarnings });
   if (unmeasured.exitsWithoutSnapshot.length > 0) {
     warnings.push({ kind: "exitsWithoutSnapshot", exits: unmeasured.exitsWithoutSnapshot });

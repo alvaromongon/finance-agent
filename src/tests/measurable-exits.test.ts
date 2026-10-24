@@ -457,6 +457,40 @@ describe("measurable exits: the five R tests of spec #27", () => {
     await assertArchivingChangesNothing("before");
   });
 
+  it("R4 (#69): with the archive unset the evaluation warns that decisions are missing before the earliest loaded; with it set, it does not", async () => {
+    await resetVault();
+    await record({ type: "deposit", currency: "USD", amount: 5000, date: "2026-02-02" });
+    await entry(100, 10, 90, "2026-06-15");
+    await exit(120, 10, "2026-08-10");
+    await archiveQuarter("T1", "2026-01-01", "2026-03-31");
+    await archiveQuarter("T2", "2026-04-01", "2026-06-30");
+    const warned = () =>
+      (console.warn as unknown as { mock: { calls: { arguments: unknown[] }[] } }).mock.calls
+        .map((c) => String(c.arguments[0]))
+        .join("\n");
+
+    const withArchive = await evaluate();
+    assert.deepEqual(
+      withArchive.board.warnings.filter((w) => w.kind === "decisionsMissing"),
+      [],
+    );
+    assert.doesNotMatch(warned(), /decisions are missing/);
+
+    delete process.env.DECISIONS_ARCHIVE_DIR;
+    try {
+      const report = await evaluate();
+      assert.equal(report.board.counterStart, "2026-06-15", "it warns, it does not refuse");
+      assert.deepEqual(
+        report.board.warnings.filter((w) => w.kind === "decisionsMissing"),
+        [{ kind: "decisionsMissing", before: "2026-08-10" }],
+      );
+      assert.match(warned(), /decisions are missing before 2026-08-10: is `DECISIONS_ARCHIVE_DIR` set\?/);
+      assert.match(renderDecisionsEvaluation(report), /Faltan decisiones|Part of the decision log was not loaded/);
+    } finally {
+      process.env.DECISIONS_ARCHIVE_DIR = archiveDir;
+    }
+  });
+
   it("R4: a lot sold in part stays one open trade, and the counter starts the same, whichever quarter is archived", async () => {
     const run = async (archive?: Quarter) => {
       await resetVault();

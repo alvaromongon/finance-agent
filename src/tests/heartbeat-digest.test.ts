@@ -172,6 +172,23 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual(onlyNew(withLots, new Set(digestKeys(withLots))).lotsWarnings, lotsWarnings);
   });
 
+  it("the lots section says what it covers: the owner-approved label, heading, intro and closing (#69)", () => {
+    const email = renderHeartbeatDigest(digest({ lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"] }))!;
+
+    assert.match(email.subject, /problema con los lotes/);
+    assert.doesNotMatch(email.subject, /no cuadran/);
+    assert.match(email.body, /## `portfolio\.md`: problema con los lotes/);
+    const text = email.body.replace(/\s+/g, " ");
+    assert.match(
+      text,
+      /La tabla `Lots` no se puede leer, falta, o no concuerda con `Positions` o con el registro de decisiones\. El heartbeat sigue/,
+    );
+    assert.match(
+      text,
+      /Corrige `Lots` a mano: que exista y se lea, que cada `Volume` sea la suma de las `Units` de sus lotes y cada `Entry id` sea una entrada del registro/,
+    );
+  });
+
   it("the crossed stop leaves no key: there is nothing to remember", () => {
     assert.ok(!digestKeys(digest({ breaches })).length);
   });

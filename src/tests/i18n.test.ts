@@ -226,6 +226,37 @@ describe("English renders", () => {
   });
 });
 
+describe("English heartbeat digest, lots section", () => {
+  it("mirrors the owner-approved wording (#69)", () => {
+    const email = renderHeartbeatDigest(
+      {
+        currency: "USD",
+        syncedAt: "2026-09-02T14:10:00Z",
+        minAtr: 2,
+        lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"],
+        breaches: [],
+        tightStops: [],
+        armed: [],
+        escalated: [],
+      },
+      en,
+    )!;
+
+    assert.match(email.subject, /problem with the lots/);
+    assert.match(email.body, /## `portfolio\.md`: problem with the lots/);
+    const text = email.body.replace(/\s+/g, " ");
+    assert.match(
+      text,
+      /The `Lots` table cannot be read, is missing, or does not match `Positions` or the decision log\. The heartbeat keeps/,
+    );
+    assert.match(
+      text,
+      /Fix `Lots` by hand: it must exist and be readable, each `Volume` must be the sum of the `Units` of its lots and every `Entry id` must be an entry of the log/,
+    );
+    assert.doesNotMatch(`${email.subject}\n${email.body}`, SPANISH);
+  });
+});
+
 describe("English briefing pieces", () => {
   it("engine tickets section", () => {
     const section = formatEngineTicketsSection(

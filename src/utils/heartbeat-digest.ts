@@ -9,6 +9,8 @@
 // What repeats and what does not:
 // - A crossed stop always goes out: it is the "did the broker fill it?"
 //   question and it is no less urgent for having been asked already.
+// - Lots warnings repeat too: while the `Lots` table is wrong they are in every
+//   digest (they have no key), so the problem is not forgotten after one email.
 // - The rest goes out once a day per currency while its relevant data do not
 //   change (`digestKeys`). vault-io keeps the "already sent" state in
 //   logs/heartbeat-sent-<currency>.json.
