@@ -1,5 +1,6 @@
 // Shared types of the Finance Agent.
 import type { DecisionOrigin } from "./decisions.js";
+import type { Money } from "./money.js";
 import type { Ticker } from "./ticker.js";
 
 export type Currency = "EUR" | "USD";
@@ -57,7 +58,7 @@ export interface Position {
   volume: number;
   avgPrice: number;
   currentPrice: number;
-  pl: number;
+  pl: Money;
   stopLoss: number | null;
 }
 
@@ -80,7 +81,7 @@ export interface Lot {
   /** Stop at entry, the base of R; `null` if the entry had none. */
   initialStop: number | null;
   /** Entry costs in the silo currency; `null` if none were recorded. */
-  entryCosts: number | null;
+  entryCosts: Money | null;
   origin: DecisionOrigin;
   rulesVersion: string;
   /** Rules the entry broke; empty for none. */
@@ -103,13 +104,13 @@ export interface SkippedLotRow {
 export interface PortfolioSnapshot {
   currency: Currency;
   /** "Available cash": capital free to trade. */
-  cash: number;
+  cash: Money;
   /**
    * "Total cash", including what pending orders hold: the cash that counts
    * towards the silo value (ADR-0009 §3). Absent if portfolio.md does not tell
    * it apart from the available balance.
    */
-  totalCash?: number;
+  totalCash?: Money;
   positions: Position[];
   /** Open lots of the silo; `Volume` of each position is the sum of its lots' units. */
   lots: Lot[];

@@ -6,6 +6,7 @@
 // stop) live in utils/sizing.ts and block with their own reason: `risk.ts`
 // blocks on facts, not on criteria (ADR-0011).
 import { config } from "./config.js";
+import { formatMoney, overByMoreThanACent } from "./money.js";
 import type { EngineTicket, Signal } from "./types.js";
 
 /** What the broker accepts as an order: fractional shares and their minimum amount. */
@@ -51,14 +52,14 @@ export function validateTicket(
         const minLabel = fractionalShares ? `the minimum order (${minOrderValue} ${cur})` : "1 whole share";
         err(
           ticket.cappedBy === "cash" ? "insufficient_cash" : "below_min_order",
-          `amount ${ticket.amount.toFixed(2)} ${cur} does not reach ${minLabel}` +
-            (ticket.cappedBy === "cash" ? ` with the available cash (${signal.cash.toFixed(2)} ${cur})` : ""),
+          `amount ${formatMoney(ticket.amount)} ${cur} does not reach ${minLabel}` +
+            (ticket.cappedBy === "cash" ? ` with the available cash (${formatMoney(signal.cash)} ${cur})` : ""),
         );
       }
-      if (ticket.amount + ticket.costs > signal.cash + 0.01) {
+      if (overByMoreThanACent(ticket.amount + ticket.costs, signal.cash)) {
         err(
           "insufficient_cash",
-          `amount ${ticket.amount.toFixed(2)} + costs ${ticket.costs.toFixed(2)} ${cur} > available balance ${signal.cash.toFixed(2)} ${cur}`,
+          `amount ${formatMoney(ticket.amount)} + costs ${formatMoney(ticket.costs)} ${cur} > available balance ${formatMoney(signal.cash)} ${cur}`,
         );
       }
       if (ticket.stop >= ticket.entry) {
@@ -79,10 +80,10 @@ export function validateTicket(
         // currentPrice from portfolio.md (synced by hand from the broker), never a
         // price the reasoner proposes: the cap cannot be inflated.
         const positionValue = signal.position.volume * signal.position.currentPrice;
-        if (ticket.amount > positionValue + 0.01) {
+        if (overByMoreThanACent(ticket.amount, positionValue)) {
           err(
             "sell_above_position",
-            `amount to sell (${ticket.amount.toFixed(2)}) exceeds the recorded position value (${positionValue.toFixed(2)})`,
+            `amount to sell (${formatMoney(ticket.amount)}) exceeds the recorded position value (${formatMoney(positionValue)})`,
           );
         }
       }

@@ -1,9 +1,11 @@
 /**
  * Test of HandoffAnalystProvider.escalate(): writes the file in logs/pending/
  * without calling the network. Same pattern as integration.test.ts
- * — VAULT_PROJECT_DIR is set BEFORE the first import of config.js, so the
+ * — VAULT_PROJECT_DIR is set BEFORE the first import
+ * of config.js, so the
  * app modules are imported dynamically inside before().
  */
+import { money } from "../money.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
@@ -144,7 +146,7 @@ describe("HandoffAnalystProvider.escalate", () => {
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),

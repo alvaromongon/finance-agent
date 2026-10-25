@@ -12,10 +12,10 @@ import { tradeUnits, type Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { closeOnOrBefore, daysBetween } from "./forward-returns.js";
+import { isMoreThanACent } from "../money.js";
 import type { Ticker } from "../ticker.js";
 
-/** Rounding tolerance: cents in cash, ten-thousandths in units. */
-const CASH_EPSILON = 0.01;
+/** Rounding tolerance of units: ten-thousandths. (Cash is compared at the cent, in `money.ts`.) */
 const UNITS_EPSILON = 1e-4;
 
 /** Money entering (+) or leaving (−) a silo without being a trade. */
@@ -114,7 +114,7 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
     .sort((a, b) => a.date.localeCompare(b.date));
 
   // Undo from today back to before the start.
-  let cash = portfolio.totalCash ?? portfolio.cash;
+  let cash: number = portfolio.totalCash ?? portfolio.cash;
   const units = new Map<Ticker, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
   for (const e of events) {
     cash -= (e.flow ?? 0) + (e.trade?.cash ?? 0);
@@ -122,7 +122,7 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
   }
 
   const warnings: SiloWarning[] = [];
-  if (cash < -CASH_EPSILON) {
+  if (isMoreThanACent(-cash)) {
     warnings.push({ kind: "negativeCash", currency, start, cash });
   }
   for (const [ticker, u] of units) {
@@ -207,7 +207,7 @@ export function drawdown(history: Pick<SiloHistory, "base" | "days">): Drawdown 
   let previous = history.base.value;
   for (const day of history.days) {
     // The flow comes in at the close: the day's return is that of the money already there.
-    if (previous > CASH_EPSILON) index *= (day.value - day.flow) / previous;
+    if (isMoreThanACent(previous)) index *= (day.value - day.flow) / previous;
     previous = day.value;
     if (index > peak) {
       peak = index;
@@ -262,7 +262,7 @@ export function moneyWeightedReturn(
     weighted += (f.amount * Math.max(0, days - daysBetween(start.date, f.date))) / days;
   }
   const capital = start.value + weighted;
-  if (capital <= CASH_EPSILON) return null;
+  if (!isMoreThanACent(capital)) return null;
   return ((end.value - start.value - net) / capital) * 100;
 }
 

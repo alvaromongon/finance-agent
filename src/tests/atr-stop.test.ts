@@ -3,6 +3,7 @@
  * ATR, so the same percentage distance is "loose" for a calm security and
  * "tight" for a volatile one. No network — the history provider is injected.
  */
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -24,7 +25,7 @@ function position(overrides: Partial<Position> = {}): Position {
     volume: 1,
     avgPrice: 492.01,
     currentPrice: 501.02,
-    pl: 9.01,
+    pl: money(9.01),
     stopLoss: 500,
     ...overrides,
   };

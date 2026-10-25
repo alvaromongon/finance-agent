@@ -2,6 +2,7 @@
  * Tests of risk.ts: only arithmetic on the ticket the engine
  * computes. The calibratable rules (R:R, anchored target) are in sizing.test.ts.
  */
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { config } from "../config.js";
@@ -34,7 +35,7 @@ const position = (overrides: Partial<Position> = {}): Position => ({
   volume: 10,
   avgPrice: 130,
   currentPrice: 138,
-  pl: 80,
+  pl: money(80),
   stopLoss: 125,
   ...overrides,
 });
@@ -136,5 +137,26 @@ describe("validateTicket — ADJUST_STOP", () => {
 
   it("without a position: no_position", () => {
     assert.deepEqual(codes(validateTicket(adjust, { cash: 1000 })), ["no_position"]);
+  });
+});
+
+describe("validateTicket — the cap of a SELL is the exact position value plus one cent (as before #79)", () => {
+  const sellOf = (amount: number, volume: number, currentPrice: number) =>
+    codes(validateTicket(sell({ amount }), { cash: 0, position: position({ volume, currentPrice }) }));
+
+  it("volume 2.9 at 56.93 is 165.097: a sale of 165.11 is refused, 165.10 passes", () => {
+    assert.deepEqual(sellOf(165.11, 2.9, 56.93), ["sell_above_position"]);
+    assert.deepEqual(sellOf(165.1, 2.9, 56.93), []);
+  });
+
+  it("a position worth 100.0051: a sale of 100.02 is refused", () => {
+    assert.deepEqual(sellOf(100.02, 1, 100.0051), ["sell_above_position"]);
+  });
+});
+
+describe("validateTicket — the cash of a BUY is the exact cash plus one cent (as before #79)", () => {
+  it("amount + costs 100.0151 against cash 100.005 is refused", () => {
+    const r = validateTicket(buy({ amount: 100.0151, costs: 0, units: 1 }), { cash: 100.005 });
+    assert.ok(codes(r).includes("insufficient_cash"));
   });
 });

@@ -12,6 +12,7 @@ import { describeRegime } from "./utils/market-regime.js";
 import { describeAdjustStopPreview, describeBuyPreview } from "./utils/sizing.js";
 import { readTextFile } from "./utils/fs-text.js";
 import { readRoutinePrompt } from "./vault-io.js";
+import { formatMoney } from "./money.js";
 import type { Recommendation, Signal, TriggerKind } from "./types.js";
 import { checkTicker, type Ticker } from "./ticker.js";
 
@@ -132,7 +133,7 @@ export function buildUserPrompt(signal: Signal, news: string[]): string {
       ? `Setup: ${en.setup.patterns[signal.setup.pattern]} confirmed at the close at ${signal.setup.level}.` +
         ` Pattern target: ${signal.setup.target} — it is the ticket.target of a BUY. The engine already checked eligibility and R:R.`
       : null,
-    `Available funds: ${signal.cash.toFixed(2)} ${cur} · silo value: ${signal.siloValue.toFixed(2)} ${cur}` +
+    `Available funds: ${formatMoney(signal.cash)} ${cur} · silo value: ${formatMoney(signal.siloValue)} ${cur}` +
       ` (risk per trade: ${config.framework.riskPerTradePct}%)`,
     ...engineLines,
     signal.position

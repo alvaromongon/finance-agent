@@ -1,3 +1,4 @@
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { collectWatchedTickers, evaluateSignals, riskTriggers } from "../heartbeat.js";
@@ -15,7 +16,7 @@ const baseEntry = (): WatchlistEntry => ({
 
 const emptyPortfolio = (): PortfolioSnapshot => ({
   currency: "EUR",
-  cash: 1000,
+  cash: money(1000),
   positions: [],
   lots: [],
   syncedAt: "2026-01-01T00:00:00Z",
@@ -30,7 +31,7 @@ const withPosition = (stopLoss: number | null): PortfolioSnapshot => ({
       volume: 10,
       avgPrice: 45,
       currentPrice: 45,
-      pl: 0,
+      pl: money(0),
       stopLoss,
     } satisfies Position,
   ],
@@ -64,7 +65,7 @@ describe("evaluateSignals — approaching_stop", () => {
         volume: 10,
         avgPrice: 45,
         currentPrice: 45,
-        pl: 0,
+        pl: money(0),
         stopLoss: 42,
       },
       stopProximityPct: 3,
@@ -91,7 +92,7 @@ describe("evaluateSignals — approaching_stop", () => {
         volume: 10,
         avgPrice: 45,
         currentPrice: 45,
-        pl: 0,
+        pl: money(0),
         stopLoss: null,
       },
       stopProximityPct: 3,
@@ -114,7 +115,7 @@ describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
 
   const defPosition = (stopLoss: number): PortfolioSnapshot => ({
     currency: "EUR",
-    cash: 5,
+    cash: money(5),
     positions: [
       {
         ticker: tk("DEF.MI"),
@@ -122,7 +123,7 @@ describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
         volume: 1,
         avgPrice: 46.8,
         currentPrice: 46.0,
-        pl: -0.8,
+        pl: money(-0.8),
         stopLoss,
       } satisfies Position,
     ],
@@ -156,7 +157,7 @@ describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
         volume: 1,
         avgPrice: 46.8,
         currentPrice: 46.0,
-        pl: -0.8,
+        pl: money(-0.8),
         stopLoss: 41.5,
       },
       stopProximityPct: 15,
@@ -264,10 +265,10 @@ describe("evaluateSignals — portfolio ∪ watchlist union", () => {
   it("several positions without a watchlist entry: each is evaluated independently", () => {
     const portfolio: PortfolioSnapshot = {
       currency: "EUR",
-      cash: 100,
+      cash: money(100),
       positions: [
-        { ticker: tk("A"), currency: "EUR", volume: 1, avgPrice: 10, currentPrice: 10, pl: 0, stopLoss: 9 },
-        { ticker: tk("B"), currency: "EUR", volume: 1, avgPrice: 20, currentPrice: 20, pl: 0, stopLoss: 19 },
+        { ticker: tk("A"), currency: "EUR", volume: 1, avgPrice: 10, currentPrice: 10, pl: money(0), stopLoss: 9 },
+        { ticker: tk("B"), currency: "EUR", volume: 1, avgPrice: 20, currentPrice: 20, pl: money(0), stopLoss: 19 },
       ],
       lots: [],
       syncedAt: "2026-01-01T00:00:00Z",
@@ -287,14 +288,14 @@ describe("collectWatchedTickers", () => {
     const portfolio: PortfolioSnapshot = {
       ...emptyPortfolio(),
       positions: [
-        { ticker: tk("TEST"), currency: "EUR", volume: 1, avgPrice: 1, currentPrice: 1, pl: 0, stopLoss: null },
+        { ticker: tk("TEST"), currency: "EUR", volume: 1, avgPrice: 1, currentPrice: 1, pl: money(0), stopLoss: null },
         {
           ticker: tk("ONLY-PORTFOLIO"),
           currency: "EUR",
           volume: 1,
           avgPrice: 1,
           currentPrice: 1,
-          pl: 0,
+          pl: money(0),
           stopLoss: null,
         },
       ],

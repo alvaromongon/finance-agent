@@ -1,5 +1,6 @@
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -104,7 +105,7 @@ describe("buildTechnicalsSection", () => {
 // ── computeAssetClassWeights / formatPortfolioWeights ─────────────────
 
 function emptyPortfolio(currency: "EUR" | "USD"): PortfolioSnapshot {
-  return { currency, cash: 0, positions: [], lots: [], syncedAt: "2026-07-10T00:00:00Z" };
+  return { currency, cash: money(0), positions: [], lots: [], syncedAt: "2026-07-10T00:00:00Z" };
 }
 
 function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {}) {
@@ -114,7 +115,7 @@ function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {
     volume: 1,
     avgPrice: 100,
     currentPrice: 100,
-    pl: 0,
+    pl: money(0),
     stopLoss: null,
     ...overrides,
   };

@@ -24,6 +24,7 @@ repository it was extracted from, without the owner's personal data.
 | [0014](0014-decision-quality-slo.md)                                | The SLO is the quality of the system's proposals against what actually happened                      | Accepted   |
 | [0015](0015-open-lots-live-in-the-portfolio.md)                     | Open lots live in the portfolio, written by the engine; every exit carries a snapshot of its lot     | Proposed   |
 | [0016](0016-domain-values-are-branded-types-made-by-parsing.md)     | Domain values are branded types made only by parsing at the boundary, compared with `===`            | Proposed   |
+| [0017](0017-money-is-a-domain-value-in-whole-cents.md)              | Money is a domain value: whole cents, one comparison, one way to share and format                    | Proposed   |
 
 ADRs record architecture only: decisions that survive changes to the spec and the code. The rules and
 parameters that change with the code live in [`docs/flows.md`](../flows.md); an ADR whose content is that

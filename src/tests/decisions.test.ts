@@ -4,6 +4,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -276,7 +277,7 @@ describe("decisionFromRecommendation", () => {
       volume: 1,
       avgPrice: 480,
       currentPrice: 500,
-      pl: 20,
+      pl: money(20),
       stopLoss: 450,
     };
     const sell = rec({
@@ -354,7 +355,7 @@ describe("twoMonthRuleWarning (art. 33.5.f LIRPF)", () => {
         date: "2026-08-31",
         price: 460,
         amount: 460,
-        pnl: -30,
+        pnl: money(-30),
         ...overrides,
       }),
     );
@@ -368,12 +369,12 @@ describe("twoMonthRuleWarning (art. 33.5.f LIRPF)", () => {
   it("does not warn in demo, out of the window, with a gain or without pnl", () => {
     assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-09-09", "demo"), null);
     assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-10-31", "real"), null);
-    assert.equal(twoMonthRuleWarning([exit({ pnl: 12 })], tk("ADBE"), "2026-09-09", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit({ pnl: money(12) })], tk("ADBE"), "2026-09-09", "real"), null);
     assert.equal(twoMonthRuleWarning([exit({ pnl: undefined })], tk("ADBE"), "2026-09-09", "real"), null);
   });
 
   it("pnl is only accepted in exit", () => {
-    assert.throws(() => buildDecision(base({ pnl: -5 })), /pnl only goes in exit/);
+    assert.throws(() => buildDecision(base({ pnl: money(-5) })), /pnl only goes in exit/);
   });
 });
 
@@ -385,7 +386,7 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
     entry_price: 100,
     stop_initial: 90,
     entry_units: 10,
-    entry_costs: 4,
+    entry_costs: money(4),
     entry_date: "2026-06-15",
     entry_origin: "sistema",
     entry_rules_version: "1.0",
@@ -454,7 +455,10 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
   it("rejects values that cannot be a lot", () => {
     assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_units: 0 })), /entry_units must be a number > 0/);
     assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_price: -1 })), /entry_price must be a number > 0/);
-    assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_costs: -1 })), /entry_costs must be a number >= 0/);
+    assert.throws(
+      () => buildDecision(exitLine({ ...snapshot, entry_costs: money(-1) })),
+      /entry_costs must be a number >= 0/,
+    );
     assert.throws(
       () => buildDecision(exitLine({ ...snapshot, entry_date: "15/06/2026" })),
       /entry_date must be YYYY-MM-DD/,
@@ -548,7 +552,7 @@ describe("resolveFxConversion", () => {
   });
 
   it("respects the fee and the rate the owner gives", () => {
-    assert.deepEqual(resolveFxConversion({ amount: 100, fx_rate: 1.17, costs: 0.8 }, 0.5), {
+    assert.deepEqual(resolveFxConversion({ amount: 100, fx_rate: 1.17, costs: money(0.8) }, 0.5), {
       costs: 0.8,
       fx_rate: 1.17,
     });
@@ -667,6 +671,51 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
     assert.throws(
       () => buildDecision(base({ type: "adjust_stop", stop: 90, units: 4 })),
       /units only goes in entry or exit/,
+    );
+  });
+});
+
+describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
+  it("costs and pnl given with sub-cent decimals are rounded to the cent", () => {
+    const input = validateOwnerInput({
+      type: "exit",
+      ticker: "CAT",
+      currency: "USD",
+      price: 30,
+      units: 2,
+      costs: 1.234,
+      pnl: 5.678,
+    });
+    assert.equal(input.costs, 1.23);
+    assert.equal(input.pnl, 5.68);
+  });
+
+  it("an fx_conversion computes its fx_rate from the cost in cents (main used 1.234)", () => {
+    const input = validateOwnerInput({
+      type: "fx_conversion",
+      currency: "EUR",
+      amount: 100,
+      received: 118,
+      costs: 1.234,
+    });
+    const { costs, fx_rate } = resolveFxConversion(input, 0);
+    assert.equal(costs, 1.23);
+    assert.equal(fx_rate, 1.194695); // 118 / 98.77; with 1.234 it was 1.194743
+  });
+
+  it("units × price that overflows is reported in the validation list, not as a RangeError", () => {
+    assert.throws(
+      () =>
+        validateOwnerInput({
+          type: "entry",
+          ticker: "CAT",
+          currency: "USD",
+          price: 1e200,
+          units: 1e200,
+          amount: 5,
+          stop: 1,
+        }),
+      /Invalid decision:record input/,
     );
   });
 });

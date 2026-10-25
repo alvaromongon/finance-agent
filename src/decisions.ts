@@ -22,6 +22,7 @@ import {
   SETUP_STATES,
   TREND_BIASES,
 } from "./types.js";
+import { money, withinACent, type Money } from "./money.js";
 import { round } from "./utils/round.js";
 import type {
   Benchmark,
@@ -91,9 +92,9 @@ export interface Decision {
   /** `fx_conversion`: target currency per unit of source, before fee. */
   fx_rate?: number;
   /** Costs in the silo currency (FX fee, transaction tax). */
-  costs?: number;
+  costs?: Money;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
-  pnl?: number;
+  pnl?: Money;
   /** Stop at entry: the base of R. In an `exit`, the one of its lot (part of the lot snapshot). */
   stop_initial?: number;
   /** `adjust_stop`: stop level after the adjustment. */
@@ -150,7 +151,7 @@ export interface Decision {
    * Snapshot: this exit's share of the lot's entry costs, in the silo currency: pro rata to the units
    * it sold, the remainder on the last exit of the lot, so the exits add up to the lot's costs.
    */
-  entry_costs?: number;
+  entry_costs?: Money;
   /** Snapshot: date of the entry, YYYY-MM-DD. */
   entry_date?: string;
   /**
@@ -506,6 +507,10 @@ export function validateDecision(raw: unknown): Decision {
   return {
     ...rest,
     ...(decision.ticker != null ? { ticker: parseTicker(decision.ticker) } : {}),
+    // Settled money is whole cents from here on, whatever the line or the owner wrote.
+    ...(decision.costs != null ? { costs: money(decision.costs) } : {}),
+    ...(decision.pnl != null ? { pnl: money(decision.pnl) } : {}),
+    ...(decision.entry_costs != null ? { entry_costs: money(decision.entry_costs) } : {}),
     ...(benchmark && benchmarkTicker && "ticker" in benchmarkTicker
       ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
       : {}),
@@ -595,7 +600,7 @@ export function decisionFromRecommendation(
         ...common,
         type: ctx.blocked ? "buy_blocked" : "buy_proposal",
         amount: positive(buy?.amount),
-        costs: buy?.costs,
+        costs: buy?.costs == null ? undefined : money(buy.costs),
         stop_initial: buy?.stop,
         target: positive(rec.ticket.target),
         assumptions: rec.assumptions,
@@ -685,9 +690,9 @@ export interface OwnerDecisionInput {
   /** fx_conversion: market rate; or `received`, what reached the other silo. */
   fx_rate?: number;
   received?: number;
-  costs?: number;
+  costs?: Money;
   /** exit: realized result; if missing, computed with the average price in portfolio.md. */
-  pnl?: number;
+  pnl?: Money;
   /** To force the origin when the engine cannot infer it. */
   origin?: DecisionOrigin;
   related_id?: string;
@@ -742,7 +747,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     // measures units as amount / price) must read the same units, so a contradiction is refused.
     const { units, amount, price } = raw as { units: number; amount: number; price: number };
     if (Number.isFinite(units) && Number.isFinite(amount) && Number.isFinite(price) && price > 0) {
-      if (Math.abs(amount - units * price) > 0.01 + 1e-9) {
+      if (!withinACent(amount, units * price)) {
         errors.push(
           `units ${units} × price ${price} = ${round(units * price, 2)}, not the amount ${amount} (give units or amount, or make them agree to the cent)`,
         );
@@ -761,7 +766,12 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     throw new Error(`Invalid decision:record input:\n- ${errors.join("\n- ")}`);
   }
   const input = raw as unknown as OwnerDecisionInput;
-  return has("ticker") ? { ...input, ticker: parseTicker(input.ticker) } : input;
+  return {
+    ...input,
+    ...(has("ticker") ? { ticker: parseTicker(input.ticker) } : {}),
+    ...(input.costs != null ? { costs: money(input.costs) } : {}),
+    ...(input.pnl != null ? { pnl: money(input.pnl) } : {}),
+  };
 }
 
 /**
@@ -772,9 +782,9 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
 export function resolveFxConversion(
   input: Pick<OwnerDecisionInput, "amount" | "fx_rate" | "received" | "costs">,
   commissionPct: number,
-): { costs: number; fx_rate: number } {
+): { costs: Money; fx_rate: number } {
   const amount = input.amount!;
-  const costs = input.costs ?? round((amount * commissionPct) / 100, 2);
+  const costs = input.costs ?? money((amount * commissionPct) / 100);
   const fx_rate = input.fx_rate ?? round(input.received! / (amount - costs), 6);
   return { costs, fx_rate };
 }
