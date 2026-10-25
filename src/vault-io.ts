@@ -86,12 +86,34 @@ export async function readRoutinePrompt(
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
-/** Reads watchlist.md and returns the entries of the given currency. */
+/** What the readers that skip a row they cannot read do with the reason, unless given another sink (ADR-0016). */
+const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING: ${message}`);
+
+/**
+ * Reads watchlist.md and returns the entries of the given currency. An entry whose ticker does not
+ * parse (of any currency) throws: this is the reader of `decision:record`, which refuses it (ADR-0016).
+ */
 export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[]> {
+  return readWatchlistEntries(currency);
+}
+
+/**
+ * `readWatchlist` for every other reader (heartbeat, `pending:resolve`, the Monday briefing, the weekly
+ * screening): an entry whose ticker does not parse is skipped and reported to `onSkip` (a warning by
+ * default), and the rest keeps working (ADR-0016).
+ */
+export async function readWatchlistSkippingBadTickers(
+  currency: Currency,
+  onSkip: (message: string) => void = warnSkipped,
+): Promise<WatchlistEntry[]> {
+  return readWatchlistEntries(currency, onSkip);
+}
+
+async function readWatchlistEntries(currency: Currency, onSkip?: (message: string) => void): Promise<WatchlistEntry[]> {
   const raw = await readTextFile(join(projectDir(), "watchlist.md"));
   assertSchemaVersion(raw, "watchlist.md");
   const block = extractYamlBlock(raw);
-  return parseWatchlistBlock(block).filter((e) => e.currency === currency);
+  return parseWatchlistBlock(block, onSkip).filter((e) => e.currency === currency);
 }
 
 // ─── Portfolio ────────────────────────────────────────────────────────────────
@@ -108,27 +130,35 @@ export async function readPortfolio(currency: Currency): Promise<PortfolioSnapsh
  * `readPortfolio` for the heartbeat: a `Lots` table that does not read (ADR-0015) does not refuse the
  * file, so a typo there never switches off the stop alerts: a header that does not read, a misspelled
  * or deleted `Lots` heading. The portfolio then has no lots and `lotsProblem` says why (file and
- * section); it is null when the lots read. Every other problem of the file (`Cash`, `Positions`) still
- * throws.
+ * section); it is null when the lots read. Neither does a `Positions` row whose ticker does not parse
+ * (ADR-0016): it is skipped and `skippedRows` says which, so the other positions are still watched.
+ * Every other problem of the file (`Cash`, the `Positions` columns) still throws.
  */
 export async function readPortfolioTolerantOfLots(
   currency: Currency,
-): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null }> {
+): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null; skippedRows: string[] }> {
   let lotsProblem: string | null = null;
-  const portfolio = parsePortfolioText(await readPortfolioText(), currency, (err) => {
-    lotsProblem = err.message;
+  const skippedRows: string[] = [];
+  const portfolio = parsePortfolioText(await readPortfolioText(), currency, {
+    onLotsError: (err) => {
+      lotsProblem = err.message;
+    },
+    onSkippedPosition: (message) => skippedRows.push(message),
   });
-  return { portfolio, lotsProblem };
+  return { portfolio, lotsProblem, skippedRows };
 }
 
 /**
  * `readPortfolio` for the readers that use positions, cash and silo value but not the lots
  * (`pending:resolve`, the Monday briefing, the weekly screening): a `Lots` table that does not read
  * does not stop them. `decision:record` (every decision type) and `decisions:evaluate` keep the
- * strict `readPortfolio` and refuse; the heartbeat reports the problem on every run.
+ * strict `readPortfolio` and refuse; the heartbeat reports the problem on every run. A `Positions` row
+ * whose ticker does not parse is skipped with a warning (ADR-0016).
  */
 export async function readPortfolioIgnoringLots(currency: Currency): Promise<PortfolioSnapshot> {
-  return (await readPortfolioTolerantOfLots(currency)).portfolio;
+  const { portfolio, skippedRows } = await readPortfolioTolerantOfLots(currency);
+  skippedRows.forEach(warnSkipped);
+  return portfolio;
 }
 
 /**
@@ -138,8 +168,12 @@ export async function readPortfolioIgnoringLots(currency: Currency): Promise<Por
 export function parsePortfolioText(
   raw: string,
   currency: Currency,
-  /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
-  onLotsError?: (err: Error) => void,
+  tolerance: {
+    /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
+    onLotsError?: (err: Error) => void;
+    /** Given, a `Positions` row whose ticker does not parse is reported here and skipped instead of throwing. */
+    onSkippedPosition?: (message: string) => void;
+  } = {},
 ): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
   assertPortfolioSections(raw, currency);
@@ -173,8 +207,8 @@ export function parsePortfolioText(
     currency,
     cash: parseCash(raw, currency),
     ...(totalCash != null ? { totalCash } : {}),
-    positions: parsePositions(raw, currency),
-    ...readLots(raw, currency, onLotsError),
+    positions: parsePositions(raw, currency, tolerance.onSkippedPosition),
+    ...readLots(raw, currency, tolerance.onLotsError),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
 }
@@ -558,13 +592,13 @@ export async function readPendingSignal(filename: string): Promise<{ meta: Pendi
   if (!Array.isArray(triggers) || triggers.some((t) => !TRIGGER_KINDS.includes(t as TriggerKind))) {
     errors.push(`triggers must be an array of [${TRIGGER_KINDS.join(", ")}]; got: ${JSON.stringify(triggers)}`);
   }
-  if (errors.length > 0) {
+  if (errors.length > 0 || "problem" in checkedTicker) {
     throw new Error(`logs/pending/${filename} has an invalid frontmatter:\n- ${errors.join("\n- ")}`);
   }
 
   return {
     meta: {
-      ticker: (checkedTicker as { ticker: Ticker }).ticker,
+      ticker: checkedTicker.ticker,
       currency: currency as Currency,
       price: price as number,
       triggers: triggers as TriggerKind[],
@@ -737,12 +771,12 @@ export async function readRulesVersion(): Promise<string> {
 
 // ─── Watchlist — writing ──────────────────────────────────────────────────────
 
-/** Reads all the watchlist.md tickers regardless of currency. */
+/** Reads all the watchlist.md tickers regardless of currency; an entry that does not parse is skipped with a warning (ADR-0016). */
 export async function readAllWatchlistTickers(): Promise<Ticker[]> {
   const raw = await readTextFile(join(projectDir(), "watchlist.md"));
   assertSchemaVersion(raw, "watchlist.md");
   const block = extractYamlBlock(raw);
-  return parseWatchlistBlock(block).map((e) => e.ticker);
+  return parseWatchlistBlock(block, warnSkipped).map((e) => e.ticker);
 }
 
 /** Adds an entry to watchlist.md (in the existing YAML block). */
@@ -993,8 +1027,7 @@ export async function readScreeningCandidate(
 
   const checkedTicker = checkTicker(frontmatter.ticker);
   if ("problem" in checkedTicker) errors.push(`ticker: ${checkedTicker.problem}`);
-  const meta: ScreeningCandidateMeta = {
-    ticker: (checkedTicker as { ticker: Ticker }).ticker,
+  const fields: Omit<ScreeningCandidateMeta, "ticker"> = {
     name: str("name"),
     market: str("market"),
     currency: str("currency") as Currency,
@@ -1017,11 +1050,11 @@ export async function readScreeningCandidate(
       `asset_class must be one of [${ASSET_CLASSES.join(", ")}]; got: ${JSON.stringify(frontmatter.asset_class)}`,
     );
   }
-  if (errors.length > 0) {
+  if (errors.length > 0 || "problem" in checkedTicker) {
     throw new Error(`logs/pending-screening/${filename} has an invalid frontmatter:\n- ${errors.join("\n- ")}`);
   }
 
-  return { meta, content };
+  return { meta: { ticker: checkedTicker.ticker, ...fields }, content };
 }
 
 /** Deletes a logs/pending-screening/ file once resolved. */

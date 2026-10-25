@@ -34,12 +34,12 @@ The engine read a ticker as a plain string in about 15 files and each place deci
 Chosen option: "branded type made only by parsing", because it is the only one where the compiler rejects a value that was not parsed, it costs nothing at run time and it survives JSON.
 
 - A ticker is trimmed, checked against the pattern (letters, digits and `. - ^ =`, with at least one letter or digit; `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X` are tickers, `TC|K` and `-` are not) and upper-cased. The domain types (watchlist entry, position, lot, signal, recommendation, decision, benchmark) carry `Ticker`.
-- Every boundary that reads a ticker parses it: the owner's `decision:record` input, `portfolio.md` (`Positions` and `Lots`), the decision log (live and archived), the watchlist, the screening universe and log, the pending files, the analyst's and the briefing's JSON, the command-line arguments and the benchmark configuration. A value that does not parse is refused with a message naming the source. Where the source tolerates a bad row (a `Lots` row, a decision-log line) it is skipped with the reason, as for any other bad value of that row.
+- Every boundary that reads a ticker parses it: the owner's `decision:record` input, `portfolio.md` (`Positions` and `Lots`), the decision log (live and archived), the watchlist, the screening universe and log, the pending files, the analyst's and the briefing's JSON, the command-line arguments and the benchmark configuration. A value that does not parse is refused with a message naming the source, but who refuses follows [ADR-0015](0015-open-lots-live-in-the-portfolio.md) ("a typo must never switch off stop alerts"): only `decision:record` and `decisions:evaluate` refuse a file with a ticker that does not parse, as they do for a broken `Lots`; every other reader (the heartbeat, `pending:resolve`, the Monday briefing, the weekly screening) skips that row or entry (`Positions`, watchlist, screening universe and log, a `Lots` row, a decision-log line) with a warning naming it and carries on, and the heartbeat digest repeats the warning in every run while it lasts. A benchmark whose ticker does not parse is dropped from its decision-log line, not the line. The reader of a command-line argument, a pending file or a screening candidate refuses, since the command cannot run without it.
 - Reading is case-insensitive and writing is upper case: a ticker written in lower case in `portfolio.md` or in the log reads as its upper-case value, the files are not rewritten, and a row the engine writes carries the canonical ticker.
 - File names and slugs derived from a ticker come from one module, and keep the names the engine already writes.
 - Money (amount, price, units, with their rounding and currency) is the next value to follow this pattern, in its own change. Until then it stays a number.
 
-**What we give up**: every place that builds a domain object from untyped data must call a parser, and tests build tickers through `parseTicker`; a ticker outside the pattern (an Indian ticker such as `M&M.NS`) is refused until the pattern is widened by a decision of its own. The simple option (normalize at each comparison) is not enough because it leaves 42 places that each have to remember to do it, which is how the defect arose.
+**What we give up**: every place that builds a domain object from untyped data must call a parser, and tests build tickers through `parseTicker`; a ticker outside the pattern (an Indian ticker such as `M&M.NS`) is skipped by the readers that carry on (and refused by the two that write or measure) until the pattern is widened by a decision of its own. The simple option (normalize at each comparison) is not enough because it leaves 42 places that each have to remember to do it, which is how the defect arose.
 
 **Sequence**: `Ticker` first, because it caused a blocking defect; money after, because its rules (rounding, currency) need their own design.
 
@@ -51,7 +51,7 @@ Chosen option: "branded type made only by parsing", because it is the only one w
 
 - Good: a ticker that was not parsed does not compile; two tickers differing in case cannot exist inside the engine; one place defines a file name.
 - Good: the case-insensitive comparison of the lots check is deleted, since the case can no longer differ.
-- Bad: a brand is erased at run time, so a cast (`as Ticker`) can still defeat it; review is what remains.
+- Bad: a brand is erased at run time, so a cast (`as Ticker`) can still defeat it; review is what remains. Two casts are left in `src`, one inside `parseTicker` and one after the analyst's validation has recorded the error.
 - Bad: test code needs a parse call where it used to write a string literal.
 
 ### Confirmation

@@ -35,6 +35,11 @@ export interface HeartbeatDigest {
    * them here, in every digest while they last (not deduplicated).
    */
   lotsWarnings: string[];
+  /**
+   * Rows of `Positions` and watchlist entries whose ticker does not parse (ADR-0016): skipped, so the run
+   * keeps watching the rest; reported in every digest while they last (not deduplicated).
+   */
+  tickerWarnings: string[];
   tightStops: TightStop[];
   /** The day's armed breakouts (ADR-0013): the only thing actionable without the reasoner. */
   armed: SetupEvaluation[];
@@ -42,12 +47,12 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops and lots warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops and the lots and ticker warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
   return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
 }
 
-/** The digest without what was already sent today. Crossed stops and lots warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops and the lots and ticker warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
@@ -78,6 +83,9 @@ export function renderHeartbeatDigest(
   }
   if (d.lotsWarnings.length > 0) {
     sections.push({ label: t.labels.lots, tickers: [], lines: lotsSection(d, m) });
+  }
+  if (d.tickerWarnings.length > 0) {
+    sections.push({ label: t.labels.tickers, tickers: [], lines: tickersSection(d, m) });
   }
   if (d.tightStops.length > 0) {
     sections.push({
@@ -124,6 +132,11 @@ function breachSection(d: HeartbeatDigest, m: Messages): string[] {
 function lotsSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [...t.lotsIntro, ...d.lotsWarnings.map((w) => `- ${w}`), ...t.lotsOutro];
+}
+
+function tickersSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [...t.tickersIntro, ...d.tickerWarnings.map((w) => `- ${w}`), ...t.tickersOutro];
 }
 
 function tightStopSection(d: HeartbeatDigest, m: Messages): string[] {

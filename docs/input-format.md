@@ -56,9 +56,15 @@ A [ticker](glossary.md#ticker) in any file is read case-insensitively and writte
 and a file is not rewritten just to change the case (a row the engine writes, or an entry it adds,
 carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
 `EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit. A ticker outside that pattern
-(`TC|K`, `M&M.NS`) is refused naming the file: in `Positions`, `watchlist.md`, the universe and the
-screening log the engine does not start; a `Lots` row or a decision-log line that has one is skipped
-with the reason.
+(`TC|K`, `M&M.NS`) is never silently accepted, and a typo there must never switch off the stop alerts
+([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)): only `decision:record` and
+`decisions:evaluate` refuse the file, naming it and the row. Every other reader (the heartbeat,
+`pending:resolve`, the Monday briefing, the weekly screening) skips the row or entry in `Positions`,
+`watchlist.md`, the screening universe or the screening log, a `Lots` row, or a decision-log line
+that has one, warns with the reason, and carries on with the rest; the heartbeat digest repeats the
+warning, naming the row, in every run while it lasts. A skipped `Positions` row is not watched until
+it is fixed. A `benchmark` whose ticker does not parse is dropped from its decision-log line (the
+line is kept), and a `RETIRE` token that is not a ticker is reported and not retired.
 
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
 notation. `—`, `-` or `TBD` mean "no value".

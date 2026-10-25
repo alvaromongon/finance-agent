@@ -11,7 +11,7 @@ import {
   listPendingFiles,
   readPendingSignal,
   deletePendingFile,
-  readWatchlist,
+  readWatchlistSkippingBadTickers,
   readPortfolioIgnoringLots,
 } from "./vault-io.js";
 import type { Signal } from "./types.js";
@@ -45,7 +45,7 @@ export async function showPending(filename: string): Promise<void> {
 async function buildSignal(filename: string): Promise<Signal> {
   const { meta } = await readPendingSignal(filename);
   const [watchlist, portfolio] = await Promise.all([
-    readWatchlist(meta.currency),
+    readWatchlistSkippingBadTickers(meta.currency),
     readPortfolioIgnoringLots(meta.currency),
   ]);
 

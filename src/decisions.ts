@@ -404,7 +404,7 @@ export function validateDecision(raw: unknown): Decision {
 
   if (raw.benchmark != null) {
     const b = raw.benchmark;
-    if (!isObj(b) || "problem" in checkTicker(b.ticker) || typeof b.price !== "number" || !(b.price > 0)) {
+    if (!isObj(b) || typeof b.price !== "number" || !(b.price > 0)) {
       errors.push(`benchmark must be { ticker, price > 0 }; got: ${JSON.stringify(b)}`);
     }
   }
@@ -496,11 +496,18 @@ export function validateDecision(raw: unknown): Decision {
   }
   // Canonical tickers: a decision written in another case reads as its upper-case value.
   const decision = raw as unknown as Decision;
+  const { benchmark, ...rest } = decision;
+  // A benchmark whose ticker does not parse is dropped, not the whole line (it is a side measurement, and
+  // the line was accepted before the ticker became a parsed value): the decision keeps its other fields.
+  const benchmarkTicker = benchmark ? checkTicker(benchmark.ticker) : undefined;
+  if (benchmarkTicker && "problem" in benchmarkTicker) {
+    console.warn(`[decisions] WARNING: decision ${decision.id}: benchmark dropped: ${benchmarkTicker.problem}`);
+  }
   return {
-    ...decision,
+    ...rest,
     ...(decision.ticker != null ? { ticker: parseTicker(decision.ticker) } : {}),
-    ...(decision.benchmark
-      ? { benchmark: { ...decision.benchmark, ticker: parseTicker(decision.benchmark.ticker) } }
+    ...(benchmark && benchmarkTicker && "ticker" in benchmarkTicker
+      ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
       : {}),
   };
 }

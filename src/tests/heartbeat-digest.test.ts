@@ -73,6 +73,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   minAtr: 2,
   breaches: [],
   lotsWarnings: [],
+  tickerWarnings: [],
   tightStops: [],
   armed: [],
   escalated: [],

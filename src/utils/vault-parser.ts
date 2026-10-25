@@ -3,7 +3,7 @@
 import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownNumber } from "./parse.js";
 import { DECISION_ORIGINS } from "../decisions.js";
-import { checkTicker, type Ticker } from "../ticker.js";
+import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, WatchlistEntry } from "../types.js";
 import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
 
@@ -142,17 +142,16 @@ export interface ScreeningLogRow {
   nextReview: string;
 }
 
-function screeningTicker(raw: string, date: string): Ticker {
-  const checked = checkTicker(raw);
-  if ("problem" in checked) throw new Error(`screening-log.md: row ${raw} of ${date}: ${checked.problem}`);
-  return checked.ticker;
-}
+/** What a reader that skips a row it cannot read does with the reason: warns (ADR-0016). */
+const warnSkipped = (message: string): void => console.warn(`[vault-parser] WARNING: ${message}`);
 
 /**
  * Parses the screening-log.md table from its raw content.
- * Skips the header row (first row with "Ticker" as its first cell).
+ * Skips the header row (first row with "Ticker" as its first cell). A row whose ticker does not parse
+ * is skipped and reported to `onSkip` (ADR-0016): the log is append-only history, and one old bad row
+ * must not stop the weekly run.
  */
-export function parseScreeningLog(md: string): ScreeningLogRow[] {
+export function parseScreeningLog(md: string, onSkip: (message: string) => void = warnSkipped): ScreeningLogRow[] {
   assertSchemaVersion(md, "screening-log.md");
   const rows = parseTableRows(md);
   return rows
@@ -167,15 +166,24 @@ export function parseScreeningLog(md: string): ScreeningLogRow[] {
       }
       return cells;
     })
-    .map((cells) => ({
-      ticker: screeningTicker(cells[0], cells[3]),
-      name: cells[1],
-      index: cells[2],
-      date: cells[3],
-      result: cells[4] as ScreeningResultValue,
-      summary: cells[5],
-      nextReview: cells[6],
-    }));
+    .flatMap((cells) => {
+      const checked = checkTicker(cells[0]);
+      if ("problem" in checked) {
+        onSkip(`screening-log.md: row ${JSON.stringify(cells[0])} of ${cells[3]} skipped: ${checked.problem}`);
+        return [];
+      }
+      return [
+        {
+          ticker: checked.ticker,
+          name: cells[1],
+          index: cells[2],
+          date: cells[3],
+          result: cells[4] as ScreeningResultValue,
+          summary: cells[5],
+          nextReview: cells[6],
+        },
+      ];
+    });
 }
 
 /**
@@ -188,11 +196,15 @@ export function extractRetireList(reviewText: string): Ticker[] {
   // and returned "PLAN_SUMMARY: …" as if it were a ticker to remove.
   const match = /^##\s+AUTOMATED_ACTIONS\s*\nRETIRE:[ \t]*(.*)$/m.exec(normalizeEol(reviewText));
   const line = match?.[1]?.trim() ?? "";
-  // What does not parse as a ticker is not one to retire.
+  // What does not parse as a ticker cannot be retired: it is reported, not dropped silently.
   return line
     ? line.split(",").flatMap((t) => {
         const checked = checkTicker(t);
-        return "ticker" in checked ? [checked.ticker] : [];
+        if ("ticker" in checked) return [checked.ticker];
+        // A trailing comma leaves an empty token: nothing was asked.
+        if (t.trim() !== "")
+          warnSkipped(`RETIRE: ${JSON.stringify(t.trim())} is not a ticker and was not retired: ${checked.problem}`);
+        return [];
       })
     : [];
 }
@@ -211,21 +223,21 @@ export function extractPlanSummary(reviewText: string): string {
 
 /**
  * The entries of the watchlist.md YAML block, with their tickers parsed (a ticker written in lower case
- * reads as its upper-case value). An entry whose ticker does not parse throws, naming it.
+ * reads as its upper-case value). An entry whose ticker does not parse throws, naming it (the readers
+ * that refuse, `decision:record`), or, given `onSkip`, is skipped and reported to it (ADR-0016).
  */
-export function parseWatchlistBlock(block: string): WatchlistEntry[] {
+export function parseWatchlistBlock(block: string, onSkip?: (message: string) => void): WatchlistEntry[] {
   const parsed = yaml.load(block) as { watchlist?: WatchlistEntry[] } | undefined;
-  return (parsed?.watchlist ?? []).map((entry, i) => {
+  return (parsed?.watchlist ?? []).flatMap((entry, i) => {
     const checked = checkTicker(entry?.ticker);
-    if ("problem" in checked) throw new Error(`watchlist.md: entry ${i + 1}: ${checked.problem}`);
-    return { ...entry, ticker: checked.ticker };
+    if ("problem" in checked) {
+      const message = `watchlist.md: entry ${i + 1}: ${checked.problem}`;
+      if (!onSkip) throw new Error(message);
+      onSkip(`${message} (entry skipped)`);
+      return [];
+    }
+    return [{ ...entry, ticker: checked.ticker }];
   });
-}
-
-/** True if a raw watchlist entry names the ticker, whatever the case it was written in. */
-function namesTicker(entry: { ticker?: unknown }, ticker: Ticker): boolean {
-  const checked = checkTicker(entry?.ticker);
-  return "ticker" in checked && checked.ticker === ticker;
 }
 
 /**
@@ -238,7 +250,7 @@ export function applyAddWatchlistEntry(md: string, entry: import("../types.js").
   const block = extractYamlBlock(md);
   const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
   const watchlist = parsed?.watchlist ?? [];
-  if (watchlist.some((e) => namesTicker(e, entry.ticker))) return md;
+  if (watchlist.some((e) => namesTicker(e?.ticker, entry.ticker))) return md;
   watchlist.push(entry);
   const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
   return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
@@ -252,7 +264,7 @@ export function applyRetireWatchlistEntry(md: string, ticker: Ticker): string {
   md = normalizeEol(md);
   const block = extractYamlBlock(md);
   const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
-  const watchlist = (parsed?.watchlist ?? []).filter((e) => !namesTicker(e, ticker));
+  const watchlist = (parsed?.watchlist ?? []).filter((e) => !namesTicker(e?.ticker, ticker));
   const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
   return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
 }
@@ -312,9 +324,10 @@ export function isPositionPlaceholder(ticker: string): boolean {
 /**
  * Parses the rows of the `## <CURRENCY> — Positions` table (columns in
  * POSITION_COLUMNS, in any order). Skips placeholder rows ("—") and ignores
- * rows without a numeric volume/average price.
+ * rows without a numeric volume/average price. A row whose ticker does not parse throws, naming it (the
+ * readers that refuse), or, given `onSkip`, is skipped and reported to it (ADR-0016).
  */
-export function parsePositions(md: string, currency: Currency): Position[] {
+export function parsePositions(md: string, currency: Currency, onSkip?: (message: string) => void): Position[] {
   const [header, ...rows] = tableRows(md, currency, "Positions");
   if (!header) return [];
   const col = positionColumns(header, currency);
@@ -329,8 +342,12 @@ export function parsePositions(md: string, currency: Currency): Position[] {
     if (volume == null || avgPrice == null) continue;
 
     const checked = checkTicker(rawTicker);
-    if ("problem" in checked)
-      throw new Error(`## ${currency} — Positions: Ticker ${JSON.stringify(rawTicker)}: ${checked.problem}`);
+    if ("problem" in checked) {
+      const message = `## ${currency} — Positions: Ticker ${JSON.stringify(rawTicker)}: ${checked.problem}`;
+      if (!onSkip) throw new Error(message);
+      onSkip(`${message} (row skipped: it is not watched until fixed)`);
+      continue;
+    }
     positions.push({
       ticker: checked.ticker,
       currency,

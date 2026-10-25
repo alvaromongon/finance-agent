@@ -212,6 +212,23 @@ describe("a ticker written in another case is the same ticker", () => {
     await assert.rejects(() => vaultIo.readPortfolio("USD"), /## USD — Positions: Ticker "TC;K"/);
   });
 
+  it("decision:record refuses a Positions row or a watchlist entry that is not a ticker, writing nothing", async () => {
+    await setUp([TCK_ROW, "| M&M.NS | 1 | 5 | 5 | 0 | 4 |"], [TCK_LOT]);
+    const entry = { type: "entry", ticker: "tck", currency: "USD", price: 110, units: 1, stop: 90 };
+    await assert.rejects(() => record(entry), /## USD — Positions: Ticker "M&M\.NS"/);
+
+    await setUp([TCK_ROW], [TCK_LOT]);
+    await writeFile(path("watchlist.md"), WATCHLIST_MD.replace("ticker: tck", 'ticker: "M&M.NS"'), "utf8");
+    await assert.rejects(() => record(entry), /watchlist\.md: entry 1/);
+    assert.equal((await read("portfolio.md")).includes("| TCK | 3 |"), false, "nothing was recorded");
+  });
+
+  it("decisions:evaluate reads Positions strictly: a row that is not a ticker is refused", async () => {
+    await setUp([TCK_ROW, "| M&M.NS | 1 | 5 | 5 | 0 | 4 |"], [TCK_LOT]);
+    const { loadEvaluationReport } = await import("../decisions-evaluation-run.js");
+    await assert.rejects(() => loadEvaluationReport("[test]"), /## USD — Positions: Ticker "M&M\.NS"/);
+  });
+
   it("a Lots row that is not a ticker is skipped with its reason", async () => {
     await writeFile(path("portfolio.md"), portfolioMd([], [{ ticker: "TC;K", units: 1, price: 10 }]), "utf8");
     const portfolio = await vaultIo.readPortfolio("USD");

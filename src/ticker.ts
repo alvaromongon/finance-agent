@@ -36,6 +36,12 @@ export function checkTicker(raw: unknown): { ticker: Ticker } | { problem: strin
   return problem === undefined ? { ticker: parseTicker(raw) } : { problem };
 }
 
+/** True if a raw value (a cell, a YAML field) names the ticker, whatever the case it was written in. */
+export function namesTicker(raw: unknown, ticker: Ticker): boolean {
+  const checked = checkTicker(raw);
+  return "ticker" in checked && checked.ticker === ticker;
+}
+
 /** The ticker as a file-name stem, the way the engine names logs and pending files: lower case, dots kept. */
 export function tickerFileStem(ticker: Ticker): string {
   return ticker.toLowerCase();

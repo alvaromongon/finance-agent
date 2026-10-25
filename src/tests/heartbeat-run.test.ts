@@ -182,6 +182,53 @@ describe("runHeartbeat", () => {
     assert.doesNotMatch(emails[0].subject, /pendiente de análisis/);
   });
 
+  describe("a ticker that does not parse (ADR-0016): the row is skipped, the rest keeps working", () => {
+    const BAD_ROW = "| M&M.NS | 4 | 100 | 100 | 0 | 90 |";
+
+    it("a Positions row: the other positions are priced, the crossed stop goes out, the digest warns naming the row", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}\n${BAD_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) => w.includes("M&M.NS")),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is still detected");
+      assert.match(email.subject, /ticker que no se lee/);
+      assert.match(email.body, /## USD — Positions: Ticker "M&M\.NS"/);
+      assert.match(await readFile(join(vaultDir, "portfolio.md"), "utf8"), /^\| CAT \| 1 \| 218\.00 \| 210,77 /m);
+    });
+
+    it("a watchlist entry of another currency: the USD run is not stopped and the digest names the entry", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const list = await readFile(join(vaultDir, "watchlist.md"), "utf8");
+      await writeFile(
+        join(vaultDir, "watchlist.md"),
+        list.replace(
+          "\n```\n",
+          '\n  - ticker: "M&M.NS"\n    name: Mahindra\n    market: NSE\n    currency: EUR\n    horizon: medium\n    thesis: "x"\n```\n',
+        ),
+        "utf8",
+      );
+      await heartbeat();
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(email.body, /watchlist\.md: entry 3.*M&M\.NS/);
+    });
+
+    it("the warning repeats in every run while the row lasts", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${BAD_ROW}`, [MSFT_LOT]);
+      await heartbeat();
+      await heartbeat();
+
+      const emails = await outbox();
+      assert.equal(emails.length, 2);
+      for (const email of emails) assert.match(email.body, /M&M\.NS/);
+    });
+  });
+
   describe("Lots that do not match (ADR-0015): it keeps watching and warns loudly", () => {
     it("Volume that is not the sum of the units of its lots: the crossed stop still goes out, with the warning", async () => {
       // CAT trades below its stop; its row says 1 unit and its lot 3.

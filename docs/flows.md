@@ -34,6 +34,11 @@ parentheses so a code comment that cites it can be found here.
      or `Positions` section, or a table of them that does not read, still stops the run.
      The same tolerance applies to `pending:resolve`, the Monday briefing and the weekly screening,
      which do not use the lots; only `decision:record` and `decisions:evaluate` refuse a broken `Lots`.
+     A ticker that does not parse (`M&M.NS`, a typo) is handled the same way: the `Positions` row or
+     watchlist entry is skipped, the other positions are still priced and their stops detected, and the
+     digest carries a warning naming the row in every run while it lasts. `pending:resolve`, the Monday
+     briefing and the weekly screening skip such a row, entry or screening-log row with a warning and
+     carry on; only `decision:record` and `decisions:evaluate` refuse.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,

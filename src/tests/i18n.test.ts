@@ -186,6 +186,7 @@ describe("English renders", () => {
       syncedAt: "2026-09-02T14:10:00Z",
       minAtr: 2,
       lotsWarnings: [],
+      tickerWarnings: [],
       breaches: detectStopBreaches(
         [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
         new Map([["CAT", 210.77]]),
@@ -235,6 +236,7 @@ describe("English heartbeat digest, lots section", () => {
         syncedAt: "2026-09-02T14:10:00Z",
         minAtr: 2,
         lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"],
+        tickerWarnings: [],
         breaches: [],
         tightStops: [],
         armed: [],

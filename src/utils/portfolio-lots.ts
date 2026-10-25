@@ -19,7 +19,7 @@ import {
   LotsTableError,
   type LotColumn,
 } from "./vault-parser.js";
-import { checkTicker, type Ticker } from "../ticker.js";
+import { namesTicker, type Ticker } from "../ticker.js";
 
 /** Decimals of an exit's amount: its exact share of the sale amount, with the float noise cleared. */
 const AMOUNT_DECIMALS = 8;
@@ -261,8 +261,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     const kept = rows.filter((cells) => !isPositionPlaceholder((cells[col.ticker] ?? "").trim()));
     // The row names the ticker in any case; the one the engine writes carries the canonical value.
     const at = kept.flatMap((cells, i) => {
-      const checked = checkTicker((cells[col.ticker] ?? "").trim());
-      return "ticker" in checked && checked.ticker === change.ticker ? [i] : [];
+      return namesTicker(cells[col.ticker], change.ticker) ? [i] : [];
     });
     if (at.length > 1) {
       throw new Error(

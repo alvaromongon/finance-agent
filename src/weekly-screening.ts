@@ -36,7 +36,7 @@ import {
   readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
-  readWatchlist,
+  readWatchlistSkippingBadTickers,
   readWatchlistAddedOn,
   retireWatchlistEntry,
   readAllWatchlistTickers,
@@ -180,16 +180,24 @@ export async function readUniverse(): Promise<Universe> {
   const parsed = yaml.load(match[1]) as { universe?: Universe };
   const u = parsed?.universe;
   if (!u?.eur || !u?.usd) throw new Error("Invalid universe structure: eur or usd missing");
-  const pools = { ...u, commodities: u.commodities ?? [] };
-  // Tickers parsed: one written in lower case reads as its upper-case value.
-  for (const pool of Object.keys(pools) as UniversePool[]) {
-    pools[pool] = pools[pool].map((item, i) => {
-      const checked = checkTicker(item?.ticker);
-      if ("problem" in checked) {
-        throw new Error(`screening-universe.md: ${pool} entry ${i + 1}: ${checked.problem}`);
-      }
-      return { ...item, ticker: checked.ticker };
-    });
+  // Tickers parsed: one written in lower case reads as its upper-case value; an entry that does not
+  // parse is skipped with a warning (ADR-0016). Only the known pools are read.
+  const rawPools: Record<UniversePool, unknown> = { ...u, commodities: u.commodities ?? [] };
+  const pools = {} as Universe;
+  for (const pool of UNIVERSE_POOLS) {
+    const entries = rawPools[pool];
+    pools[pool] = Array.isArray(entries)
+      ? entries.flatMap((item: UniverseTicker, i): UniverseTicker[] => {
+          const checked = checkTicker(item?.ticker);
+          if ("problem" in checked) {
+            console.warn(
+              `[screening] WARNING: screening-universe.md: ${pool} entry ${i + 1} skipped: ${checked.problem}`,
+            );
+            return [];
+          }
+          return [{ ...item, ticker: checked.ticker }];
+        })
+      : [];
   }
   return pools;
 }
@@ -300,7 +308,10 @@ async function applyMechanicalExits(
   portfolios: Record<Currency, PortfolioSnapshot>,
   today: string,
 ): Promise<WatchlistExit[]> {
-  const watchlist = [...(await readWatchlist("EUR")), ...(await readWatchlist("USD"))];
+  const watchlist = [
+    ...(await readWatchlistSkippingBadTickers("EUR")),
+    ...(await readWatchlistSkippingBadTickers("USD")),
+  ];
   const exits = mechanicalExits({
     watchlist,
     held: new Set(CURRENCIES.flatMap((c) => portfolios[c].positions.map((p) => p.ticker))),
