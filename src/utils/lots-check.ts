@@ -8,14 +8,12 @@
 import type { Decision } from "../decisions.js";
 import type { Lot, PortfolioSnapshot, Position } from "../types.js";
 import type { Ticker } from "../ticker.js";
+import { sameCents, unitsWorthHalfACent } from "../money.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import { portfolioWhere } from "./vault-parser.js";
 
 /** Prices and stops are copied from the entry; below this the difference is formatting, not a mismatch. */
 const PRICE_TOLERANCE = 1e-6;
-
-/** Costs are money written to the cent: a difference of less than half a cent is the same amount. */
-const COSTS_TOLERANCE = 0.005;
 
 const where = (portfolio: PortfolioSnapshot): string => portfolioWhere(portfolio.currency);
 
@@ -169,14 +167,18 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
   // it) only its amount, rounded to the cent, so its units are known to half a cent of price.
   const logUnits = entry.units ?? (entry.amount != null && entry.price ? entry.amount / entry.price : null);
   const unitsTolerance =
-    entry.units != null ? UNITS_TOLERANCE : entry.price ? 0.005 / entry.price + UNITS_TOLERANCE : 0;
+    entry.units != null ? UNITS_TOLERANCE : entry.price ? unitsWorthHalfACent(entry.price) + UNITS_TOLERANCE : 0;
   if (!isSplitOf(lot, entry, logUnits, unitsTolerance)) {
     num("Entry price", lot.entryPrice, entry.price, PRICE_TOLERANCE);
     num("Entry units", lot.entryUnits, logUnits, unitsTolerance);
     num("Initial stop", lot.initialStop, entry.stop_initial, PRICE_TOLERANCE);
   }
   // A split does not touch the costs paid; they are written to the cent, so half a cent is the same value.
-  num("Entry costs", lot.entryCosts, entry.costs, COSTS_TOLERANCE);
+  const lotCosts = lot.entryCosts ?? null;
+  const logCosts = entry.costs ?? null;
+  if (lotCosts === null || logCosts === null ? lotCosts !== logCosts : !sameCents(lotCosts, logCosts)) {
+    differences.push(`Entry costs ${lotCosts ?? "—"} differs from ${logCosts ?? "—"}`);
+  }
   text("Date", lot.date, entry.date);
   text("Origin", lot.origin, entry.origin);
   text("Rules version", lot.rulesVersion, entry.rules_version);

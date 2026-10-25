@@ -3,6 +3,7 @@
 // computed two different ways. The cutoff table goes first and under a fixed
 // heading, because monday-briefing:prepare extracts it for the prompt.
 import { messages, type Messages } from "../i18n/index.js";
+import { formatMoney } from "../money.js";
 import { STOP_ATR_BY_HORIZON } from "./atr-stop.js";
 import {
   MIN_SAMPLE,
@@ -30,8 +31,9 @@ export function fmtPct(pct: number): string {
 }
 
 const fmtR = (r: number) => `${r >= 0 ? "+" : ""}${r.toFixed(2)}R`;
-const fmtMoney = (n: number) => n.toFixed(2);
-const fmtSigned = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+/** A price, stop or target: not money, two decimals. */
+const fmtPrice = (n: number) => n.toFixed(2);
+const fmtSigned = (n: number) => `${n >= 0 ? "+" : ""}${formatMoney(n)}`;
 
 function opt<T>(value: T | null | undefined, fmt: (v: T) => string): string {
   return value == null ? "—" : fmt(value);
@@ -50,7 +52,7 @@ function siloWarningLine(w: SiloWarning, m: Messages): string {
   const t = m.evaluation.siloWarnings;
   switch (w.kind) {
     case "negativeCash":
-      return t.negativeCash(w.currency, w.start, fmtMoney(w.cash));
+      return t.negativeCash(w.currency, w.start, formatMoney(w.cash));
     case "oversold":
       return t.oversold(w.currency, w.ticker, w.units.toFixed(4), w.start);
     case "missingCloses":
@@ -138,8 +140,8 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
     board.totalEur == null
       ? t.totalNone
       : t.total(
-          fmtMoney(board.totalEur.real),
-          fmtMoney(board.totalEur.shadow),
+          formatMoney(board.totalEur.real),
+          formatMoney(board.totalEur.shadow),
           fmtSigned(board.totalEur.real - board.totalEur.shadow),
         );
 
@@ -153,7 +155,7 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
     ...t.siloHeader,
     ...board.silos.map(
       (s) =>
-        `| ${s.currency} | ${s.reference} | ${s.start} | ${fmtMoney(s.real)} | ${opt(s.shadow, fmtMoney)} | ` +
+        `| ${s.currency} | ${s.reference} | ${s.start} | ${formatMoney(s.real)} | ${opt(s.shadow, formatMoney)} | ` +
         `${s.shadow == null ? "—" : fmtSigned(s.real - s.shadow)} | ${opt(s.realReturnPct, fmtPct)} | ${opt(s.shadowReturnPct, fmtPct)} | ` +
         `${s.drawdown.currentPct.toFixed(1)}% | ${s.drawdown.maxPct.toFixed(1)}% |`,
     ),
@@ -214,7 +216,7 @@ function tradesSection(trades: readonly ClosedTrade[], m: Messages): string[] {
     ...trades.map(
       (tr) =>
         `| ${tr.entryDate} | ${tr.exitDate} | ${tr.ticker} | ${tr.currency} | ${tr.origin}${tr.counts ? " ✓" : ""} | ` +
-        `${tr.rulesVersion} | ${tr.ruleViolations.join(", ") || "—"} | ${opt(tr.stop, fmtMoney)} | ${opt(tr.rNet, fmtR)} |`,
+        `${tr.rulesVersion} | ${tr.ruleViolations.join(", ") || "—"} | ${opt(tr.stop, fmtPrice)} | ${opt(tr.rNet, fmtR)} |`,
     ),
     "",
     t.countsLegend,
@@ -294,9 +296,9 @@ function detailSection(evals: readonly DecisionEvaluation[], m: Messages): strin
     const d = e.decision;
     const x = e.excursion;
     const horizonCells = SESSION_HORIZONS.map((h) => `${returnCell(e, h, m)} | ${excessCell(e, h)}`).join(" | ");
-    const plan = e.plan ? `${fmtMoney(e.plan.stop)} / ${fmtMoney(e.plan.target)}${e.plan.inferred ? " †" : ""}` : "—";
+    const plan = e.plan ? `${fmtPrice(e.plan.stop)} / ${fmtPrice(e.plan.target)}${e.plan.inferred ? " †" : ""}` : "—";
     lines.push(
-      `| ${d.date} | ${d.ticker} | ${d.type} | ${d.origin} | ${d.conviction ?? "—"} | ${d.rules_version} | ${opt(d.price, fmtMoney)} | ` +
+      `| ${d.date} | ${d.ticker} | ${d.type} | ${d.origin} | ${d.conviction ?? "—"} | ${d.rules_version} | ${opt(d.price, fmtPrice)} | ` +
         `${horizonCells} | ${plan} | ${opt(x?.mfeR, fmtR)} | ${opt(x?.maeR, fmtR)} | ${firstCell(e, m)} | ${opt(x?.resultR, fmtR)} |`,
     );
   }

@@ -7,7 +7,6 @@
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
 import { UNITS_TOLERANCE } from "./units.js";
-import { round2 } from "./round.js";
 import { parsePortfolio, serializePortfolio, setTableRows } from "./portfolio-codec.js";
 import {
   isPositionPlaceholder,
@@ -20,9 +19,16 @@ import {
   type LotColumn,
 } from "./vault-parser.js";
 import { namesTicker, type Ticker } from "../ticker.js";
-
-/** Decimals of an exit's amount: its exact share of the sale amount, with the float noise cleared. */
-const AMOUNT_DECIMALS = 8;
+import {
+  money,
+  shareExactAmount,
+  shareMoney,
+  subtractMoney,
+  sumMoney,
+  unitsWorthHalfACent,
+  ZERO,
+  type Money,
+} from "../money.js";
 
 /** The lot an entry opens: all the units it bought, with the entry's own data as its snapshot. */
 export function lotOfEntry(entry: Decision, units: number): Lot {
@@ -41,39 +47,6 @@ export function lotOfEntry(entry: Decision, units: number): Lot {
   };
 }
 
-/**
- * Shares `total` over `weights` in whole units of the last of `decimals` decimals (cents for 2), by the
- * largest-remainder method: each share is its exact part rounded down, and the units left over go one
- * each to the largest remainders (the later on a tie, as the remainder used to go to the last). So no share is ever negative (all are <= 0 for
- * a negative total) and the shares add up exactly to `total` rounded to that unit. Rounding every share
- * and giving the last `total - sum` can leave the last negative.
- */
-export function allocateByWeight(total: number, weights: readonly number[], decimals: number): number[] {
-  const unit = 10 ** decimals;
-  const sign = total < 0 ? -1 : 1;
-  const cents = Math.round(Math.abs(total) * unit);
-  const weightSum = weights.reduce((a, b) => a + b, 0);
-  const exact = weights.map((w) => (cents * w) / weightSum);
-  const shares = exact.map(Math.floor);
-  const byRemainder = exact
-    .map((x, i) => ({ i, remainder: x - shares[i] }))
-    .sort((a, b) => b.remainder - a.remainder || b.i - a.i);
-  let left = cents - shares.reduce((a, b) => a + b, 0);
-  // Float noise can leave one unit too many (never more): take it back from the smallest remainders.
-  for (let k = 0; left !== 0 && k < 2 * byRemainder.length; k++) {
-    const { i } =
-      left > 0 ? byRemainder[k % byRemainder.length] : byRemainder[byRemainder.length - 1 - (k % byRemainder.length)];
-    if (left > 0) {
-      shares[i]++;
-      left--;
-    } else if (shares[i] > 0) {
-      shares[i]--;
-      left++;
-    }
-  }
-  return shares.map((n) => (n === 0 ? 0 : (sign * n) / unit));
-}
-
 // ─── Sale: first in, first out ────────────────────────────────────────────────
 
 export interface SalePlanInput {
@@ -90,12 +63,12 @@ export interface SalePlanInput {
   /** Amount of the whole sale, in the silo currency. */
   amount: number;
   /** Costs of the whole sale; absent if none were given. */
-  costs?: number;
+  costs?: Money;
   /**
    * Realized result of the whole sale if the owner gave it: each lot keeps its own computed result and
    * the difference to the owner's total is shared by units. Otherwise each lot's own is computed.
    */
-  pnl?: number;
+  pnl?: Money;
 }
 
 /** What one lot gives to a sale: one `exit` line. */
@@ -106,10 +79,10 @@ export interface SaleShare {
   unitsLeft: number;
   /** This exit's share of the sale amount; the shares add up to it. */
   amount: number;
-  costs: number | undefined;
-  pnl: number;
+  costs: Money | undefined;
+  pnl: Money;
   /** This exit's share of the lot's entry costs; absent if the lot has none. */
-  entryCosts: number | undefined;
+  entryCosts: Money | undefined;
 }
 
 /**
@@ -117,7 +90,7 @@ export interface SaleShare {
  * table) until `sale.units` are sold. The amount and the costs of the sale are shared across the lots
  * pro rata to the units; each exit's result is its lot's own (from its entry price), plus, when the owner
  * gave the result of the whole sale, its units' share of the difference to the computed sum. The exits
- * add up to the sale (`allocateByWeight`: never a negative share).
+ * add up to the sale (`shareMoney`: never a negative share).
  * The amount is shared exactly (not to the cent: a lot of a few units of a low-priced asset would get
  * 0.00); the costs and the result, which are settled money, go to the cent.
  * A lot's entry costs go pro rata too, and the exit that uses the lot up takes what is left of them
@@ -127,7 +100,7 @@ export interface SaleShare {
 export function planSale(
   lots: readonly Lot[],
   sale: SalePlanInput,
-  priorEntryCosts: ReadonlyMap<string, number>,
+  priorEntryCosts: ReadonlyMap<string, Money>,
 ): SaleShare[] {
   const ordered = lots
     .map((lot, index) => ({ lot, index }))
@@ -140,7 +113,7 @@ export function planSale(
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
   // and that much under leaves nothing worth keeping: the lot is used up (a position of dust is not one).
   // Units the owner gave are exact: on a low-priced asset half a cent of price is several units.
-  const tolerance = (sale.unitsFromAmount ? 0.005 / sale.price : 0) + UNITS_TOLERANCE;
+  const tolerance = (sale.unitsFromAmount ? unitsWorthHalfACent(sale.price) : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
     throw new Error(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
   }
@@ -156,37 +129,36 @@ export function planSale(
     remaining -= unitsSold;
   }
 
-  // `decimals` is the precision of each share: the cent for money that is settled (costs, result), 8 for
-  // the amount, which is the exact share of the sale amount so that a lot of a few units of a low-priced
-  // asset does not get 0.00 (the 8 decimals only clear float noise, as the file's number format does).
+  // The costs and the result are settled money, shared in whole cents. The amount is the exact share of
+  // the sale amount (`shareExactAmount`), so that a lot of a few units of a low-priced asset does not get
+  // 0.00 (the 8 decimals only clear float noise, as the file's number format does).
   const weights = taken.map((t) => t.unitsSold);
-  const split = (total: number | undefined, decimals = 2): (number | undefined)[] =>
-    total === undefined ? taken.map(() => undefined) : allocateByWeight(total, weights, decimals);
-  const amounts = split(sale.amount, AMOUNT_DECIMALS);
-  const costs = split(sale.costs);
+  const shareOf = (total: Money | undefined): (Money | undefined)[] =>
+    total === undefined ? taken.map(() => undefined) : shareMoney(total, weights);
+  const amounts = shareExactAmount(sale.amount, weights);
+  const costs = shareOf(sale.costs);
   // Each exit keeps its lot's own result (from the entry price). A result the owner gave for the whole
   // sale only moves them by the difference to the computed sum (costs, FX), shared by units in whole cents,
   // so a losing lot stays a loss when the sale as a whole is a gain.
-  const computed = taken.map((t) => round2((sale.price - t.lot.entryPrice) * t.unitsSold));
-  const difference =
-    sale.pnl === undefined ? undefined : round2(sale.pnl - computed.reduce((sum, pnl) => sum + pnl, 0));
-  const adjustments = split(difference);
+  const computed = taken.map((t) => money((sale.price - t.lot.entryPrice) * t.unitsSold));
+  const difference = sale.pnl === undefined ? undefined : subtractMoney(sale.pnl, sumMoney(computed));
+  const adjustments = shareOf(difference);
 
   return taken.map((t, i) => ({
     ...t,
-    amount: amounts[i]!,
+    amount: amounts[i],
     costs: costs[i],
-    pnl: round2(computed[i] + (adjustments[i] ?? 0)),
-    entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? 0),
+    pnl: money(computed[i] + (adjustments[i] ?? 0)),
+    entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? ZERO),
   }));
 }
 
-function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, taken: number): number | undefined {
+function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, taken: Money): Money | undefined {
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
-  const left = Math.max(0, total - taken);
-  if (t.unitsLeft === 0) return round2(left);
-  return Math.min(round2((total * t.unitsSold) / t.lot.entryUnits), round2(left));
+  const left = money(Math.max(0, total - taken));
+  if (t.unitsLeft === 0) return left;
+  return money(Math.min(money((total * t.unitsSold) / t.lot.entryUnits), left));
 }
 
 // ─── portfolio.md ─────────────────────────────────────────────────────────────

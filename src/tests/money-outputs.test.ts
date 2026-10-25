@@ -4,7 +4,7 @@
  * run against it unchanged. Temporary vault, fake provider, no network.
  * Same pattern as pending.test.ts: VAULT_PROJECT_DIR before the first import.
  */
-import { describe, it, before, after, beforeEach, mock } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { lotsSection } from "./fixtures/lots.js";
-import { parseTicker as tk } from "../ticker.js";
 
 const TODAY = "2026-09-14";
 
@@ -70,7 +69,37 @@ const fakeProvider = {
   getHistorical: async () => bars(),
 };
 
-const EXPECTED: unknown = null;
+const EXPECTED: unknown = {
+  out: [
+    [["entry", 100, 1.07, null, null, 3, null, 33.333]],
+    [["entry", 287.7, 2.33, null, null, 7, null, 41.1]],
+    [["entry", 100.01, null, null, null, 8.0008, null, 12.5]],
+    [
+      ["exit", 150, 0.1, 52.81, 1.07, 3, 0, 50],
+      ["exit", 350, 0.24, 68.85, 2.33, 7, 0, 50],
+      ["exit", 50, 0.03, 38.43, null, 1, 7.0008, 50],
+    ],
+    [["exit", 160.37, null, 121.06, null, 3.1445098039215686, 3.8562901960784313, 51]],
+    [["deposit", 123.45, null, null, null, null, null, null]],
+    [["fx_conversion", 100, 0.8, null, null, null, null, null]],
+  ],
+  logNumbers: [
+    ["entry", 100, 1.07, null, null, 3, null, 33.333],
+    ["entry", 287.7, 2.33, null, null, 7, null, 41.1],
+    ["entry", 100.01, null, null, null, 8.0008, null, 12.5],
+    ["exit", 150, 0.1, 52.81, 1.07, 3, 0, 50],
+    ["exit", 350, 0.24, 68.85, 2.33, 7, 0, 50],
+    ["exit", 50, 0.03, 38.43, null, 1, 7.0008, 50],
+    ["exit", 160.37, null, 121.06, null, 3.1445098039215686, 3.8562901960784313, 51],
+    ["deposit", 123.45, null, null, null, null, null, null],
+    ["fx_conversion", 100, 0.8, null, null, null, null, null],
+  ],
+  cash: [
+    "| Available cash | 1000.00 |",
+    "| Available cash | 1000.00 |",
+    "| ADBE | 3.8562902 | 12.50 | 33.333 | 0.00 | 30.00 |",
+  ],
+};
 
 const FIELDS = ["type", "amount", "costs", "pnl", "entry_costs", "units", "lot_units_left", "price"] as const;
 
@@ -124,7 +153,9 @@ describe("money numbers written by decision:record (pinned before #79)", () => {
       .split("\n")
       .map((l) => JSON.parse(l));
     const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
-    const cash = portfolio.split("\n").filter((l) => /Available cash|Total cash|ADBE/.test(l));
+    const cash = portfolio
+      .split("\n")
+      .filter((l) => /Available cash|Total cash|^\| ADBE \| [0-9.]+ \| [0-9.]+ \|/.test(l));
     assert.deepEqual({ out, logNumbers: nums(log), cash }, EXPECTED);
   });
 });

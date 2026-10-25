@@ -4,6 +4,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { config } from "../config.js";
@@ -41,11 +42,19 @@ const input = (overrides: Partial<SizingInput> = {}): SizingInput => ({
 describe("siloValue", () => {
   const portfolio: PortfolioSnapshot = {
     currency: "USD",
-    cash: 500,
+    cash: money(500),
     lots: [],
     syncedAt: "2026-09-14",
     positions: [
-      { ticker: tk("ADBE"), currency: "USD", volume: 2, avgPrice: 480, currentPrice: 500, pl: 40, stopLoss: 450 },
+      {
+        ticker: tk("ADBE"),
+        currency: "USD",
+        volume: 2,
+        avgPrice: 480,
+        currentPrice: 500,
+        pl: money(40),
+        stopLoss: 450,
+      },
     ],
   };
 
@@ -55,7 +64,7 @@ describe("siloValue", () => {
   });
 
   it("counts cash held by pending orders: uses total cash if present", () => {
-    assert.equal(siloValue({ ...portfolio, cash: 28, totalCash: 595 }), 1595);
+    assert.equal(siloValue({ ...portfolio, cash: money(28), totalCash: money(595) }), 1595);
   });
 });
 
@@ -221,7 +230,7 @@ describe("evaluateRecommendation", () => {
       volume: 1,
       avgPrice: 90,
       currentPrice: 100,
-      pl: 10,
+      pl: money(10),
       stopLoss: 85,
     };
     const sell = evaluateRecommendation(
@@ -260,7 +269,7 @@ describe("evaluateRecommendation", () => {
       volume: 1,
       avgPrice: 90,
       currentPrice: 100,
-      pl: 10,
+      pl: money(10),
       stopLoss: 80,
     };
     const sellEv = evaluateRecommendation(

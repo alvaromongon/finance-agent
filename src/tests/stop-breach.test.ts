@@ -1,5 +1,6 @@
 // Tests of the crossed-stop warning: what counts as a cross. The email is in
 // heartbeat-digest.test.ts.
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { detectStopBreaches } from "../utils/stop-breach.js";
@@ -13,7 +14,7 @@ function position(overrides: Partial<Position> = {}): Position {
     volume: 1,
     avgPrice: 218,
     currentPrice: 216.9,
-    pl: -1.1,
+    pl: money(-1.1),
     stopLoss: 213,
     ...overrides,
   };

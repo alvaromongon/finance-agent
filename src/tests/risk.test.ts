@@ -2,6 +2,7 @@
  * Tests of risk.ts: only arithmetic on the ticket the engine
  * computes. The calibratable rules (R:R, anchored target) are in sizing.test.ts.
  */
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { config } from "../config.js";
@@ -34,7 +35,7 @@ const position = (overrides: Partial<Position> = {}): Position => ({
   volume: 10,
   avgPrice: 130,
   currentPrice: 138,
-  pl: 80,
+  pl: money(80),
   stopLoss: 125,
   ...overrides,
 });

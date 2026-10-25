@@ -1,7 +1,8 @@
 // Pure parsing functions for the vault Markdown. No I/O, no config.
 // Exported so they can be unit-tested.
 import yaml from "js-yaml";
-import { normalizeEol, parseMarkdownNumber } from "./parse.js";
+import { normalizeEol, parseMarkdownMoney, parseMarkdownNumber } from "./parse.js";
+import { ZERO, type Money } from "../money.js";
 import { DECISION_ORIGINS } from "../decisions.js";
 import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
@@ -103,8 +104,8 @@ export const portfolioWhere = (currency: Currency): string => `portfolio.md (${c
  */
 const AVAILABLE_CASH_RE = /^available\s+cash$/i;
 
-export function parseCash(md: string, currency: Currency): number {
-  return cashRow(md, currency, AVAILABLE_CASH_RE) ?? 0;
+export function parseCash(md: string, currency: Currency): Money {
+  return cashRow(md, currency, AVAILABLE_CASH_RE) ?? ZERO;
 }
 
 /**
@@ -113,14 +114,14 @@ export function parseCash(md: string, currency: Currency): number {
  * only differs from the available balance while there are pending orders;
  * `null` if missing or not a number.
  */
-export function parseTotalCash(md: string, currency: Currency): number | null {
+export function parseTotalCash(md: string, currency: Currency): Money | null {
   return cashRow(md, currency, /^total\s+cash$/i);
 }
 
-function cashRow(md: string, currency: Currency, label: RegExp): number | null {
+function cashRow(md: string, currency: Currency, label: RegExp): Money | null {
   const rows = tableRows(md, currency, "Cash");
   const row = rows.find((cells) => label.test(cells[0] ?? ""));
-  return row ? parseMarkdownNumber(row[1]) : null;
+  return row ? parseMarkdownMoney(row[1]) : null;
 }
 
 // ─── Decision logs ────────────────────────────────────────────────────────────
@@ -359,7 +360,7 @@ export function parsePositions(md: string, currency: Currency, onSkip?: (message
       volume,
       avgPrice,
       currentPrice: parseMarkdownNumber(cells[col.currentPrice]) ?? 0,
-      pl: parseMarkdownNumber(cells[col.pl]) ?? 0,
+      pl: parseMarkdownMoney(cells[col.pl]) ?? ZERO,
       stopLoss: parseMarkdownNumber(cells[col.stopLoss]),
     });
   }
@@ -508,7 +509,7 @@ function readLotRow(
       entryUnits: numbers.entryUnits,
       entryPrice: numbers.entryPrice,
       initialStop: parseMarkdownNumber(cell("initialStop")),
-      entryCosts: parseMarkdownNumber(cell("entryCosts")),
+      entryCosts: parseMarkdownMoney(cell("entryCosts")),
       origin: origin as Lot["origin"],
       rulesVersion,
       rulesViolations: isPlaceholder(cell("rulesViolations"))

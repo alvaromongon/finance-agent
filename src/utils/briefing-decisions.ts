@@ -13,6 +13,7 @@
 // Pure functions: monday-briefing.ts supplies the network (technicals, benchmark).
 import { messages, type Messages } from "../i18n/index.js";
 import { asHorizon, benchmarkFields, buildDecision, strengthFields, type Decision } from "../decisions.js";
+import { ZERO } from "../money.js";
 import { validateTicket } from "../risk.js";
 import { buildAdjustStopTicket, buildSellTicket, describeTicket } from "./sizing.js";
 import { snapshotFromTechnicals } from "./strength.js";
@@ -176,7 +177,7 @@ export function buildBriefingDecisions(input: BriefingDecisionsInput): {
     if (proposal.action === "SELL") {
       const ticket = buildSellTicket(proposal.amount ?? position.volume * price, price, currency);
       // A sale uses no cash: it is only checked against the position.
-      const codes = validateTicket(ticket, { cash: 0, position }).errors.map((e) => e.code);
+      const codes = validateTicket(ticket, { cash: ZERO, position }).errors.map((e) => e.code);
       tickets.push({ ticker, action: "SELL", ticket, codes });
       if (codes.length === 0) {
         decisions.push(buildDecision({ ...base, type: "sell", amount: ticket.amount }));

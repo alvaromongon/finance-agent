@@ -217,8 +217,9 @@ refuses and records nothing. A write on another checkout is a git conflict, whic
 stays visible ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)).
 
 The amount of a sale is shared across the lots it consumes to 8 decimals, so a lot
-whose share of a sale is worth under `1e-8` of the silo currency (a dust lot, beyond
-what a listed equity reaches) gets an `amount` of 0 and cannot be sold.
+whose share of a sale is worth under `5e-9` of the silo currency (half of the last
+decimal: a dust lot, beyond what a listed equity reaches) gets an `amount` of 0 and cannot be
+sold. This is the dust limit (`DUST_LIMIT` in `src/money.ts`), the one rule for it.
 
 The lots must add up to the positions and agree with the decision log
 (`logs/decisions.jsonl` and any archived quarter). A silo is **inconsistent**

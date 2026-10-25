@@ -5,6 +5,7 @@
 // Markdown.
 import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
+import { unitsWorthACent } from "../money.js";
 import {
   lotSnapshotProblems,
   tradeUnits,
@@ -252,7 +253,7 @@ const DERIVED_UNITS_NOISE = 1e-9;
  * noise); without them its amount is rounded to the cent, so they are only known to a cent of price.
  */
 const exitSlack = (exit: Decision): number =>
-  exit.units != null ? UNITS_TOLERANCE : 0.01 / exit.price! + DERIVED_UNITS_NOISE;
+  exit.units != null ? UNITS_TOLERANCE : unitsWorthACent(exit.price!) + DERIVED_UNITS_NOISE;
 
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;

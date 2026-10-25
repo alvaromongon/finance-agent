@@ -5,6 +5,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildDecision, validateDecision, type Decision } from "../decisions.js";
@@ -74,7 +75,7 @@ function ohlc(start: string, rows: [number, number, number][]): HistoricalBar[] 
 
 const snapshot = (currency: Currency, cash: number): PortfolioSnapshot => ({
   currency,
-  cash,
+  cash: money(cash),
   positions: [],
   lots: [],
   syncedAt: "2026-09-25",
@@ -275,7 +276,7 @@ const entry = decision({
   source: "portfolio-sync",
   date: "2026-09-02",
   amount: 1000,
-  costs: 4,
+  costs: money(4),
   related_id: proposal.id,
   rules_version: "1.0",
 });
@@ -291,7 +292,7 @@ const exit = decision({
   entry_price: 100,
   stop_initial: 90,
   entry_units: 10,
-  entry_costs: 4,
+  entry_costs: money(4),
   entry_date: "2026-09-02",
   entry_origin: "sistema",
   entry_rules_version: "1.0",
@@ -745,8 +746,8 @@ describe("closedTrades", () => {
 
     it("the entry costs differ between exits by design and are not a disagreement", () => {
       const measured = measureTrades([
-        lotExit({ amount: 480, lot_units_left: 6, entry_costs: 1.6 }),
-        lotExit({ amount: 720, lot_units_left: 0, entry_costs: 2.4 }),
+        lotExit({ amount: 480, lot_units_left: 6, entry_costs: money(1.6) }),
+        lotExit({ amount: 720, lot_units_left: 0, entry_costs: money(2.4) }),
       ]);
       assert.equal(measured.trades.length, 1);
       assert.deepEqual(measured.unmeasured.inconsistent, []);
@@ -785,15 +786,15 @@ describe("closedTrades", () => {
   it("entry_costs of an exit are its share of the lot's entry costs: R is the same as spread over the lot", () => {
     // Lot of 10 units with 4 of entry costs: 4 units sold carry 1.6, the last 6 carry the remaining 2.4.
     const trades = closedTrades([
-      lotExit({ price: 120, amount: 480, entry_costs: 1.6, lot_units_left: 6 }),
-      lotExit({ price: 105, amount: 630, entry_costs: 2.4, lot_units_left: 0 }),
+      lotExit({ price: 120, amount: 480, entry_costs: money(1.6), lot_units_left: 6 }),
+      lotExit({ price: 105, amount: 630, entry_costs: money(2.4), lot_units_left: 0 }),
     ]);
     // 4/10 × (20 − 0.4) / 10 + 6/10 × (5 − 0.4) / 10
     assertClose(trades[0].rNet, 0.4 * 1.96 + 0.6 * 0.46);
   });
 
   it("the costs of the sale are subtracted per unit sold", () => {
-    const withCosts = closedTrades([fullExit({ costs: 10 })]);
+    const withCosts = closedTrades([fullExit({ costs: money(10) })]);
     // (120 − 100 − 1 per unit) / 10
     assertClose(withCosts[0].rNet, 1.9);
   });
@@ -1363,7 +1364,7 @@ describe("evaluationSymbols", () => {
             volume: 1,
             avgPrice: 1,
             currentPrice: 1,
-            pl: 0,
+            pl: money(0),
             stopLoss: null,
           },
         ],

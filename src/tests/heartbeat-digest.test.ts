@@ -2,6 +2,7 @@
 // with one section per kind of alert, and only with what was not sent today.
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { digestKeys, onlyNew, renderHeartbeatDigest, type HeartbeatDigest } from "../utils/heartbeat-digest.js";
@@ -20,7 +21,7 @@ function position(overrides: Partial<Position> = {}): Position {
     volume: 1,
     avgPrice: 492.01,
     currentPrice: 501.02,
-    pl: 9.01,
+    pl: money(9.01),
     stopLoss: 500,
     ...overrides,
   };
@@ -55,7 +56,7 @@ const firstArmed = Array.from({ length: 16 }, (_, i) => base.slice(0, run.length
 )!;
 const { notices } = await scanSetups({
   watchlist: [{ ticker: tk("BO"), name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
-  portfolio: { currency: "USD", cash: 1000, positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
+  portfolio: { currency: "USD", cash: money(1000), positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
   provider: { getHistorical: async () => firstArmed },
   date: "2026-09-24",
   rulesVersion: "0.7",

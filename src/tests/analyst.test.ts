@@ -1,5 +1,6 @@
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { validateRecommendation, buildUserPrompt, shouldUseWebSearch } from "../claude-analyst.js";
@@ -292,7 +293,7 @@ describe("buildUserPrompt", () => {
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),
@@ -331,7 +332,7 @@ describe("buildUserPrompt", () => {
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),
@@ -364,7 +365,7 @@ describe("buildUserPrompt — owned/not-owned branching", () => {
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),
@@ -409,7 +410,7 @@ describe("buildUserPrompt — owned/not-owned branching", () => {
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),

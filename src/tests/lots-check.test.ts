@@ -1,3 +1,4 @@
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertLotsMatch, lotsMismatches, volumeMismatches } from "../utils/lots-check.js";
@@ -33,7 +34,7 @@ const position = (ticker: string, volume: number): Position => ({
   volume,
   avgPrice: 100,
   currentPrice: 100,
-  pl: 0,
+  pl: money(0),
   stopLoss: null,
 });
 
@@ -53,7 +54,7 @@ const lot = (entryId: string, units: number, ticker = "TCK"): Lot => ({
 
 const portfolio = (positions: Position[], lots: Lot[]): PortfolioSnapshot => ({
   currency: "USD",
-  cash: 0,
+  cash: money(0),
   positions,
   lots,
   syncedAt: "2026-10-16T18:00:00.000Z",
@@ -190,8 +191,9 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
   }
 
   describe("Entry costs are compared with the entry's costs, to the cent (#68)", () => {
-    const costed = [{ ...entry("a", "TCK"), costs: 4 }];
-    const withCosts = (entryCosts: number | null, overrides: Partial<Lot> = {}) => held({ entryCosts, ...overrides });
+    const costed = [{ ...entry("a", "TCK"), costs: money(4) }];
+    const withCosts = (entryCosts: number | null, overrides: Partial<Lot> = {}) =>
+      held({ entryCosts: entryCosts === null ? null : money(entryCosts), ...overrides });
 
     for (const [name, value] of [
       ["40.00", 40],
@@ -204,6 +206,12 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
         assert.match(messages[0], /TCK.*lot a.*Entry costs .* differs from 4/);
       });
     }
+
+    it("two costs that are the same at the cent pass, whatever the float noise between them", () => {
+      // 0.02 - 0.015 is 0.005000000000000004 in floats: a half-cent tolerance written inline refuses it.
+      const log2 = [{ ...entry("a", "TCK"), costs: money(0.02) }];
+      assert.deepEqual(lotsMismatches(held({ entryCosts: 0.015 as never }), log2), []);
+    });
 
     it("a value against an entry with no costs is a difference too", () => {
       assert.match(lotsMismatches(withCosts(4), log)[0] ?? "", /Entry costs 4 differs from —/);

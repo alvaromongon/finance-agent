@@ -41,6 +41,7 @@ import { fetchBenchmarks } from "./utils/benchmark.js";
 import { formatRegimeLines } from "./utils/market-regime.js";
 import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import { extractRetireList, extractPlanSummary } from "./utils/vault-parser.js";
+import { formatMoney } from "./money.js";
 import { readTextFile } from "./utils/fs-text.js";
 import {
   filterSafeRetireList,
@@ -193,14 +194,14 @@ export async function prepareBriefing(
     `# Finance Agent context — Monday Briefing ${today}`,
     "",
     "## Available funds",
-    `EUR: ${eurPortfolio.cash.toFixed(2)} €`,
-    `USD: ${usdPortfolio.cash.toFixed(2)} $`,
+    `EUR: ${formatMoney(eurPortfolio.cash)} €`,
+    `USD: ${formatMoney(usdPortfolio.cash)} $`,
     ...(["EUR", "USD"] as const).map((c) => {
       const { riskPerTradePct, maxPositionPct } = config.framework;
       const value = silos[c].value;
       return (
-        `Silo value ${c}: ${value.toFixed(2)} · risk per trade ${riskPerTradePct}% = ${((value * riskPerTradePct) / 100).toFixed(2)}` +
-        ` · per-position cap ${maxPositionPct}% = ${((value * maxPositionPct) / 100).toFixed(2)}`
+        `Silo value ${c}: ${formatMoney(value)} · risk per trade ${riskPerTradePct}% = ${formatMoney((value * riskPerTradePct) / 100)}` +
+        ` · per-position cap ${maxPositionPct}% = ${formatMoney((value * maxPositionPct) / 100)}`
       );
     }),
     eurUsdRate != null ? `Current EUR/USD rate: ${eurUsdRate.toFixed(4)}` : "",

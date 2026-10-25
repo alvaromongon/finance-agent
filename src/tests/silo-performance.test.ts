@@ -5,6 +5,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildDecision, type Decision } from "../decisions.js";
@@ -37,7 +38,7 @@ const decision = (fields: Partial<Decision> & Pick<Decision, "type" | "date">): 
 
 const snapshot = (currency: Currency, cash: number, positions: Position[] = []): PortfolioSnapshot => ({
   currency,
-  cash,
+  cash: money(cash),
   positions,
   lots: [],
   syncedAt: "2026-09-10",
@@ -59,7 +60,7 @@ const DECISIONS = [
   decision({ type: "deposit", date: "2026-09-01", amount: 999 }), // before the start: already in the base cash
   decision({ type: "deposit", date: "2026-09-07", amount: 100 }),
   decision({ type: "entry", date: "2026-09-08", ticker: tk("AAA"), price: 60, amount: 300 }),
-  decision({ type: "fx_conversion", date: "2026-09-09", amount: 100, costs: 0.5, fx_rate: 1.2 }),
+  decision({ type: "fx_conversion", date: "2026-09-09", amount: 100, costs: money(0.5), fx_rate: 1.2 }),
 ];
 
 const AAA_POSITION: Position = {
@@ -68,7 +69,7 @@ const AAA_POSITION: Position = {
   volume: 5,
   avgPrice: 60,
   currentPrice: 55,
-  pl: -25,
+  pl: money(-25),
   stopLoss: null,
 };
 const EUR_TODAY = snapshot("EUR", 700, [AAA_POSITION]);
@@ -126,7 +127,7 @@ describe("reconstructSilo", () => {
   });
 
   it("uses portfolio.md total cash, not the available balance", () => {
-    const history = reconstructSilo(input({ portfolio: { ...EUR_TODAY, cash: 133, totalCash: 700 } }));
+    const history = reconstructSilo(input({ portfolio: { ...EUR_TODAY, cash: money(133), totalCash: money(700) } }));
     assert.equal(history.base.value, 1000);
   });
 

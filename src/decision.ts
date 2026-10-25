@@ -44,7 +44,7 @@ import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { portfolioWhere } from "./utils/vault-parser.js";
 import { applyLotChange, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
-import { round, round2 } from "./utils/round.js";
+import { addMoney, exactAmount, ZERO, type Money } from "./money.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 import { tickerFileStem, type Ticker } from "./ticker.js";
@@ -141,12 +141,6 @@ export type OwnerDecisionProvider = PriceSource;
  * checks run before either is written. Returns the decisions recorded: one, except a sale that
  * spans several lots.
  */
-/**
- * The amount of units at a price: to the cent, unless that is 0.00 (a few units of a low-priced asset),
- * where the exact amount is kept so the entry or the sale can be recorded.
- */
-const amountOf = (units: number, price: number): number => round2(units * price) || round(units * price, 8);
-
 export async function recordOwnerDecision(
   raw: unknown,
   provider: OwnerDecisionProvider = new YahooFinanceProvider(),
@@ -208,7 +202,7 @@ export async function recordOwnerDecision(
         ticker,
         origin: originFrom(proposal),
         price: input.price,
-        amount: input.amount ?? amountOf(units, input.price!),
+        amount: input.amount ?? exactAmount(units * input.price!),
         units,
         costs: input.costs,
         stop_initial: input.stop,
@@ -395,11 +389,11 @@ function withLots(
 }
 
 /** What the exits already written took of each lot's entry costs, by entry id. */
-function entryCostsTaken(history: readonly Decision[]): Map<string, number> {
-  const taken = new Map<string, number>();
+function entryCostsTaken(history: readonly Decision[]): Map<string, Money> {
+  const taken = new Map<string, Money>();
   for (const d of history) {
     if (d.type === "exit" && d.related_id && d.entry_costs != null) {
-      taken.set(d.related_id, (taken.get(d.related_id) ?? 0) + d.entry_costs);
+      taken.set(d.related_id, addMoney(taken.get(d.related_id) ?? ZERO, d.entry_costs));
     }
   }
   return taken;
@@ -468,7 +462,7 @@ function planOwnerSale(
   date: string,
 ): SaleShare[] {
   const ticker = input.ticker!;
-  const amount = input.amount ?? amountOf(input.units!, input.price!);
+  const amount = input.amount ?? exactAmount(input.units! * input.price!);
   const units = input.units ?? amount / input.price!;
   const shares = planSale(
     lots,
