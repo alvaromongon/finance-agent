@@ -259,7 +259,7 @@ export async function writePortfolioText(text: string): Promise<void> {
  * It only touches rows whose ticker has a price available; it does not change
  * `last_manual_sync` or any other field of the file.
  */
-export async function updatePortfolioPrices(currency: Currency, prices: Map<string, number>): Promise<void> {
+export async function updatePortfolioPrices(currency: Currency, prices: Map<Ticker, number>): Promise<void> {
   const filePath = join(projectDir(), "portfolio.md");
   // As the file is, line ends included: the codec writes back every line it did not change.
   const raw = await readFile(filePath, "utf8").catch(() => null);
@@ -274,7 +274,11 @@ export async function updatePortfolioPrices(currency: Currency, prices: Map<stri
   const col = positionColumns(table.header, currency);
   const updated = mapTableRows(model, currency, "Positions", (cells) => {
     if (isPositionPlaceholder(cells[col.ticker] ?? "")) return null;
-    const current = prices.get(cells[col.ticker]);
+    // The map is keyed by the parsed ticker, so the cell is parsed to look it up. A cell that does not
+    // parse, or a ticker without a price, leaves the row alone; a priced row keeps its cell text.
+    const checked = checkTicker(cells[col.ticker]);
+    if (!("ticker" in checked)) return null;
+    const current = prices.get(checked.ticker);
     if (current == null) return null; // ticker without a price: leave the row alone
 
     const avgPrice = parseMarkdownNumber(cells[col.avgPrice]);

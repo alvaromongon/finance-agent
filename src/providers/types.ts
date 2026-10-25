@@ -29,7 +29,7 @@ export interface HistoricalBar {
  *   Optional; without it, big_move is simply not evaluated.
  */
 export interface IMarketDataProvider {
-  getPrices(tickers: string[]): Promise<Map<string, number>>;
+  getPrices<T extends string>(tickers: T[]): Promise<Map<T, number>>;
   getHistorical?(ticker: string, range?: string): Promise<HistoricalBar[]>;
   getPreviousCloses?(tickers: string[]): Promise<Map<string, number>>;
 }

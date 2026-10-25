@@ -117,7 +117,7 @@ describe("Integration — engine", () => {
   // References to dynamically imported functions
   let readWatchlist: (currency: Currency) => Promise<WatchlistEntry[]>;
   let readPortfolio: (currency: Currency) => Promise<PortfolioSnapshot>;
-  let updatePortfolioPrices: (currency: Currency, prices: Map<string, number>) => Promise<void>;
+  let updatePortfolioPrices: (currency: Currency, prices: Map<Ticker, number>) => Promise<void>;
   let writeDecisionLog: typeof import("../vault-io.js").writeDecisionLog;
   let getLastLogForTicker: (
     ticker: Ticker,
@@ -329,7 +329,7 @@ describe("Integration — engine", () => {
       );
       assert.notEqual(reordered, PORTFOLIO_MD, "the fixture must end up reordered");
       await writeFile(join(tempDir, "portfolio.md"), reordered, "utf8");
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.match(updated, /\| 42,00 \| 30,00 \| 48,00 \| 45,00 \| 10 \| TEST\.EU \|/);
     });
@@ -340,12 +340,12 @@ describe("Integration — engine", () => {
         "| Ticker | Volume | Precio medio | Current price | P/L | Stop loss |",
       );
       await writeFile(join(tempDir, "portfolio.md"), broken, "utf8");
-      await assert.rejects(updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]])), /Avg price/);
+      await assert.rejects(updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]])), /Avg price/);
       assert.equal(await readFile(join(tempDir, "portfolio.md"), "utf8"), broken);
     });
 
     it("keeps rewriting only Current price and P/L: the Lots table is left as it was", async () => {
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.equal(
         updated.slice(updated.indexOf("## EUR — Lots")),
@@ -355,7 +355,7 @@ describe("Integration — engine", () => {
     });
 
     it("updates Current price and P/L in portfolio.md", async () => {
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
 
       // P/L = (48 - 45) * 10 = 30 → "30,00" en formato europeo
@@ -372,7 +372,7 @@ describe("Integration — engine", () => {
         "| TEST.EU | 4 | 45,00 | 45,00 | 0,00 | 42,00 |\n| TEST.EU | 6 | 40,00 | 40,00 | 0,00 | 42,00 |",
       );
       await writeFile(join(tempDir, "portfolio.md"), twice, "utf8");
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.match(updated, /\| TEST\.EU \| 4 \| 45,00 \| 48,00 \| 12,00 \| 42,00 \|/);
       assert.match(updated, /\| TEST\.EU \| 6 \| 40,00 \| 48,00 \| 48,00 \| 42,00 \|/);
@@ -384,29 +384,46 @@ describe("Integration — engine", () => {
         "\n| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
       );
       await writeFile(join(tempDir, "portfolio.md"), split, "utf8");
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.equal(updated, split.replace("| 45,00 | 45,00 | 0,00 |", "| 45,00 | 48,00 | 30,00 |"));
     });
 
     it("keeps the line ends of the file: a CRLF file stays CRLF", async () => {
       await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace(/\n/g, "\r\n"), "utf8");
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.ok(!/[^\r]\n/.test(updated), "no bare LF");
       assert.ok(updated.includes("48,00"));
     });
 
+    it("prices a lower-case Positions row by its parsed ticker and keeps the cell text as written", async () => {
+      const lower = PORTFOLIO_MD.replace("| TEST.EU | 10 |", "| test.eu | 10 |");
+      assert.notEqual(lower, PORTFOLIO_MD, "the fixture must end up lower case");
+      await writeFile(join(tempDir, "portfolio.md"), lower, "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.match(updated, /\| test\.eu \| 10 \| 45,00 \| 48,00 \| 30,00 \| 42,00 \|/);
+    });
+
+    it("leaves a Positions row whose ticker does not parse byte-identical", async () => {
+      const bad = PORTFOLIO_MD.replace("| TEST.EU | 10 |", "| TE ST | 10 |");
+      assert.notEqual(bad, PORTFOLIO_MD, "the fixture must end up with a bad ticker");
+      await writeFile(join(tempDir, "portfolio.md"), bad, "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      assert.equal(await readFile(join(tempDir, "portfolio.md"), "utf8"), bad);
+    });
+
     it("does not modify the file if no ticker has a price", async () => {
       const before = await readFile(join(tempDir, "portfolio.md"), "utf8");
-      await updatePortfolioPrices("EUR", new Map()); // no prices
+      await updatePortfolioPrices("EUR", new Map<Ticker, number>()); // no prices
       const after = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.equal(before, after);
     });
 
     it("ignores map tickers that are not in the positions section", async () => {
       const before = await readFile(join(tempDir, "portfolio.md"), "utf8");
-      await updatePortfolioPrices("EUR", new Map([["UNKNOWN.XX", 999]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("UNKNOWN.XX"), 999]]));
       const after = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.equal(before, after);
     });

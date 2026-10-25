@@ -51,7 +51,7 @@ export function filterSafeRetireList(
 /** Subset of IMarketDataProvider buildTechnicalsSection needs (history required, unlike the general interface). */
 export interface TechnicalsProvider {
   getHistorical(ticker: string, range?: string): Promise<HistoricalBar[]>;
-  getPrices(tickers: string[]): Promise<Map<string, number>>;
+  getPrices<T extends string>(tickers: T[]): Promise<Map<T, number>>;
 }
 
 /**
