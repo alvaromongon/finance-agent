@@ -4,7 +4,7 @@ import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownNumber } from "./parse.js";
 import { DECISION_ORIGINS } from "../decisions.js";
 import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
-import type { Currency, Lot, Position, WatchlistEntry } from "../types.js";
+import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
 import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
 
 // `portfolio.md`'s grammar lives in the codec; these are re-exported for the readers of other files.
@@ -75,12 +75,16 @@ export function assertPortfolioSections(md: string, currency: Currency): void {
   const model = parsePortfolio(md);
   for (const kind of ["Cash", "Positions"] as const) {
     if (!hasSection(model, currency, kind)) {
-      throw new Error(`portfolio.md: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`);
+      throw new Error(
+        `${portfolioWhere(currency)}: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`,
+      );
     }
   }
   const hasAvailableCash = tableRows(md, currency, "Cash").some((cells) => AVAILABLE_CASH_RE.test(cells[0] ?? ""));
   if (!hasAvailableCash) {
-    throw new Error(`portfolio.md: missing "Available cash" row in "## ${currency} — Cash" (see docs/input-format.md)`);
+    throw new Error(
+      `${portfolioWhere(currency)}: missing "Available cash" row in "## ${currency} — Cash" (see docs/input-format.md)`,
+    );
   }
 }
 
@@ -350,6 +354,7 @@ export function parsePositions(md: string, currency: Currency, onSkip?: (message
     }
     positions.push({
       ticker: checked.ticker,
+      ...(rawTicker !== checked.ticker ? { written: rawTicker } : {}),
       currency,
       volume,
       avgPrice,
@@ -418,8 +423,8 @@ function lotsTable(md: string, currency: Currency): string[][] {
 /** What the `Lots` table of a silo reads as: the lots, and one message per row it skipped. */
 export interface LotRows {
   lots: Lot[];
-  /** One message per skipped row (`Lots row 2 (AAPL, id): <reason>; the row is skipped`), without the file prefix. */
-  skipped: string[];
+  /** The skipped rows, one message each (`Lots row 2 (AAPL, id): <reason>; the row is skipped`, without the file prefix). */
+  skipped: SkippedLotRow[];
 }
 
 /**
@@ -442,9 +447,15 @@ export function parseLotRows(md: string, currency: Currency): LotRows {
       result.lots.push(reading.lot);
       return;
     }
-    const named = [cells[col.ticker], cells[col.entryId]].map((c) => (c ?? "").trim()).filter((c) => !isPlaceholder(c));
+    const cell = (key: LotColumn) => (cells[col[key]] ?? "").trim();
+    const named = [cell("ticker"), cell("entryId")].filter((c) => !isPlaceholder(c));
     const name = named.length > 0 ? ` (${named.join(", ")})` : "";
-    result.skipped.push(`Lots row ${i + 1}${name}: ${reading.reason}; the row is skipped`);
+    const ticker = isPlaceholder(cell("ticker")) ? undefined : checkTicker(cell("ticker"));
+    result.skipped.push({
+      message: `Lots row ${i + 1}${name}: ${reading.reason}; the row is skipped`,
+      ...(ticker && "ticker" in ticker ? { ticker: ticker.ticker } : {}),
+      ...(isPlaceholder(cell("entryId")) ? {} : { entryId: cell("entryId") }),
+    });
   });
   return result;
 }

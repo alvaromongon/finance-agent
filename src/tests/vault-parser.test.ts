@@ -406,6 +406,29 @@ describe("assertSchemaVersion", () => {
 
 // ─── parseLots ────────────────────────────────────────────────────────────────
 
+describe("every message about one silo carries the same prefix (#68)", () => {
+  const messageOf = (run: () => unknown): string => {
+    try {
+      run();
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error("did not throw");
+  };
+
+  it("the missing Cash, Positions and Lots sections and the missing Available cash row share portfolioWhere", () => {
+    const messages = [
+      messageOf(() => assertPortfolioSections(PORTFOLIO_MD.replace("## USD — Cash", "## USD — Caja"), "USD")),
+      messageOf(() =>
+        assertPortfolioSections(PORTFOLIO_MD.replace("## USD — Positions", "## USD — Posiciones"), "USD"),
+      ),
+      messageOf(() => assertPortfolioSections(PORTFOLIO_MD.replaceAll("Available cash", "Cash libre"), "USD")),
+      messageOf(() => parseLots(PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes"), "USD")),
+    ];
+    for (const message of messages) assert.match(message, /^portfolio\.md \(USD\): /);
+  });
+});
+
 describe("parseLots", () => {
   it("a silo without a Lots section throws a LotsTableError naming file, silo and section", () => {
     const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes");
@@ -558,20 +581,20 @@ describe("parseLotRows", () => {
       const { lots, skipped } = parseLotRows(mdWith(LOT, edited(at, value)), "USD");
       assert.equal(lots.length, 1, "the other lot is still read");
       assert.equal(skipped.length, 1);
-      assert.match(skipped[0], /^Lots row 2/);
-      assert.match(skipped[0], reason);
+      assert.match(skipped[0].message, /^Lots row 2/);
+      assert.match(skipped[0].message, reason);
     });
   }
 
   it("names the ticker and entry id of the skipped row when it has them", () => {
     const { skipped } = parseLotRows(mdWith(edited(2, "01/04/2026")), "USD");
-    assert.match(skipped[0], /Lots row 1 \(XOM, xom-1\): .*skipped/);
+    assert.match(skipped[0].message, /Lots row 1 \(XOM, xom-1\): .*skipped/);
   });
 
   it("Origin matches exactly, as the log stores it; the message points to the right case", () => {
     const { lots, skipped } = parseLotRows(mdWith(edited(8, "Sistema")), "USD");
     assert.deepEqual(lots, []);
-    assert.match(skipped[0], /Origin "Sistema" is not sistema or propietario \(write it "sistema"\)/);
+    assert.match(skipped[0].message, /Origin "Sistema" is not sistema or propietario \(write it "sistema"\)/);
   });
 
   it("the headers stay case-insensitive", () => {

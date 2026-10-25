@@ -51,6 +51,8 @@ export interface WatchlistEntry {
 /** Open position synced by hand from the broker. */
 export interface Position {
   ticker: Ticker;
+  /** The `Ticker` cell as the owner wrote it, when that differs from `ticker` (`tck` for `TCK`); absent otherwise. */
+  written?: string;
   currency: Currency;
   volume: number;
   avgPrice: number;
@@ -85,6 +87,18 @@ export interface Lot {
   rulesViolations: string[];
 }
 
+/**
+ * A row of `Lots` the reader skipped because it does not read as a lot. `ticker` and `entryId` are what
+ * the row still says (absent when its cell is empty or does not read), so the lots check can leave out
+ * the messages that follow from the row instead of repeating them.
+ */
+export interface SkippedLotRow {
+  /** `Lots row 2 (TCK, id): Units "6x" is not a number; the row is skipped`, without the file prefix. */
+  message: string;
+  ticker?: Ticker;
+  entryId?: string;
+}
+
 /** Portfolio snapshot per currency. */
 export interface PortfolioSnapshot {
   currency: Currency;
@@ -99,8 +113,8 @@ export interface PortfolioSnapshot {
   positions: Position[];
   /** Open lots of the silo; `Volume` of each position is the sum of its lots' units. */
   lots: Lot[];
-  /** One message per row of `Lots` the reader skipped because it does not read as a lot; absent if none. */
-  skippedLotRows?: string[];
+  /** The rows of `Lots` the reader skipped because they do not read as a lot; absent if none. */
+  skippedLotRows?: SkippedLotRow[];
   syncedAt: string; // ISO timestamp
 }
 

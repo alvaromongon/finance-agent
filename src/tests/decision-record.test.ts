@@ -309,6 +309,23 @@ describe("decision:record (recordOwnerDecision)", () => {
       );
     });
 
+    it("a ticker on two Positions rows, tck and TCK, is refused on read, naming both, before any write (#68)", async () => {
+      const rows = "| tck | 4 | 100.00 | 100.00 | 0 | — |\n| TCK | 6 | 100.00 | 100.00 | 0 | — |\n";
+      const text = PORTFOLIO_MD.replace(/(## USD — Positions\n\n[^\n]*\n[^\n]*\n)/, `$1${rows}`);
+      assert.notEqual(text, PORTFOLIO_MD);
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      const log = await readFile(decisionsPath(), "utf8");
+
+      await assert.rejects(record(entryOf), (err: Error) => {
+        assert.match(err.message, /TCK is on 2 rows of "## USD — Positions" \(tck, TCK\)/);
+        assert.doesNotMatch(err.message, /internal error/);
+        return true;
+      });
+
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), text);
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+    });
+
     it("a deleted Lots section refuses the entry", async () => {
       const text = PORTFOLIO_MD.slice(0, PORTFOLIO_MD.indexOf("## USD — Lots"));
       await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
