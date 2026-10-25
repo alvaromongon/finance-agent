@@ -18,6 +18,7 @@ const CENTS = 100;
 export function money(n: number): Money {
   if (typeof n !== "number" || !Number.isFinite(n)) throw new RangeError(`money must be a finite number; got: ${n}`);
   const cents = Math.round(n * CENTS);
+  if (!Number.isFinite(cents)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
   return (cents === 0 ? 0 : cents / CENTS) as Money;
 }
 
@@ -40,8 +41,14 @@ export const sameCents = (a: number, b: number): boolean => centsOf(a) === cents
 /** True if two amounts differ by at most one cent (a trade's amount and `units × price` must agree to this). */
 export const withinACent = (a: number, b: number): boolean => Math.abs(a - b) <= 1 / CENTS + 1e-9;
 
-/** True if `a` is more than a cent above `b`: how far a buy or a sale may overshoot its cash or position and still pass. */
-export const overByMoreThanACent = (a: number, b: number): boolean => centsOf(a) - centsOf(b) > 1;
+/** The tolerance of a ticket against its cash or position, and the smallest balance that counts: one cent, unrounded. */
+const A_CENT = 1 / CENTS;
+
+/** True if `a` is more than a cent above `b`, compared exactly (not at the cent): how far a buy or a sale may overshoot its cash or position (ADR-0011). */
+export const overByMoreThanACent = (a: number, b: number): boolean => a > b + A_CENT;
+
+/** True if a balance (cash, capital, a previous value) is worth more than a cent: below that it is rounding dust, not money. */
+export const isMoreThanACent = (balance: number): boolean => balance > A_CENT;
 
 /** Units that a cent is worth at `price`: the precision of units derived from an amount rounded to the cent. */
 export const unitsWorthACent = (price: number): number => 1 / CENTS / price;
@@ -55,6 +62,27 @@ export function formatMoney(amount: number): string {
 }
 
 /**
+ * Each finite non-negative double as an integer of a common power of two, so the weights keep every bit
+ * they have: the shares come from the exact weights, as the float sharing of `allocateByWeight` did.
+ */
+function exactWeights(weights: readonly number[]): bigint[] {
+  const parts = weights.map((x) => {
+    if (!Number.isFinite(x) || x < 0) throw new RangeError("the weights of a share must be >= 0 and not all 0");
+    if (x === 0) return { mantissa: 0n, exponent: 0 };
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, x);
+    const bits = view.getBigUint64(0);
+    const biased = Number((bits >> 52n) & 0x7ffn);
+    const fraction = bits & 0xfffffffffffffn;
+    return biased === 0
+      ? { mantissa: fraction, exponent: -1074 }
+      : { mantissa: fraction | (1n << 52n), exponent: biased - 1075 };
+  });
+  const lowest = Math.min(...parts.map((p) => p.exponent));
+  return parts.map((p) => p.mantissa << BigInt(p.exponent - lowest));
+}
+
+/**
  * Shares `total` over `weights` in whole units of 10^-`decimals`, by the largest-remainder method: each
  * share is its exact part rounded down and the units left over go one each to the largest remainders
  * (the later on a tie). No share is negative (all are <= 0 for a negative total) and the shares add up
@@ -63,8 +91,7 @@ export function formatMoney(amount: number): string {
 function share(total: number, weights: readonly number[], decimals: number): number[] {
   if (weights.length === 0) return [];
   const unit = 10 ** decimals;
-  const scale = 1e8;
-  const w = weights.map((x) => BigInt(Math.round(x * scale)));
+  const w = exactWeights(weights);
   const weightSum = w.reduce((a, b) => a + b, 0n);
   if (weightSum <= 0n || w.some((x) => x < 0n))
     throw new RangeError("the weights of a share must be >= 0 and not all 0");
@@ -97,10 +124,13 @@ export const EXACT_AMOUNT_DECIMALS = 8;
  */
 export const DUST_LIMIT = 0.5 / 10 ** EXACT_AMOUNT_DECIMALS;
 
+/** True if a value is dust (`DUST_LIMIT`): too small to be kept at `EXACT_AMOUNT_DECIMALS` decimals. */
+export const isDust = (value: number): boolean => Math.abs(value) < DUST_LIMIT;
+
 /** The amount of a trade from a value: to the cent, unless that rounds to 0 and the value is not dust, then exact. */
 export function exactAmount(value: number): number {
   const cents = money(value);
-  if (cents !== 0) return cents;
+  if (cents !== 0 || isDust(value)) return cents;
   const f = 10 ** EXACT_AMOUNT_DECIMALS;
   return Math.round(value * f) / f;
 }

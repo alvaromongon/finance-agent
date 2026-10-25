@@ -674,3 +674,48 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
     );
   });
 });
+
+describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
+  it("costs and pnl given with sub-cent decimals are rounded to the cent", () => {
+    const input = validateOwnerInput({
+      type: "exit",
+      ticker: "CAT",
+      currency: "USD",
+      price: 30,
+      units: 2,
+      costs: 1.234,
+      pnl: 5.678,
+    });
+    assert.equal(input.costs, 1.23);
+    assert.equal(input.pnl, 5.68);
+  });
+
+  it("an fx_conversion computes its fx_rate from the cost in cents (main used 1.234)", () => {
+    const input = validateOwnerInput({
+      type: "fx_conversion",
+      currency: "EUR",
+      amount: 100,
+      received: 118,
+      costs: 1.234,
+    });
+    const { costs, fx_rate } = resolveFxConversion(input, 0);
+    assert.equal(costs, 1.23);
+    assert.equal(fx_rate, 1.194695); // 118 / 98.77; with 1.234 it was 1.194743
+  });
+
+  it("units × price that overflows is reported in the validation list, not as a RangeError", () => {
+    assert.throws(
+      () =>
+        validateOwnerInput({
+          type: "entry",
+          ticker: "CAT",
+          currency: "USD",
+          price: 1e200,
+          units: 1e200,
+          amount: 5,
+          stop: 1,
+        }),
+      /Invalid decision:record input/,
+    );
+  });
+});

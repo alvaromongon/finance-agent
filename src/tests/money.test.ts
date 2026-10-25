@@ -132,3 +132,10 @@ describe("the amount of a trade and the dust limit", () => {
     assert.ok(Math.abs(shares.reduce((a, b) => a + b, 0) - 1000.01) < 1e-9);
   });
 });
+
+describe("money() contract", () => {
+  it("throws when the cents overflow, not only on a non-finite input", () => {
+    assert.throws(() => money(1.8e307), RangeError);
+    assert.throws(() => money(Infinity), RangeError);
+  });
+});

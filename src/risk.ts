@@ -6,7 +6,7 @@
 // stop) live in utils/sizing.ts and block with their own reason: `risk.ts`
 // blocks on facts, not on criteria (ADR-0011).
 import { config } from "./config.js";
-import { formatMoney, money, overByMoreThanACent } from "./money.js";
+import { formatMoney, overByMoreThanACent } from "./money.js";
 import type { EngineTicket, Signal } from "./types.js";
 
 /** What the broker accepts as an order: fractional shares and their minimum amount. */
@@ -79,7 +79,7 @@ export function validateTicket(
       } else {
         // currentPrice from portfolio.md (synced by hand from the broker), never a
         // price the reasoner proposes: the cap cannot be inflated.
-        const positionValue = money(signal.position.volume * signal.position.currentPrice);
+        const positionValue = signal.position.volume * signal.position.currentPrice;
         if (overByMoreThanACent(ticket.amount, positionValue)) {
           err(
             "sell_above_position",

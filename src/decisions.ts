@@ -749,7 +749,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     if (Number.isFinite(units) && Number.isFinite(amount) && Number.isFinite(price) && price > 0) {
       if (!withinACent(amount, units * price)) {
         errors.push(
-          `units ${units} × price ${price} = ${money(units * price)}, not the amount ${amount} (give units or amount, or make them agree to the cent)`,
+          `units ${units} × price ${price} = ${round(units * price, 2)}, not the amount ${amount} (give units or amount, or make them agree to the cent)`,
         );
       }
     }

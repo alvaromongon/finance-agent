@@ -261,3 +261,32 @@ describe("siloPerformance", () => {
     assert.deepEqual(warnings, [{ kind: "noShadow", currency: "EUR", reference: "NO.EXISTE" }]);
   });
 });
+
+describe("cash and capital thresholds are the exact cent of main (#79)", () => {
+  it("warns about negative cash from -0.011 on", () => {
+    const history = reconstructSilo(
+      input({
+        decisions: [decision({ type: "deposit", date: "2026-09-08", amount: 1000.012 })],
+        portfolio: snapshot("EUR", 1000),
+      }),
+    );
+    assert.deepEqual(
+      history.warnings.filter((w) => w.kind === "negativeCash").map((w) => w.kind),
+      ["negativeCash"],
+    );
+  });
+
+  it("a money-weighted return needs capital over one cent: 0.012 is enough, 0.01 is not", () => {
+    const end = { date: AS_OF, value: 0.02 };
+    assert.notEqual(moneyWeightedReturn({ date: "2026-09-04", value: 0.012 }, end, []), null);
+    assert.equal(moneyWeightedReturn({ date: "2026-09-04", value: 0.01 }, end, []), null);
+  });
+
+  it("the drawdown index follows a previous value over one cent: 0.012 is enough", () => {
+    const dd = drawdown({
+      base: { date: "2026-09-04", value: 0.012 },
+      days: [{ date: "2026-09-07", value: 0.006, flow: 0 }],
+    });
+    assert.equal(dd.maxPct, 50);
+  });
+});

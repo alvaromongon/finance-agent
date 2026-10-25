@@ -16,7 +16,7 @@ Counted on 2026-10-25 over the sources without tests (measured): 35 `toFixed(2)`
 
 ## Decision drivers
 
-- No output changes: the numbers in `portfolio.md` and the decision log and the text of every report stay the same.
+- Almost no output changes: the numbers in `portfolio.md` and the decision log and the text of every report stay the same, except the changes listed in _Consequences_ (money given with sub-cent decimals is read to the cent; the sub-cent shares of a large sale may differ by `1e-8`).
 - The value survives JSON, so a class is out.
 - The compiler finds an amount that was not rounded.
 - Position sizing and stop prices are trading rules and are not touched.
@@ -33,15 +33,15 @@ Counted on 2026-10-25 over the sources without tests (measured): 35 `toFixed(2)`
 Chosen option: "branded number made only by `money()`", because it is the only one that keeps every serialized number as it is and still makes the compiler reject an unrounded amount.
 
 - `money(n)` rounds to whole cents (never negative zero) and throws on a value that is not finite. Cash, `Position.pl`, a lot's entry costs, a decision's `costs`, `pnl` and `entry_costs` carry `Money`; readers of `portfolio.md` make it from the cell. Sums go through `sumMoney`/`addMoney`, so there is no float noise to clear.
-- `sameCents` is the comparison of two amounts; `withinACent` and `overByMoreThanACent` are the two tolerances the engine states (an amount against `units x price`; a buy or a sale against its cash or position). The units a cent or half a cent of price is worth come from `unitsWorthACent` and `unitsWorthHalfACent`.
-- `shareMoney` shares a total over weights in whole cents by the largest-remainder method, in integers (BigInt), so the shares are whole cents, none is negative and they add up to the total exactly, with no correction loop.
+- `sameCents` is the comparison of two amounts; `withinACent`, `overByMoreThanACent` and `isMoreThanACent` are the tolerances the engine states (an amount against `units x price`; a buy or a sale against its cash or position, compared exactly; a balance worth more than a cent). The units a cent or half a cent of price is worth come from `unitsWorthACent` and `unitsWorthHalfACent`.
+- `shareMoney` shares a total over weights in whole cents by the largest-remainder method, in integers (BigInt) over the exact value of each weight (not rounded), so the shares are whole cents, none is negative and they add up to the total exactly, with no correction loop.
 - `formatMoney` writes two decimals and is the only money formatter.
-- The amount of an exit is the exception: it is its exact share of the sale amount and keeps 8 decimals (`shareExactAmount`, `exactAmount`), so a lot of a few units of a low-priced asset does not get 0.00. The dust limit is one rule: an amount that rounds to 0 at 8 decimals, under `5e-9` of the silo currency, is 0 and cannot be recorded or sold. The input format states the same value as the code.
+- The amount of an exit is the exception: it is its exact share of the sale amount and keeps 8 decimals (`shareExactAmount`, `exactAmount`), so a lot of a few units of a low-priced asset does not get 0.00. The dust limit is one rule (`DUST_LIMIT`, tested by `isDust`, which `exactAmount` uses): an amount that rounds to 0 at 8 decimals, under `5e-9` of the silo currency, is 0 and cannot be recorded or sold. The input format states the same value as the code.
 - The tickets of the sizing (`src/utils/sizing.ts`) keep plain numbers: sizing and stops are trading rules and out of this decision.
 
 **What we give up**: every place that builds a snapshot from untyped data calls `money()`, and tests build amounts through it; a cast defeats the brand. The simple option (a helper module over plain numbers) is not enough because it leaves each place to remember it, which is how the inline tolerances arose. Integer cents would be exact but changes every format.
 
-**Sequence**: after the ticker ([ADR-0016](0016-domain-values-are-branded-types-made-by-parsing.md)), which set the pattern.
+**Sequence**: after the ticker ([ADR-0016](0016-domain-values-are-branded-types-made-by-parsing.md)), which set the pattern. It departs from ADR-0016, which expected money to cover amounts, prices and units: this decision covers amounts only, because prices, exchange rates and units are not worth whole cents and a type for them is not clearly worth it today.
 
 **Scope**: the engine and its tests; the input format restates the dust limit.
 
@@ -49,15 +49,17 @@ Chosen option: "branded number made only by `money()`", because it is the only o
 
 ### Consequences
 
+- Changed numbers (all on sub-cent input, none on data written in cents): a `costs`, `pnl` or `entry_costs` with more than two decimals, given to `decision:record` or read from a log line, is rounded to the cent (`costs: 1.234` is recorded as `1.23`, where it was `1.234`); for an `fx_conversion` the `fx_rate` computed from `received` follows it (`118 / (100 - 1.23)` instead of `118 / (100 - 1.234)`: 1.194695 instead of 1.194743). A `Cash`, `P/L` or `Entry costs` cell of `portfolio.md` with more than two decimals is read to the cent. The `Entry costs` of two lots differing by half a cent with float noise now compare equal. The exact sub-cent shares of a sale share the exact weights (the units sold), as before, but without float noise: on random cases (measured, 100000, totals up to 100000) 11 differed from the old function, all with a total over 1000 and by one unit of `1e-8` in two shares that the old float arithmetic ordered by noise; the cent shares did not differ in any case.
+- Unchanged on purpose: the cap of a SELL against its position and of a BUY against its cash (`validateTicket` in `src/risk.ts`) and the cash thresholds of the silo performance keep their exact one-cent tolerance, unrounded, because they are ticket and measurement rules (`overByMoreThanACent`, `isMoreThanACent`).
 - Good: the inline cent tolerances and the money `toFixed(2)` calls outside the sizing are gone; the sharing needs no correction loop.
 - Bad: the tickets of the sizing still format with `toFixed(2)` until a decision opens them.
 - Bad: a brand is erased at run time.
 
 ### Confirmation
 
-Unit tests of `money.ts` including a property test (random totals and weights: every share is whole cents and they add up to the total), a pin test of the numbers `decision:record` writes (written before the refactor, passing on both sides) and the existing report tests unchanged.
+Unit tests of `money.ts` including a property test (random totals and weights: every share is whole cents and they add up to the total), a test that compares the sharing with the old `allocateByWeight` (copied as an oracle) on weights with more than 8 decimals, a pin test of the numbers `decision:record` writes (written before the refactor, passing on both sides), tests of the changed numbers listed in _Consequences_ and the existing report tests unchanged.
 
-**Success measure**: money `toFixed(2)` calls outside the sizing and the tickets fell from 35 to 0 outside `src/utils/sizing.ts` and non-money values (prices, percentages, ATR), and inline cent tolerances from 5 to 0, on 2026-10-25 (measured by `grep`).
+**Success measure**: the `toFixed(2)` calls on money went from 35 to 0 (the ones left format non-money values or belong to `src/utils/sizing.ts`), and the cent tolerances written inline went from 5 to 0, on 2026-10-25 (measured by `grep`).
 
 ## Pros and cons of the options
 
