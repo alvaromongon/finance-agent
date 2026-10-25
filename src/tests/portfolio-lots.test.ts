@@ -467,14 +467,14 @@ last_manual_sync: 2026-10-16T18:00:00Z
     );
   });
 
-  it("refuses a ticker on several Positions rows: which one to update is the owner's to say", () => {
+  it("a ticker on several Positions rows is an internal error: the lots check refuses it first", () => {
     const twice = PORTFOLIO.replace(
       "| SAP.DE | 2 | 180,00 | 186,40 | 12,80 | 168,00 |",
       "| SAP.DE | 1 | 180,00 | 186,40 | 6,40 | 168,00 |\n| SAP.DE | 1 | 180,00 | 186,40 | 6,40 | 168,00 |",
     );
     assert.throws(
       () => applyLotChange(twice, "EUR", parseLots(twice, "EUR"), { ticker: tk("SAP.DE"), volume: 2, avgPrice: 180 }),
-      /SAP\.DE is on 2 rows of "## EUR — Positions".*nothing was recorded/,
+      /portfolio\.md \(EUR\): internal error: SAP\.DE is on 2 rows of Positions.*nothing was recorded/,
     );
   });
 

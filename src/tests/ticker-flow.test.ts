@@ -233,7 +233,7 @@ describe("a ticker written in another case is the same ticker", () => {
     await writeFile(path("portfolio.md"), portfolioMd([], [{ ticker: "TC;K", units: 1, price: 10 }]), "utf8");
     const portfolio = await vaultIo.readPortfolio("USD");
     assert.deepEqual(portfolio.lots, []);
-    assert.match(portfolio.skippedLotRows?.[0] ?? "", /Ticker "TC;K" does not read/);
+    assert.match(portfolio.skippedLotRows?.[0]?.message ?? "", /Ticker "TC;K" does not read/);
   });
 
   it("the analyst's recommendation and the briefing's proposals read their tickers parsed", async () => {

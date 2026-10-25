@@ -224,14 +224,15 @@ const NONE = "—";
  * `md` with the silo's `Lots` table holding exactly `lots` and the `Positions` row of `change.ticker`
  * updated, created or deleted. The cells keep the file's column order; the rest of the file, line ends
  * included, is the codec's to keep. Refuses (nothing is rewritten) a `Lots` table with a row that does not
- * read as a lot, or a ticker on several `Positions` rows: neither is the recorder's to guess.
+ * read as a lot: that is not the recorder's to guess. A ticker on several `Positions` rows is refused by the
+ * lots check before the recorder plans anything (`volumeMismatches`), so here it is a broken invariant.
  */
 export function applyLotChange(md: string, currency: Currency, lots: readonly Lot[], change: PositionChange): string {
   const num = numberFormat(currency);
   const { skipped } = parseLotRows(md, currency);
   if (skipped.length > 0) {
     throw new Error(
-      `${portfolioWhere(currency)}: ${skipped.join("; ")} - the Lots table is not rewritten while a row does not read (nothing was recorded)`,
+      `${portfolioWhere(currency)}: ${skipped.map((row) => row.message).join("; ")} - the Lots table is not rewritten while a row does not read (nothing was recorded)`,
     );
   }
 
@@ -265,7 +266,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     });
     if (at.length > 1) {
       throw new Error(
-        `portfolio.md: ${change.ticker} is on ${at.length} rows of "## ${currency} — Positions": merge them into one row (nothing was recorded)`,
+        `${portfolioWhere(currency)}: internal error: ${change.ticker} is on ${at.length} rows of Positions; the lots check should have refused it (nothing was recorded)`,
       );
     }
     if (change.volume <= UNITS_TOLERANCE) return at.length === 0 ? kept : kept.filter((_, i) => i !== at[0]);
@@ -285,7 +286,9 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     return [...kept, cells];
   });
   if (!withPositions) {
-    throw new Error(`portfolio.md: missing section "## ${currency} — Positions" (see docs/input-format.md)`);
+    throw new Error(
+      `${portfolioWhere(currency)}: missing section "## ${currency} — Positions" (see docs/input-format.md)`,
+    );
   }
   return serializePortfolio(withPositions);
 }

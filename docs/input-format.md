@@ -207,9 +207,9 @@ its row, with the lot's initial stop as `Stop loss` (`—` if there was none);
 later entries and sales only change `Volume` and `Avg price` (the units-weighted
 entry price of the open lots), and the row is deleted when the last lot is
 consumed. Recording a trade needs `portfolio.md`; without it an entry or a sale
-is refused. A ticker is on one `Positions` row: `decision:record` refuses a
-silo that has the ticker on several (merge them into one row), while the heartbeat
-prices every row of a ticker (the `Volume` check sums them all). `decision:record`
+is refused. A ticker is on one `Positions` row: the lots check refuses a
+silo that has the ticker on several (merge them into one row; see below), and the
+heartbeat warns of it, while it prices every row of a ticker (the `Volume` check sums them all). `decision:record`
 reads `portfolio.md` again right before it writes, after the market-data calls,
 and applies its change to that text, so a write made to the file meanwhile on the
 same checkout (the owner's editor) is not lost; if the `Lots` changed meanwhile it
@@ -224,13 +224,21 @@ The lots must add up to the positions and agree with the decision log
 (`logs/decisions.jsonl` and any archived quarter). A silo is **inconsistent**
 when:
 
+- a ticker is on several `Positions` rows (the message names the ticker and the
+  rows as written, `tck` and `TCK` being the same ticker; merge them into one row);
 - a position's `Volume` is not the sum of the `Units` of its lots (a position
-  with no lots, or lots of a ticker with no position row, count too);
+  with no lots, or lots of a ticker with no position row, count too). A ticker
+  with a `Lots` row that does not read gets only the message of that row: fix it
+  first, the `Volume` and "no lot" messages that follow from it are left out;
 - a lot has more `Units` than `Entry units`, or an `Entry id` is on two rows;
 - a lot's `Entry id` is not an `entry` of that currency in the decision log, its
   `Ticker` is not the ticker of that entry, or its entry price, entry units,
-  initial stop, date, origin, rules version or rules violations differ from the
-  entry's; or
+  initial stop, entry costs (to the cent; a value against an empty cell is a
+  difference), date, origin, rules version or rules violations differ from the
+  entry's. The `Entry costs` of a lot are the whole entry's, also after a split
+  or a partial sale. To correct them, correct the entry's line in the decision
+  log too, in a correction commit ([ADR-0006](decisions/0006-single-append-only-decision-log.md));
+  or
 - an entry in the decision log is still open and has no lot. An entry is open
   until an exit that cites it has `lot_units_left` 0. An entry whose log line has
   no `units` was recorded before the lots existed and is not checked

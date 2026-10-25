@@ -6,7 +6,7 @@
 // `volumeMismatches` needs `portfolio.md` alone (each lot names its Ticker), `lotsMismatches` adds
 // every check that needs the log.
 import type { Decision } from "../decisions.js";
-import type { Lot, PortfolioSnapshot } from "../types.js";
+import type { Lot, PortfolioSnapshot, Position } from "../types.js";
 import type { Ticker } from "../ticker.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import { portfolioWhere } from "./vault-parser.js";
@@ -14,24 +14,52 @@ import { portfolioWhere } from "./vault-parser.js";
 /** Prices and stops are copied from the entry; below this the difference is formatting, not a mismatch. */
 const PRICE_TOLERANCE = 1e-6;
 
+/** Costs are money written to the cent: a difference of less than half a cent is the same amount. */
+const COSTS_TOLERANCE = 0.005;
+
 const where = (portfolio: PortfolioSnapshot): string => portfolioWhere(portfolio.currency);
 
 /**
  * Problems of a silo's `Volume` against its lots, from `portfolio.md` alone: a row of `Lots` the reader
- * skipped (it names the row and the reason), then a ticker whose `Volume` is not the sum of the `Units`
- * of its lots (a position with no lots, or lots of a ticker with no position row, count too). One
- * message per problem, empty if it is consistent.
+ * skipped (it names the row and the reason), a ticker on several `Positions` rows (it names the ticker
+ * and the rows as written), then a ticker whose `Volume` is not the sum of the `Units` of its lots (a
+ * position with no lots, or lots of a ticker with no position row, count too). One message per problem,
+ * empty if it is consistent. A ticker with a skipped row gets only that message: its `Volume` cannot
+ * match lots that are not all read, so saying so too would repeat the same problem.
  */
 export function volumeMismatches(portfolio: PortfolioSnapshot): string[] {
+  return volumeProblems(portfolio, new Set());
+}
+
+/** `volumeMismatches`, leaving out the `Volume` message of `unreadable` tickers besides those of the skipped rows. */
+function volumeProblems(portfolio: PortfolioSnapshot, unreadable: ReadonlySet<Ticker>): string[] {
   const at = where(portfolio);
+  const skipped = portfolio.skippedLotRows ?? [];
   const lotUnits = new Map<Ticker, number>();
   for (const lot of portfolio.lots) lotUnits.set(lot.ticker, (lotUnits.get(lot.ticker) ?? 0) + lot.units);
 
+  // The rows are looked at before their volumes are summed: summed, a ticker on two rows would match its lots.
+  const rows = new Map<Ticker, Position[]>();
+  for (const p of portfolio.positions) rows.set(p.ticker, [...(rows.get(p.ticker) ?? []), p]);
   const volumes = new Map<Ticker, number>();
-  for (const p of portfolio.positions) volumes.set(p.ticker, (volumes.get(p.ticker) ?? 0) + p.volume);
+  for (const [ticker, own] of rows)
+    volumes.set(
+      ticker,
+      own.reduce((sum, p) => sum + p.volume, 0),
+    );
 
-  const problems = (portfolio.skippedLotRows ?? []).map((row) => `${at}: ${row}`);
+  const problems = skipped.map((row) => `${at}: ${row.message}`);
+  for (const [ticker, own] of rows) {
+    if (own.length > 1) {
+      const written = own.map((p) => p.written ?? p.ticker).join(", ");
+      problems.push(
+        `${at}: ${ticker} is on ${own.length} rows of "## ${portfolio.currency} — Positions" (${written}): merge them into one row`,
+      );
+    }
+  }
+  const held = new Set([...unreadable, ...skipped.flatMap((row) => (row.ticker ? [row.ticker] : []))]);
   for (const ticker of new Set([...volumes.keys(), ...lotUnits.keys()])) {
+    if (held.has(ticker)) continue;
     const volume = volumes.get(ticker) ?? 0;
     const units = lotUnits.get(ticker) ?? 0;
     if (Math.abs(volume - units) > UNITS_TOLERANCE) {
@@ -47,8 +75,8 @@ export function volumeMismatches(portfolio: PortfolioSnapshot): string[] {
  *
  * - a lot with more `Units` than `Entry units`, or an `Entry id` on two rows;
  * - a lot whose entry id is not an `entry` of that silo in the log, whose `Ticker` is not its
- *   entry's, or whose snapshot of the entry (entry price, entry units, initial stop, date, origin,
- *   rules version, rules violations) differs from it;
+ *   entry's, or whose snapshot of the entry (entry price, entry units, initial stop, entry costs,
+ *   date, origin, rules version, rules violations) differs from it;
  * - an entry that is still open in the log and has no lot, or a lot that an exit already used up
  *   (`lot_units_left` 0): a two-file write that stopped halfway after the log;
  * - a ticker whose `Volume` is not the sum of the units of its lots (`volumeMismatches`).
@@ -74,7 +102,9 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
 
     const decision = byId.get(lot.entryId);
     if (!decision) {
-      problems.push(`${at}: lot ${lot.entryId} is not in the decision log (logs/decisions.jsonl)`);
+      problems.push(
+        `${at}: lot ${lot.entryId} is not in the decision log (logs/decisions.jsonl; a quarter archived out of it must be readable through DECISIONS_ARCHIVE_DIR)`,
+      );
     } else if (decision.type !== "entry") {
       problems.push(
         `${at}: lot ${lot.entryId} is a decision of type ${decision.type} in the decision log, not an entry`,
@@ -96,9 +126,27 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
     }
   }
 
+  // A skipped row of Lots stands for a lot the check cannot see: the entry it belongs to (by its id, or by
+  // the ticker the log gives that id) is not reported as missing or as a Volume that does not add up.
+  const skipped = portfolio.skippedLotRows ?? [];
+  const skippedIds = new Set(skipped.flatMap((row) => (row.entryId ? [row.entryId] : [])));
+  const unreadable = new Set<Ticker>();
+  for (const id of skippedIds) {
+    const ticker = byId.get(id)?.ticker;
+    if (ticker) unreadable.add(ticker);
+  }
+  const heldTickers = new Set([...unreadable, ...skipped.flatMap((row) => (row.ticker ? [row.ticker] : []))]);
+
   const usedUp = usedUpEntries(decisions);
-  problems.push(...volumeMismatches(portfolio));
-  problems.push(...entriesWithoutLot(portfolio, decisions, usedUp));
+  problems.push(...volumeProblems(portfolio, unreadable));
+  problems.push(
+    ...entriesWithoutLot(
+      portfolio,
+      decisions,
+      usedUp,
+      (d) => skippedIds.has(d.id) || (d.ticker != null && heldTickers.has(d.ticker)),
+    ),
+  );
   problems.push(...lotsAlreadyUsedUp(portfolio, usedUp));
   return problems;
 }
@@ -127,6 +175,8 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
     num("Entry units", lot.entryUnits, logUnits, unitsTolerance);
     num("Initial stop", lot.initialStop, entry.stop_initial, PRICE_TOLERANCE);
   }
+  // A split does not touch the costs paid; they are written to the cent, so half a cent is the same value.
+  num("Entry costs", lot.entryCosts, entry.costs, COSTS_TOLERANCE);
   text("Date", lot.date, entry.date);
   text("Origin", lot.origin, entry.origin);
   text("Rules version", lot.rulesVersion, entry.rules_version);
@@ -147,12 +197,14 @@ function usedUpEntries(decisions: readonly Decision[]): ReadonlySet<string | und
  * lot contract are checked: their log line carries `units`, which `decision:record` writes on every
  * entry from #42 on. An entry without it predates the lots and is out of the check, cited by an exit or
  * not (a v1 position still open, an exit that cited only the latest entry of a scale-in, an exit with
- * no `related_id`).
+ * no `related_id`). An entry whose lot is a skipped row of `Lots` (by id, or by ticker) is left out: that
+ * row is reported by itself.
  */
 function entriesWithoutLot(
   portfolio: PortfolioSnapshot,
   decisions: readonly Decision[],
   used: ReadonlySet<string | undefined>,
+  hasSkippedRow: (entry: Decision) => boolean,
 ): string[] {
   const lotted = new Set(portfolio.lots.map((l) => l.entryId));
   return decisions
@@ -163,7 +215,8 @@ function entriesWithoutLot(
         d.ticker != null &&
         d.currency === portfolio.currency &&
         !used.has(d.id) &&
-        !lotted.has(d.id),
+        !lotted.has(d.id) &&
+        !hasSkippedRow(d),
     )
     .map((d) => `${where(portfolio)}: ${d.ticker}: entry ${d.id} is open in the decision log but has no lot in Lots`);
 }
