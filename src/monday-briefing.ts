@@ -30,7 +30,7 @@ import {
   readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
-  readWatchlist,
+  readWatchlistSkippingBadTickers,
   retireWatchlistEntry,
   updatePortfolioPrices,
 } from "./vault-io.js";
@@ -98,7 +98,10 @@ export async function prepareBriefing(
     readPortfolioIgnoringLots("EUR"),
     readPortfolioIgnoringLots("USD"),
   ]);
-  const [eurWatchlist, usdWatchlist] = await Promise.all([readWatchlist("EUR"), readWatchlist("USD")]);
+  const [eurWatchlist, usdWatchlist] = await Promise.all([
+    readWatchlistSkippingBadTickers("EUR"),
+    readWatchlistSkippingBadTickers("USD"),
+  ]);
 
   const allTickers = [
     ...new Set([
@@ -287,8 +290,8 @@ export async function finalizeBriefing(
   const [eurPortfolio, usdPortfolio, eurWatchlist, usdWatchlist, rulesVersion, history] = await Promise.all([
     readPortfolioIgnoringLots("EUR"),
     readPortfolioIgnoringLots("USD"),
-    readWatchlist("EUR"),
-    readWatchlist("USD"),
+    readWatchlistSkippingBadTickers("EUR"),
+    readWatchlistSkippingBadTickers("USD"),
     readRulesVersion(),
     readDecisions(),
   ]);

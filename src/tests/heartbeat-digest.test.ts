@@ -11,10 +11,11 @@ import { detectNewSetups } from "../utils/setups/index.js";
 import { scanSetups } from "../utils/setups/scan.js";
 import { extend, uptrend } from "./fixtures/setup-bars.js";
 import type { Position, Signal } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function position(overrides: Partial<Position> = {}): Position {
   return {
-    ticker: "MSFT",
+    ticker: tk("MSFT"),
     currency: "USD",
     volume: 1,
     avgPrice: 492.01,
@@ -26,12 +27,12 @@ function position(overrides: Partial<Position> = {}): Position {
 }
 
 const breaches = detectStopBreaches(
-  [position({ ticker: "CAT", avgPrice: 218, stopLoss: 213 })],
+  [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
   new Map([["CAT", 210.77]]),
 );
 
 const tightStops = detectTightStops(
-  [position(), position({ ticker: "AVGO", avgPrice: 200, stopLoss: 366 })],
+  [position(), position({ ticker: tk("AVGO"), avgPrice: 200, stopLoss: 366 })],
   new Map([
     ["MSFT", 501.02],
     ["AVGO", 369.53],
@@ -53,17 +54,17 @@ const firstArmed = Array.from({ length: 16 }, (_, i) => base.slice(0, run.length
   detectNewSetups(bars).some((s) => s.state === "armed"),
 )!;
 const { notices } = await scanSetups({
-  watchlist: [{ ticker: "BO", name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
+  watchlist: [{ ticker: tk("BO"), name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
   portfolio: { currency: "USD", cash: 1000, positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
   provider: { getHistorical: async () => firstArmed },
   date: "2026-09-24",
   rulesVersion: "0.7",
-  benchmark: { ticker: "VOO", price: 800, regime: "favorable" },
+  benchmark: { ticker: tk("VOO"), price: 800, regime: "favorable" },
   log: () => {},
 });
 
 const escalated: Signal[] = [
-  { ticker: "XOM", currency: "USD", triggers: ["big_move"], price: 112.4, cash: 0, siloValue: 0 },
+  { ticker: tk("XOM"), currency: "USD", triggers: ["big_move"], price: 112.4, cash: 0, siloValue: 0 },
 ];
 
 const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
@@ -72,6 +73,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   minAtr: 2,
   breaches: [],
   lotsWarnings: [],
+  tickerWarnings: [],
   tightStops: [],
   armed: [],
   escalated: [],

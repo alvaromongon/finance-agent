@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { config } from "../config.js";
 import { validateTicket } from "../risk.js";
 import type { AdjustStopTicket, BuyTicket, Position, SellTicket } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const buy = (overrides: Partial<BuyTicket> = {}): BuyTicket => ({
   kind: "BUY",
@@ -28,7 +29,7 @@ const buy = (overrides: Partial<BuyTicket> = {}): BuyTicket => ({
 });
 
 const position = (overrides: Partial<Position> = {}): Position => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   currency: "USD",
   volume: 10,
   avgPrice: 130,

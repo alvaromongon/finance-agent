@@ -18,7 +18,7 @@ import {
   readHeartbeatSent,
   readPortfolioTolerantOfLots,
   readRulesVersion,
-  readWatchlist,
+  readWatchlistSkippingBadTickers,
   updatePortfolioPrices,
   writeHeartbeatSent,
 } from "./vault-io.js";
@@ -59,6 +59,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     minAtr: config.strategy.stopMinAtr,
     breaches: [],
     lotsWarnings: [],
+    tickerWarnings: [],
     tightStops: [],
     armed: [],
     escalated: [],
@@ -101,8 +102,15 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem } = await readPortfolioTolerantOfLots(currency);
+  const { portfolio, lotsProblem, skippedRows } = await readPortfolioTolerantOfLots(currency);
   digest.syncedAt = portfolio.syncedAt;
+  // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
+  // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
+  const tickerWarning = (message: string): void => {
+    digest.tickerWarnings.push(message);
+    console.warn(`[finance-agent] WARNING, ticker: ${message}`);
+  };
+  skippedRows.forEach(tickerWarning);
 
   const checkLots = (): void => {
     digest.lotsWarnings = lotsProblem ? [lotsProblem] : lotsCheck(portfolio);
@@ -113,7 +121,7 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // The tickers to watch are the union watchlist ∪ portfolio.positions
   //: an open position is watched for risk whether or not it has
   // an entry in watchlist.md.
-  const watchlist = await readWatchlist(currency);
+  const watchlist = await readWatchlistSkippingBadTickers(currency, tickerWarning);
   const tickers = collectWatchedTickers(watchlist, portfolio);
   if (tickers.length === 0) {
     console.log(`[finance-agent] No watchlist or positions for ${currency}. End of run.`);

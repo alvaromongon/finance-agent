@@ -1,5 +1,6 @@
 // Shared types of the Finance Agent.
 import type { DecisionOrigin } from "./decisions.js";
+import type { Ticker } from "./ticker.js";
 
 export type Currency = "EUR" | "USD";
 export type Horizon = "short" | "medium";
@@ -35,7 +36,7 @@ export interface EngineConviction {
 
 /** Watchlist entry (parsed from the YAML block of watchlist.md). */
 export interface WatchlistEntry {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   market: string;
   currency: Currency;
@@ -49,7 +50,7 @@ export interface WatchlistEntry {
 
 /** Open position synced by hand from the broker. */
 export interface Position {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   volume: number;
   avgPrice: number;
@@ -64,7 +65,7 @@ export interface Position {
  */
 export interface Lot {
   /** Ticker of the position the lot belongs to; it must be the one of its entry in the log. */
-  ticker: string;
+  ticker: Ticker;
   /** Id of the `entry` decision that opened the lot. */
   entryId: string;
   /** Entry date, YYYY-MM-DD. */
@@ -172,7 +173,7 @@ export interface StrengthSnapshot {
 }
 
 export interface Signal {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   triggers: TriggerKind[];
   price: number;
@@ -251,14 +252,14 @@ export const MARKET_REGIMES: readonly MarketRegime[] = ["favorable", "neutral", 
 
 /** Price of a silo benchmark (ADR-0009) on a date, with its regime if there was history. */
 export interface Benchmark {
-  ticker: string;
+  ticker: Ticker;
   price: number;
   regime?: MarketRegime;
 }
 
 /** Structured recommendation returned by Claude (the reasoner). */
 export interface Recommendation {
-  ticker: string;
+  ticker: Ticker;
   action: Action;
   // No conviction: a setup's is computed by the engine
   // (Signal.conviction) and a decision on a position carries none.

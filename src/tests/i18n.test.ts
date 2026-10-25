@@ -21,10 +21,11 @@ import { scanSetups } from "../utils/setups/scan.js";
 import { extend, uptrend } from "./fixtures/setup-bars.js";
 import { SPANISH } from "./fixtures/spanish.js";
 import type { BuyTicket, Position } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function position(overrides: Partial<Position> = {}): Position {
   return {
-    ticker: "MSFT",
+    ticker: tk("MSFT"),
     currency: "USD",
     volume: 1,
     avgPrice: 492.01,
@@ -64,12 +65,12 @@ const firstArmed = Array.from({ length: 16 }, (_, i) => base.slice(0, run.length
   detectNewSetups(bars).some((s) => s.state === "armed"),
 )!;
 const { notices: armed } = await scanSetups({
-  watchlist: [{ ticker: "BO", name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
+  watchlist: [{ ticker: tk("BO"), name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
   portfolio: { currency: "USD", cash: 1000, positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
   provider: { getHistorical: async () => firstArmed },
   date: "2026-09-24",
   rulesVersion: "0.7",
-  benchmark: { ticker: "VOO", price: 800, regime: "favorable" },
+  benchmark: { ticker: tk("VOO"), price: 800, regime: "favorable" },
   log: () => {},
 });
 
@@ -173,7 +174,7 @@ describe("English renders", () => {
       describeConviction({ conviction: "high", points: ["top_quintile", "regime_favorable", "dated_catalyst"] }, en),
       "high (top quintile, favorable regime, dated catalyst)",
     );
-    assert.deepEqual(formatRegimeLines({ EUR: { ticker: "EXSA.DE", price: 1, regime: "adverso" } }, en), [
+    assert.deepEqual(formatRegimeLines({ EUR: { ticker: tk("EXSA.DE"), price: 1, regime: "adverso" } }, en), [
       "Regime EUR (EXSA.DE): ADVERSE (benchmark below its SMA200): every new entry is BLOCKED",
       "Regime USD: no data, does not block",
     ]);
@@ -185,8 +186,9 @@ describe("English renders", () => {
       syncedAt: "2026-09-02T14:10:00Z",
       minAtr: 2,
       lotsWarnings: [],
+      tickerWarnings: [],
       breaches: detectStopBreaches(
-        [position({ ticker: "CAT", avgPrice: 218, stopLoss: 213 })],
+        [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
         new Map([["CAT", 210.77]]),
       ),
       tightStops: detectTightStops(
@@ -196,9 +198,9 @@ describe("English renders", () => {
       ),
       armed,
       escalated: [
-        { ticker: "XOM", currency: "USD", triggers: ["big_move"], price: 112.4, cash: 0, siloValue: 0 },
+        { ticker: tk("XOM"), currency: "USD", triggers: ["big_move"], price: 112.4, cash: 0, siloValue: 0 },
         {
-          ticker: "CVX",
+          ticker: tk("CVX"),
           currency: "USD",
           triggers: ["setup"],
           price: 150,
@@ -234,6 +236,7 @@ describe("English heartbeat digest, lots section", () => {
         syncedAt: "2026-09-02T14:10:00Z",
         minAtr: 2,
         lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"],
+        tickerWarnings: [],
         breaches: [],
         tightStops: [],
         armed: [],
@@ -262,12 +265,12 @@ describe("English briefing pieces", () => {
     const section = formatEngineTicketsSection(
       [
         {
-          ticker: "MSFT",
+          ticker: tk("MSFT"),
           action: "SELL",
           codes: [],
           ticket: { kind: "SELL", currency: "USD", amount: 50, units: 0.1, price: 500 },
         },
-        { ticker: "XOM", action: "ADJUST_STOP", codes: ["stop_not_raised"], ticket: null },
+        { ticker: tk("XOM"), action: "ADJUST_STOP", codes: ["stop_not_raised"], ticket: null },
       ],
       en,
     );
@@ -285,7 +288,7 @@ describe("English notes and screening pieces", () => {
   it("thesis note: localized headings, technicals as the reasoner saw them", () => {
     const note = buildThesisNote(
       {
-        ticker: "NVDA",
+        ticker: tk("NVDA"),
         name: "NVIDIA",
         slug: "nvda",
         today: "2026-10-10",
@@ -304,13 +307,13 @@ describe("English notes and screening pieces", () => {
   it("two-month rule warning", () => {
     const loss = { type: "exit", ticker: "ADBE", date: "2026-08-31", pnl: -30, currency: "USD" } as Decision;
     assert.equal(
-      twoMonthRuleWarning([loss], "ADBE", "2026-09-15", "real", en),
+      twoMonthRuleWarning([loss], tk("ADBE"), "2026-09-15", "real", en),
       "Two-month rule (art. 33.5.f LIRPF): ADBE was sold at a loss (-30 USD) on 2026-08-31. Buying it back before 2026-10-31 defers that loss.",
     );
   });
 
   it("exit archive reason and ranking fallbacks, in both languages", () => {
-    const exit = { ticker: "R1", reason: "no_setup" as const, weeks: 4 };
+    const exit = { ticker: tk("R1"), reason: "no_setup" as const, weeks: 4 };
     assert.equal(
       en.screening.exitArchiveReason("2026-10-10", describeExitDetail(exit, en)),
       "Mechanical exit 2026-10-10: no setup in the last 4 weeks",
@@ -322,7 +325,7 @@ describe("English notes and screening pieces", () => {
 
     assert.deepEqual(
       [
-        { code: "no_reference_history" as const, ticker: "VOO" },
+        { code: "no_reference_history" as const, ticker: tk("VOO") },
         { code: "low_coverage" as const, withData: 2, total: 4 },
         { code: "stale_universe" as const, medianLastBar: "2026-09-26" },
         { code: "stale_universe" as const },

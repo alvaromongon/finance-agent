@@ -14,9 +14,10 @@ import { mkdtemp, rm, mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AdjustStopTicket, BuyTicket, EngineConviction, EngineTicket, Recommendation } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const ADJUST_STOP_REC: Recommendation = {
-  ticker: "XOM",
+  ticker: tk("XOM"),
   action: "ADJUST_STOP",
   ticket: { direction: "ADJUST_STOP", currency: "USD" },
   thesis_summary: "Sube el stop-loss para proteger la ganancia acumulada.",

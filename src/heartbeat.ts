@@ -2,6 +2,7 @@
 // candidates' entry setups live in utils/setups/ (ADR-0013). See
 // routines/daily-heartbeat.md and strategies/base.md.
 import { config } from "./config.js";
+import type { Ticker } from "./ticker.js";
 import { siloValue } from "./utils/sizing.js";
 import type { PortfolioSnapshot, Position, Signal, TriggerKind, WatchlistEntry } from "./types.js";
 
@@ -12,9 +13,9 @@ import type { PortfolioSnapshot, Position, Signal, TriggerKind, WatchlistEntry }
  * Stable order: watchlist first (in its order), then positions without a
  * watchlist entry.
  */
-export function collectWatchedTickers(watchlist: WatchlistEntry[], portfolio: PortfolioSnapshot): string[] {
-  const seen = new Set<string>();
-  const tickers: string[] = [];
+export function collectWatchedTickers(watchlist: WatchlistEntry[], portfolio: PortfolioSnapshot): Ticker[] {
+  const seen = new Set<Ticker>();
+  const tickers: Ticker[] = [];
   for (const entry of watchlist) {
     if (seen.has(entry.ticker)) continue;
     seen.add(entry.ticker);

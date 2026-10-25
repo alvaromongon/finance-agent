@@ -51,6 +51,21 @@ built-in defaults: a missing prompt fails with the example to copy.
 `pending:*`, `decisions:evaluate`, `screening:outcomes`, `outbox:send` and
 `decision:record` need no prompt; `heartbeat` needs one only when it escalates.
 
+A [ticker](glossary.md#ticker) in any file is read case-insensitively and written in upper case:
+`tck` in `portfolio.md`, the watchlist, the screening universe or the decision log reads as `TCK`,
+and a file is not rewritten just to change the case (a row the engine writes, or an entry it adds,
+carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
+`EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit. A ticker outside that pattern
+(`TC|K`, `M&M.NS`) is never silently accepted, and a typo there must never switch off the stop alerts
+([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)): only `decision:record` and
+`decisions:evaluate` refuse the file, naming it and the row. Every other reader (the heartbeat,
+`pending:resolve`, the Monday briefing, the weekly screening) skips the row or entry in `Positions`,
+`watchlist.md`, the screening universe or the screening log, a `Lots` row, or a decision-log line
+that has one, warns with the reason, and carries on with the rest; the heartbeat digest repeats the
+warning, naming the row, in every run while it lasts. A skipped `Positions` row is not watched until
+it is fixed. A `benchmark` whose ticker does not parse is dropped from its decision-log line (the
+line is kept), and a `RETIRE` token that is not a ticker is reported and not retired.
+
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
 notation. `—`, `-` or `TBD` mean "no value".
 
@@ -213,8 +228,7 @@ when:
   with no lots, or lots of a ticker with no position row, count too);
 - a lot has more `Units` than `Entry units`, or an `Entry id` is on two rows;
 - a lot's `Entry id` is not an `entry` of that currency in the decision log, its
-  `Ticker` is not the ticker of that entry (one that differs only in case is
-  reported as such, once), or its entry price, entry units,
+  `Ticker` is not the ticker of that entry, or its entry price, entry units,
   initial stop, date, origin, rules version or rules violations differ from the
   entry's; or
 - an entry in the decision log is still open and has no lot. An entry is open

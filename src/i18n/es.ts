@@ -86,6 +86,7 @@ export const es: Messages = {
     labels: {
       breaches: "stop cruzado",
       lots: "problema con los lotes",
+      tickers: "ticker que no se lee",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -121,6 +122,15 @@ export const es: Messages = {
       `Corrige \`Lots\` a mano: que exista y se lea, que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
       `\`Entry id\` sea una entrada del registro (\`logs/decisions.jsonl\`; ver \`docs/input-format.md\`).`,
     ],
+    tickersIntro: [
+      `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
+      ``,
+      `Estas filas tienen un ticker fuera del patrón (letras, dígitos y \`. - ^ =\`) y se omiten. El heartbeat sigue`,
+      `vigilando todo lo demás, pero no vigila estas filas hasta que se corrijan; \`decision:record\` y la`,
+      `evaluación rechazan un ticker de \`Positions\` o de la watchlist que no se lee:`,
+      ``,
+    ],
+    tickersOutro: [``, `Corrige el ticker a mano (ver \`docs/input-format.md\`).`],
     tightIntro: (minAtr) => [
       `## Stops demasiado ceñidos`,
       ``,

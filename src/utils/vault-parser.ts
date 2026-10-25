@@ -3,7 +3,8 @@
 import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownNumber } from "./parse.js";
 import { DECISION_ORIGINS } from "../decisions.js";
-import type { Currency, Lot, Position } from "../types.js";
+import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
+import type { Currency, Lot, Position, WatchlistEntry } from "../types.js";
 import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
 
 // `portfolio.md`'s grammar lives in the codec; these are re-exported for the readers of other files.
@@ -132,7 +133,7 @@ export const SCREENING_RESULTS = ["interesting", "not_interesting"] as const;
 export type ScreeningResultValue = (typeof SCREENING_RESULTS)[number];
 
 export interface ScreeningLogRow {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   index: string;
   date: string;
@@ -141,11 +142,16 @@ export interface ScreeningLogRow {
   nextReview: string;
 }
 
+/** What a reader that skips a row it cannot read does with the reason: warns (ADR-0016). */
+const warnSkipped = (message: string): void => console.warn(`[vault-parser] WARNING: ${message}`);
+
 /**
  * Parses the screening-log.md table from its raw content.
- * Skips the header row (first row with "Ticker" as its first cell).
+ * Skips the header row (first row with "Ticker" as its first cell). A row whose ticker does not parse
+ * is skipped and reported to `onSkip` (ADR-0016): the log is append-only history, and one old bad row
+ * must not stop the weekly run.
  */
-export function parseScreeningLog(md: string): ScreeningLogRow[] {
+export function parseScreeningLog(md: string, onSkip: (message: string) => void = warnSkipped): ScreeningLogRow[] {
   assertSchemaVersion(md, "screening-log.md");
   const rows = parseTableRows(md);
   return rows
@@ -160,15 +166,24 @@ export function parseScreeningLog(md: string): ScreeningLogRow[] {
       }
       return cells;
     })
-    .map((cells) => ({
-      ticker: cells[0],
-      name: cells[1],
-      index: cells[2],
-      date: cells[3],
-      result: cells[4] as ScreeningResultValue,
-      summary: cells[5],
-      nextReview: cells[6],
-    }));
+    .flatMap((cells) => {
+      const checked = checkTicker(cells[0]);
+      if ("problem" in checked) {
+        onSkip(`screening-log.md: row ${JSON.stringify(cells[0])} of ${cells[3]} skipped: ${checked.problem}`);
+        return [];
+      }
+      return [
+        {
+          ticker: checked.ticker,
+          name: cells[1],
+          index: cells[2],
+          date: cells[3],
+          result: cells[4] as ScreeningResultValue,
+          summary: cells[5],
+          nextReview: cells[6],
+        },
+      ];
+    });
 }
 
 /**
@@ -176,16 +191,21 @@ export function parseScreeningLog(md: string): ScreeningLogRow[] {
  * Claude adds at the end of the Monday Briefing.
  * Returns an empty array if there are no removals or the section is missing.
  */
-export function extractRetireList(reviewText: string): string[] {
+export function extractRetireList(reviewText: string): Ticker[] {
   // [ \t]* and not \s*: with an empty `RETIRE:`, \s* jumped to the next line
   // and returned "PLAN_SUMMARY: …" as if it were a ticker to remove.
   const match = /^##\s+AUTOMATED_ACTIONS\s*\nRETIRE:[ \t]*(.*)$/m.exec(normalizeEol(reviewText));
   const line = match?.[1]?.trim() ?? "";
+  // What does not parse as a ticker cannot be retired: it is reported, not dropped silently.
   return line
-    ? line
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean)
+    ? line.split(",").flatMap((t) => {
+        const checked = checkTicker(t);
+        if ("ticker" in checked) return [checked.ticker];
+        // A trailing comma leaves an empty token: nothing was asked.
+        if (t.trim() !== "")
+          warnSkipped(`RETIRE: ${JSON.stringify(t.trim())} is not a ticker and was not retired: ${checked.problem}`);
+        return [];
+      })
     : [];
 }
 
@@ -202,6 +222,25 @@ export function extractPlanSummary(reviewText: string): string {
 }
 
 /**
+ * The entries of the watchlist.md YAML block, with their tickers parsed (a ticker written in lower case
+ * reads as its upper-case value). An entry whose ticker does not parse throws, naming it (the readers
+ * that refuse, `decision:record`), or, given `onSkip`, is skipped and reported to it (ADR-0016).
+ */
+export function parseWatchlistBlock(block: string, onSkip?: (message: string) => void): WatchlistEntry[] {
+  const parsed = yaml.load(block) as { watchlist?: WatchlistEntry[] } | undefined;
+  return (parsed?.watchlist ?? []).flatMap((entry, i) => {
+    const checked = checkTicker(entry?.ticker);
+    if ("problem" in checked) {
+      const message = `watchlist.md: entry ${i + 1}: ${checked.problem}`;
+      if (!onSkip) throw new Error(message);
+      onSkip(`${message} (entry skipped)`);
+      return [];
+    }
+    return [{ ...entry, ticker: checked.ticker }];
+  });
+}
+
+/**
  * Adds an entry to the watchlist.md YAML block.
  * Pure function: takes the current markdown and returns the updated one.
  * Returns the same string if the ticker already exists.
@@ -211,7 +250,7 @@ export function applyAddWatchlistEntry(md: string, entry: import("../types.js").
   const block = extractYamlBlock(md);
   const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
   const watchlist = parsed?.watchlist ?? [];
-  if (watchlist.some((e) => e.ticker === entry.ticker)) return md;
+  if (watchlist.some((e) => namesTicker(e?.ticker, entry.ticker))) return md;
   watchlist.push(entry);
   const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
   return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
@@ -221,11 +260,11 @@ export function applyAddWatchlistEntry(md: string, entry: import("../types.js").
  * Removes a ticker from the watchlist.md YAML block.
  * Pure function: takes the current markdown and returns the updated one.
  */
-export function applyRetireWatchlistEntry(md: string, ticker: string): string {
+export function applyRetireWatchlistEntry(md: string, ticker: Ticker): string {
   md = normalizeEol(md);
   const block = extractYamlBlock(md);
   const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
-  const watchlist = (parsed?.watchlist ?? []).filter((e) => e.ticker !== ticker);
+  const watchlist = (parsed?.watchlist ?? []).filter((e) => !namesTicker(e?.ticker, ticker));
   const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
   return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
 }
@@ -285,24 +324,32 @@ export function isPositionPlaceholder(ticker: string): boolean {
 /**
  * Parses the rows of the `## <CURRENCY> — Positions` table (columns in
  * POSITION_COLUMNS, in any order). Skips placeholder rows ("—") and ignores
- * rows without a numeric volume/average price.
+ * rows without a numeric volume/average price. A row whose ticker does not parse throws, naming it (the
+ * readers that refuse), or, given `onSkip`, is skipped and reported to it (ADR-0016).
  */
-export function parsePositions(md: string, currency: Currency): Position[] {
+export function parsePositions(md: string, currency: Currency, onSkip?: (message: string) => void): Position[] {
   const [header, ...rows] = tableRows(md, currency, "Positions");
   if (!header) return [];
   const col = positionColumns(header, currency);
   const positions: Position[] = [];
 
   for (const cells of rows) {
-    const ticker = (cells[col.ticker] ?? "").trim();
-    if (isPositionPlaceholder(ticker)) continue;
+    const rawTicker = (cells[col.ticker] ?? "").trim();
+    if (isPositionPlaceholder(rawTicker)) continue;
 
     const volume = parseMarkdownNumber(cells[col.volume]);
     const avgPrice = parseMarkdownNumber(cells[col.avgPrice]);
     if (volume == null || avgPrice == null) continue;
 
+    const checked = checkTicker(rawTicker);
+    if ("problem" in checked) {
+      const message = `## ${currency} — Positions: Ticker ${JSON.stringify(rawTicker)}: ${checked.problem}`;
+      if (!onSkip) throw new Error(message);
+      onSkip(`${message} (row skipped: it is not watched until fixed)`);
+      continue;
+    }
     positions.push({
-      ticker,
+      ticker: checked.ticker,
       currency,
       volume,
       avgPrice,
@@ -420,6 +467,9 @@ function readLotRow(
   if (cells.every((c) => isPlaceholder(c.trim())) || /^entry id$/i.test(cell("entryId"))) return null;
   if (isPlaceholder(cell("entryId"))) return { reason: "no Entry id" };
   if (isPlaceholder(cell("ticker"))) return { reason: "no Ticker" };
+  const ticker = checkTicker(cell("ticker"));
+  if ("problem" in ticker)
+    return { reason: `Ticker ${JSON.stringify(cell("ticker"))} does not read: ${ticker.problem}` };
 
   const numbers = {} as Record<"units" | "entryUnits" | "entryPrice", number>;
   for (const key of ["units", "entryUnits", "entryPrice"] as const) {
@@ -440,7 +490,7 @@ function readLotRow(
 
   return {
     lot: {
-      ticker: cell("ticker"),
+      ticker: ticker.ticker,
       entryId: cell("entryId"),
       date,
       units: numbers.units,

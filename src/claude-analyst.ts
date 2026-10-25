@@ -13,6 +13,7 @@ import { describeAdjustStopPreview, describeBuyPreview } from "./utils/sizing.js
 import { readTextFile } from "./utils/fs-text.js";
 import { readRoutinePrompt } from "./vault-io.js";
 import type { Recommendation, Signal, TriggerKind } from "./types.js";
+import { checkTicker, type Ticker } from "./ticker.js";
 
 export async function analyze(signal: Signal, newsHeadlines: string[] = []): Promise<Recommendation> {
   // maxRetries: the SDK retries transient network errors with backoff.
@@ -207,6 +208,15 @@ export function validateRecommendation(raw: unknown): Recommendation {
     return val as string;
   };
 
+  const tickerOf = (val: unknown, field: string): Ticker => {
+    const checked = checkTicker(val);
+    if ("problem" in checked) {
+      errors.push(`${field}: ${checked.problem}`);
+      return val as Ticker;
+    }
+    return checked.ticker;
+  };
+
   let ticket: Record<string, unknown> = {};
   if (isObj(raw.ticket)) ticket = raw.ticket;
   else errors.push("ticket must be an object");
@@ -235,7 +245,7 @@ export function validateRecommendation(raw: unknown): Recommendation {
   if (raw.conviction !== undefined) errors.push("conviction does not go in the recommendation: the engine computes it");
 
   const rec: Recommendation = {
-    ticker: str(raw.ticker, "ticker"),
+    ticker: tickerOf(raw.ticker, "ticker"),
     action: oneOf(raw.action, ACTIONS, "action"),
     // The reasoner provides a BUY target and a SELL amount. The
     // engine computes stop and buy amount; if the JSON carries them (previous

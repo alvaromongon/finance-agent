@@ -4,10 +4,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { detectStopBreaches } from "../utils/stop-breach.js";
 import type { Position } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function position(overrides: Partial<Position> = {}): Position {
   return {
-    ticker: "CAT",
+    ticker: tk("CAT"),
     currency: "USD",
     volume: 1,
     avgPrice: 218,
@@ -54,7 +55,7 @@ describe("detectStopBreaches", () => {
     // Real case of 2026-08-31: portfolio.md said 79.858,60 (sync of 27-Aug)
     // and the market was at 67.308,25, below the 77.000 stop.
     const btc = position({
-      ticker: "BTC-EUR",
+      ticker: tk("BTC-EUR"),
       currency: "EUR",
       volume: 0.01,
       avgPrice: 80_577.6,
@@ -69,7 +70,7 @@ describe("detectStopBreaches", () => {
 
   it("returns every crossed position", () => {
     const breaches = detectStopBreaches(
-      [position(), position({ ticker: "ADBE", avgPrice: 490, stopLoss: 460 })],
+      [position(), position({ ticker: tk("ADBE"), avgPrice: 490, stopLoss: 460 })],
       new Map([
         ["CAT", 210.77],
         ["ADBE", 455],

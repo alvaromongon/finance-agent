@@ -14,6 +14,7 @@
 import type { Currency, Horizon, Position } from "../types.js";
 import { atr14d } from "./technicals.js";
 import type { HistoricalBar } from "../providers/types.js";
+import type { Ticker } from "../ticker.js";
 
 /**
  * Minimum below which a stop is considered tight: noise will hit it before
@@ -59,7 +60,7 @@ export function trailingStop(
 
 /** A position whose stop is closer to the price than its volatility tolerates. */
 export interface TightStop {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   price: number;
   stopLoss: number;

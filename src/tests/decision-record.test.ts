@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { lotsSection } from "./fixtures/lots.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const TODAY = "2026-09-14";
 
@@ -91,7 +92,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     proposal = buildDecision({
       date: "2026-09-10",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -504,7 +505,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const blocked = buildDecision({
       date: "2026-09-12",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -526,7 +527,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const armed = buildDecision({
       date: "2026-09-12",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -549,7 +550,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const armed = buildDecision({
       date: "2026-09-12",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -571,7 +572,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const adjust = buildDecision({
       date: "2026-09-11",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",

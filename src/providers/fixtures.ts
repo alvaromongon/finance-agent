@@ -15,7 +15,7 @@ export class FixturesProvider implements IMarketDataProvider {
     return raw ? (JSON.parse(raw) as HistoricalBar[]) : [];
   }
 
-  async getPrices(tickers: string[]): Promise<Map<string, number>> {
+  async getPrices<T extends string>(tickers: T[]): Promise<Map<T, number>> {
     return this.lastCloses(tickers, 1);
   }
 
@@ -24,8 +24,8 @@ export class FixturesProvider implements IMarketDataProvider {
   }
 
   /** The `back`-th close from the end of each ticker that has one. */
-  private async lastCloses(tickers: string[], back: number): Promise<Map<string, number>> {
-    const result = new Map<string, number>();
+  private async lastCloses<T extends string>(tickers: T[], back: number): Promise<Map<T, number>> {
+    const result = new Map<T, number>();
     for (const ticker of tickers) {
       const bars = await this.getHistorical(ticker);
       if (bars.length >= back) result.set(ticker, bars[bars.length - back].close);

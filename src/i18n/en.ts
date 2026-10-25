@@ -89,6 +89,7 @@ export const en = {
     labels: {
       breaches: "stop crossed",
       lots: "problem with the lots",
+      tickers: "ticker that does not read",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -124,6 +125,15 @@ export const en = {
       `Fix \`Lots\` by hand: it must exist and be readable, each \`Volume\` must be the sum of the \`Units\` of its lots and`,
       `every \`Entry id\` must be an entry of the log (\`logs/decisions.jsonl\`; see \`docs/input-format.md\`).`,
     ],
+    tickersIntro: [
+      `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,
+      ``,
+      `These rows have a ticker outside the pattern (letters, digits and \`. - ^ =\`) and are skipped. The heartbeat keeps`,
+      `watching everything else, but it does not watch these until they are fixed; \`decision:record\` and the`,
+      `evaluation refuse a \`Positions\` or watchlist ticker that does not read:`,
+      ``,
+    ],
+    tickersOutro: [``, `Fix the ticker by hand (see \`docs/input-format.md\`).`],
     tightIntro: (minAtr: number) => [
       `## Stops too tight`,
       ``,

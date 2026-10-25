@@ -12,9 +12,10 @@ import { tmpdir } from "node:os";
 
 import type { Signal, WatchlistEntry } from "../types.js";
 import type { HandoffAnalystProvider as HandoffAnalystProviderType } from "../analyst/handoff-provider.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const baseEntry = (): WatchlistEntry => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   name: "Exxon",
   market: "NYSE",
   currency: "USD",
@@ -23,7 +24,7 @@ const baseEntry = (): WatchlistEntry => ({
 });
 
 const baseSignal = (overrides: Partial<Signal> = {}): Signal => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   currency: "USD",
   triggers: ["big_move"],
   price: 124.5,
@@ -138,7 +139,7 @@ describe("HandoffAnalystProvider.escalate", () => {
         entry: undefined,
         triggers: ["approaching_stop"],
         position: {
-          ticker: "XOM",
+          ticker: tk("XOM"),
           currency: "USD",
           volume: 5,
           avgPrice: 130,

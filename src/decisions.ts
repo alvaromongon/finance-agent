@@ -11,6 +11,7 @@
 // fields once it has a consumer.
 import { messages, type Messages } from "./i18n/index.js";
 import { randomUUID } from "node:crypto";
+import { checkTicker, parseTicker, tickerIdPart, type Ticker } from "./ticker.js";
 import {
   CONVICTION_POINTS,
   CONVICTIONS,
@@ -73,7 +74,7 @@ export interface Decision {
   /** Date of the event, YYYY-MM-DD. */
   date: string;
   /** `null` in money flows (deposit, withdrawal, fx_conversion). */
-  ticker: string | null;
+  ticker: Ticker | null;
   /** Silo. In `fx_conversion`, the one the money comes from. */
   currency: Currency;
   origin: DecisionOrigin;
@@ -82,7 +83,7 @@ export interface Decision {
   /** Asset price on the date. */
   price?: number;
   /** Silo benchmark (ADR-0009) on the same date. Best-effort. */
-  benchmark?: { ticker: string; price: number };
+  benchmark?: { ticker: Ticker; price: number };
   /** Silo market regime on the date (ADR-0010). Absent without benchmark history. */
   regime?: MarketRegime;
   /** Amount in the silo currency: buy, sale, deposit or converted amount. */
@@ -344,8 +345,9 @@ export function validateDecision(raw: unknown): Decision {
   const type = raw.type as DecisionType;
   if (FLOW_TYPES.includes(type)) {
     if (raw.ticker != null) errors.push(`ticker must be null in ${type}`);
-  } else if (typeof raw.ticker !== "string" || raw.ticker.trim() === "") {
-    errors.push("ticker must be a non-empty string");
+  } else {
+    const checked = checkTicker(raw.ticker);
+    if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
   }
 
   for (const field of [
@@ -402,7 +404,7 @@ export function validateDecision(raw: unknown): Decision {
 
   if (raw.benchmark != null) {
     const b = raw.benchmark;
-    if (!isObj(b) || typeof b.ticker !== "string" || typeof b.price !== "number" || !(b.price > 0)) {
+    if (!isObj(b) || typeof b.price !== "number" || !(b.price > 0)) {
       errors.push(`benchmark must be { ticker, price > 0 }; got: ${JSON.stringify(b)}`);
     }
   }
@@ -492,12 +494,27 @@ export function validateDecision(raw: unknown): Decision {
   if (errors.length > 0) {
     throw new Error(`Invalid decision:\n- ${errors.join("\n- ")}`);
   }
-  return raw as unknown as Decision;
+  // Canonical tickers: a decision written in another case reads as its upper-case value.
+  const decision = raw as unknown as Decision;
+  const { benchmark, ...rest } = decision;
+  // A benchmark whose ticker does not parse is dropped, not the whole line (it is a side measurement, and
+  // the line was accepted before the ticker became a parsed value): the decision keeps its other fields.
+  const benchmarkTicker = benchmark ? checkTicker(benchmark.ticker) : undefined;
+  if (benchmarkTicker && "problem" in benchmarkTicker) {
+    console.warn(`[decisions] WARNING: decision ${decision.id}: benchmark dropped: ${benchmarkTicker.problem}`);
+  }
+  return {
+    ...rest,
+    ...(decision.ticker != null ? { ticker: parseTicker(decision.ticker) } : {}),
+    ...(benchmark && benchmarkTicker && "ticker" in benchmarkTicker
+      ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
+      : {}),
+  };
 }
 
 /** Readable unique id: date, asset (or silo) and type, plus a random suffix. */
 export function newDecisionId(date: string, subject: string, type: DecisionType): string {
-  const slug = subject.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const slug = tickerIdPart(subject);
   return `${date.replace(/-/g, "")}-${slug}-${type}-${randomUUID().slice(0, 8)}`;
 }
 
@@ -603,7 +620,7 @@ export function decisionFromRecommendation(
  */
 export function twoMonthRuleWarning(
   history: readonly Decision[],
-  ticker: string,
+  ticker: Ticker,
   date: string,
   accountEnv: string | undefined,
   m: Messages = messages(),
@@ -657,7 +674,7 @@ export interface OwnerDecisionInput {
   type: OwnerDecisionType;
   /** YYYY-MM-DD; today by default. */
   date?: string;
-  ticker?: string;
+  ticker?: Ticker;
   currency: Currency;
   price?: number;
   /** Amount; in entry/exit `units` can be given instead. */
@@ -708,8 +725,12 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   }
 
   const has = (f: string) => raw[f] != null;
-  if (["entry", "exit", "adjust_stop"].includes(type) && (typeof raw.ticker !== "string" || raw.ticker.trim() === "")) {
-    errors.push(`ticker is required in ${type}`);
+  if (["entry", "exit", "adjust_stop"].includes(type)) {
+    if (raw.ticker == null) errors.push(`ticker is required in ${type}`);
+    else {
+      const checked = checkTicker(raw.ticker);
+      if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
+    }
   }
   if (FLOW_TYPES.includes(type) && has("ticker")) errors.push(`ticker does not apply in ${type}`);
   if ((type === "entry" || type === "exit") && !has("price")) errors.push(`price is required in ${type}`);
@@ -739,7 +760,8 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (errors.length > 0) {
     throw new Error(`Invalid decision:record input:\n- ${errors.join("\n- ")}`);
   }
-  return raw as unknown as OwnerDecisionInput;
+  const input = raw as unknown as OwnerDecisionInput;
+  return has("ticker") ? { ...input, ticker: parseTicker(input.ticker) } : input;
 }
 
 /**
@@ -797,7 +819,7 @@ export const PROPOSAL_WINDOW_DAYS = 10;
  */
 export function findRelatedProposal(
   decisions: readonly Decision[],
-  query: { ticker: string; date: string; types: readonly DecisionType[] },
+  query: { ticker: Ticker; date: string; types: readonly DecisionType[] },
 ): Decision | undefined {
   const used = new Set(decisions.map((d) => d.related_id).filter(Boolean));
   return decisions

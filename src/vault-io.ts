@@ -2,7 +2,6 @@
 import { messages } from "./i18n/index.js";
 import { readFile, writeFile, readdir, mkdir, unlink, appendFile, rename } from "node:fs/promises";
 import { join } from "node:path";
-import yaml from "js-yaml";
 import { config } from "./config.js";
 import { validateDecision, type Decision, type ScreeningSelection } from "./decisions.js";
 import { describeTicket } from "./utils/sizing.js";
@@ -27,6 +26,7 @@ import {
   SCHEMA_VERSION,
   applyAddWatchlistEntry,
   applyRetireWatchlistEntry,
+  parseWatchlistBlock,
 } from "./utils/vault-parser.js";
 import {
   CONVICTION_POINTS,
@@ -59,6 +59,7 @@ import type {
 // Import and re-export the type from vault-parser (single source of truth)
 import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { readTextFile } from "./utils/fs-text.js";
+import { checkTicker, tickerFileStem, tickerSlug, type Ticker } from "./ticker.js";
 export type { ScreeningLogEntry };
 
 /** Data directory, read on use: VAULT_PROJECT_DIR has no default. */
@@ -85,13 +86,34 @@ export async function readRoutinePrompt(
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
-/** Reads watchlist.md and returns the entries of the given currency. */
+/** What the readers that skip a row they cannot read do with the reason, unless given another sink (ADR-0016). */
+const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING: ${message}`);
+
+/**
+ * Reads watchlist.md and returns the entries of the given currency. An entry whose ticker does not
+ * parse (of any currency) throws: this is the reader of `decision:record`, which refuses it (ADR-0016).
+ */
 export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[]> {
+  return readWatchlistEntries(currency);
+}
+
+/**
+ * `readWatchlist` for every other reader (heartbeat, `pending:resolve`, the Monday briefing, the weekly
+ * screening): an entry whose ticker does not parse is skipped and reported to `onSkip` (a warning by
+ * default), and the rest keeps working (ADR-0016).
+ */
+export async function readWatchlistSkippingBadTickers(
+  currency: Currency,
+  onSkip: (message: string) => void = warnSkipped,
+): Promise<WatchlistEntry[]> {
+  return readWatchlistEntries(currency, onSkip);
+}
+
+async function readWatchlistEntries(currency: Currency, onSkip?: (message: string) => void): Promise<WatchlistEntry[]> {
   const raw = await readTextFile(join(projectDir(), "watchlist.md"));
   assertSchemaVersion(raw, "watchlist.md");
   const block = extractYamlBlock(raw);
-  const parsed = yaml.load(block) as { watchlist?: WatchlistEntry[] } | undefined;
-  return (parsed?.watchlist ?? []).filter((e) => e.currency === currency);
+  return parseWatchlistBlock(block, onSkip).filter((e) => e.currency === currency);
 }
 
 // ─── Portfolio ────────────────────────────────────────────────────────────────
@@ -108,27 +130,35 @@ export async function readPortfolio(currency: Currency): Promise<PortfolioSnapsh
  * `readPortfolio` for the heartbeat: a `Lots` table that does not read (ADR-0015) does not refuse the
  * file, so a typo there never switches off the stop alerts: a header that does not read, a misspelled
  * or deleted `Lots` heading. The portfolio then has no lots and `lotsProblem` says why (file and
- * section); it is null when the lots read. Every other problem of the file (`Cash`, `Positions`) still
- * throws.
+ * section); it is null when the lots read. Neither does a `Positions` row whose ticker does not parse
+ * (ADR-0016): it is skipped and `skippedRows` says which, so the other positions are still watched.
+ * Every other problem of the file (`Cash`, the `Positions` columns) still throws.
  */
 export async function readPortfolioTolerantOfLots(
   currency: Currency,
-): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null }> {
+): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null; skippedRows: string[] }> {
   let lotsProblem: string | null = null;
-  const portfolio = parsePortfolioText(await readPortfolioText(), currency, (err) => {
-    lotsProblem = err.message;
+  const skippedRows: string[] = [];
+  const portfolio = parsePortfolioText(await readPortfolioText(), currency, {
+    onLotsError: (err) => {
+      lotsProblem = err.message;
+    },
+    onSkippedPosition: (message) => skippedRows.push(message),
   });
-  return { portfolio, lotsProblem };
+  return { portfolio, lotsProblem, skippedRows };
 }
 
 /**
  * `readPortfolio` for the readers that use positions, cash and silo value but not the lots
  * (`pending:resolve`, the Monday briefing, the weekly screening): a `Lots` table that does not read
  * does not stop them. `decision:record` (every decision type) and `decisions:evaluate` keep the
- * strict `readPortfolio` and refuse; the heartbeat reports the problem on every run.
+ * strict `readPortfolio` and refuse; the heartbeat reports the problem on every run. A `Positions` row
+ * whose ticker does not parse is skipped with a warning (ADR-0016).
  */
 export async function readPortfolioIgnoringLots(currency: Currency): Promise<PortfolioSnapshot> {
-  return (await readPortfolioTolerantOfLots(currency)).portfolio;
+  const { portfolio, skippedRows } = await readPortfolioTolerantOfLots(currency);
+  skippedRows.forEach(warnSkipped);
+  return portfolio;
 }
 
 /**
@@ -138,8 +168,12 @@ export async function readPortfolioIgnoringLots(currency: Currency): Promise<Por
 export function parsePortfolioText(
   raw: string,
   currency: Currency,
-  /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
-  onLotsError?: (err: Error) => void,
+  tolerance: {
+    /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
+    onLotsError?: (err: Error) => void;
+    /** Given, a `Positions` row whose ticker does not parse is reported here and skipped instead of throwing. */
+    onSkippedPosition?: (message: string) => void;
+  } = {},
 ): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
   assertPortfolioSections(raw, currency);
@@ -173,8 +207,8 @@ export function parsePortfolioText(
     currency,
     cash: parseCash(raw, currency),
     ...(totalCash != null ? { totalCash } : {}),
-    positions: parsePositions(raw, currency),
-    ...readLots(raw, currency, onLotsError),
+    positions: parsePositions(raw, currency, tolerance.onSkippedPosition),
+    ...readLots(raw, currency, tolerance.onLotsError),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
 }
@@ -225,7 +259,7 @@ export async function writePortfolioText(text: string): Promise<void> {
  * It only touches rows whose ticker has a price available; it does not change
  * `last_manual_sync` or any other field of the file.
  */
-export async function updatePortfolioPrices(currency: Currency, prices: Map<string, number>): Promise<void> {
+export async function updatePortfolioPrices(currency: Currency, prices: Map<Ticker, number>): Promise<void> {
   const filePath = join(projectDir(), "portfolio.md");
   // As the file is, line ends included: the codec writes back every line it did not change.
   const raw = await readFile(filePath, "utf8").catch(() => null);
@@ -240,7 +274,11 @@ export async function updatePortfolioPrices(currency: Currency, prices: Map<stri
   const col = positionColumns(table.header, currency);
   const updated = mapTableRows(model, currency, "Positions", (cells) => {
     if (isPositionPlaceholder(cells[col.ticker] ?? "")) return null;
-    const current = prices.get(cells[col.ticker]);
+    // The map is keyed by the parsed ticker, so the cell is parsed to look it up. A cell that does not
+    // parse, or a ticker without a price, leaves the row alone; a priced row carries the canonical (upper-case) ticker.
+    const checked = checkTicker(cells[col.ticker]);
+    if (!("ticker" in checked)) return null;
+    const current = prices.get(checked.ticker);
     if (current == null) return null; // ticker without a price: leave the row alone
 
     const avgPrice = parseMarkdownNumber(cells[col.avgPrice]);
@@ -248,6 +286,7 @@ export async function updatePortfolioPrices(currency: Currency, prices: Map<stri
     if (avgPrice == null || volume == null) return null;
 
     const next = [...cells];
+    next[col.ticker] = checked.ticker;
     next[col.currentPrice] = fmtEU(current);
     next[col.pl] = fmtEU((current - avgPrice) * volume);
     return next;
@@ -285,14 +324,14 @@ export async function writeDecisionLog(
 ): Promise<void> {
   const cur = rec.ticket.currency;
   const today = new Date().toISOString().slice(0, 10);
-  const filename = `${today}-${rec.ticker.toLowerCase()}.md`;
+  const filename = `${today}-${tickerFileStem(rec.ticker)}.md`;
   const path = join(projectDir(), "logs", filename);
   const m = messages();
   const t = m.decisionLog;
 
   const content = [
     `---`,
-    `id: ${today.replace(/-/g, "")}-${rec.ticker.toLowerCase()}`,
+    `id: ${today.replace(/-/g, "")}-${tickerFileStem(rec.ticker)}`,
     `title: "${rec.action} ${rec.ticker} — ${today}"`,
     `tags: [project-note, log]`,
     `status: active`,
@@ -366,13 +405,13 @@ export async function writePendingSignal(
   opts: { systemPrompt: string; userPrompt: string; useWebSearch: boolean },
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
-  const filename = `${today}-${signal.ticker.toLowerCase()}.md`;
+  const filename = `${today}-${tickerFileStem(signal.ticker)}.md`;
   const dir = join(projectDir(), "logs", "pending");
   const relativePath = join("logs", "pending", filename);
 
   const content = [
     `---`,
-    `id: ${today.replace(/-/g, "")}-${signal.ticker.toLowerCase()}-pending`,
+    `id: ${today.replace(/-/g, "")}-${tickerFileStem(signal.ticker)}-pending`,
     `title: "Signal pending analysis — ${signal.ticker} — ${today}"`,
     `tags: [project-note, log, pending]`,
     `status: active`,
@@ -432,7 +471,7 @@ export async function writePendingSignal(
 
 /** Metadata of a pending signal, read from the frontmatter of logs/pending/*.md. */
 export interface PendingSignalMeta {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   price: number;
   triggers: TriggerKind[];
@@ -502,11 +541,12 @@ function benchmarkFrontmatter(b: Benchmark | undefined): string[] {
 /** Reads `benchmark_ticker`/`benchmark_price`/`benchmark_regime`. Optional, as tolerant as strength. */
 function parseBenchmarkMeta(frontmatter: Record<string, unknown>): Benchmark | undefined {
   const { benchmark_ticker: ticker, benchmark_price: price, benchmark_regime: regime } = frontmatter;
-  if (typeof ticker !== "string" || ticker.trim() === "") return undefined;
+  const checked = checkTicker(ticker);
+  if ("problem" in checked) return undefined;
   if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return undefined;
   return MARKET_REGIMES.includes(regime as MarketRegime)
-    ? { ticker, price, regime: regime as MarketRegime }
-    : { ticker, price };
+    ? { ticker: checked.ticker, price, regime: regime as MarketRegime }
+    : { ticker: checked.ticker, price };
 }
 
 // Name generated by writePendingSignal: <YYYY-MM-DD>-<lowercase-ticker>.md.
@@ -546,9 +586,8 @@ export async function readPendingSignal(filename: string): Promise<{ meta: Pendi
   const errors: string[] = [];
   const { ticker, currency, price, triggers } = frontmatter;
 
-  if (typeof ticker !== "string" || ticker.trim() === "") {
-    errors.push(`ticker must be a non-empty string; got: ${JSON.stringify(ticker)}`);
-  }
+  const checkedTicker = checkTicker(ticker);
+  if ("problem" in checkedTicker) errors.push(`ticker: ${checkedTicker.problem}`);
   if (typeof currency !== "string" || !CURRENCIES.includes(currency as Currency)) {
     errors.push(`currency must be one of [${CURRENCIES.join(", ")}]; got: ${JSON.stringify(currency)}`);
   }
@@ -558,13 +597,13 @@ export async function readPendingSignal(filename: string): Promise<{ meta: Pendi
   if (!Array.isArray(triggers) || triggers.some((t) => !TRIGGER_KINDS.includes(t as TriggerKind))) {
     errors.push(`triggers must be an array of [${TRIGGER_KINDS.join(", ")}]; got: ${JSON.stringify(triggers)}`);
   }
-  if (errors.length > 0) {
+  if (errors.length > 0 || "problem" in checkedTicker) {
     throw new Error(`logs/pending/${filename} has an invalid frontmatter:\n- ${errors.join("\n- ")}`);
   }
 
   return {
     meta: {
-      ticker: ticker as string,
+      ticker: checkedTicker.ticker,
       currency: currency as Currency,
       price: price as number,
       triggers: triggers as TriggerKind[],
@@ -592,10 +631,10 @@ export async function deletePendingFile(filename: string): Promise<void> {
  * the escalation loop in index.ts), pass it precomputed with listLogFiles()
  * so the directory is not listed on every call.
  */
-export async function getLastLogForTicker(ticker: string, files?: string[]): Promise<LastLog | null> {
+export async function getLastLogForTicker(ticker: Ticker, files?: string[]): Promise<LastLog | null> {
   const dir = join(projectDir(), "logs");
   const allFiles = files ?? (await listLogFiles());
-  const suffix = `-${ticker.toLowerCase()}.md`;
+  const suffix = `-${tickerFileStem(ticker)}.md`;
   const matches = allFiles
     .filter((f) => f.endsWith(suffix))
     .sort()
@@ -737,13 +776,12 @@ export async function readRulesVersion(): Promise<string> {
 
 // ─── Watchlist — writing ──────────────────────────────────────────────────────
 
-/** Reads all the watchlist.md tickers regardless of currency. */
-export async function readAllWatchlistTickers(): Promise<string[]> {
+/** Reads all the watchlist.md tickers regardless of currency; an entry that does not parse is skipped with a warning (ADR-0016). */
+export async function readAllWatchlistTickers(): Promise<Ticker[]> {
   const raw = await readTextFile(join(projectDir(), "watchlist.md"));
   assertSchemaVersion(raw, "watchlist.md");
   const block = extractYamlBlock(raw);
-  const parsed = yaml.load(block) as { watchlist?: WatchlistEntry[] } | undefined;
-  return (parsed?.watchlist ?? []).map((e) => e.ticker);
+  return parseWatchlistBlock(block, warnSkipped).map((e) => e.ticker);
 }
 
 /** Adds an entry to watchlist.md (in the existing YAML block). */
@@ -784,7 +822,7 @@ export async function readWatchlistAddedOn(entries: readonly WatchlistEntry[]): 
  * progress to stderr: its stdout is the file list the Routine reads.
  */
 export async function retireWatchlistEntry(
-  ticker: string,
+  ticker: Ticker,
   reason: string,
   log: (msg: string) => void = console.log,
 ): Promise<void> {
@@ -796,8 +834,7 @@ export async function retireWatchlistEntry(
   log(`[vault-io] watchlist.md: removed ${ticker}`);
 
   // Archive the thesis if it exists
-  const slug = ticker.toLowerCase().replace(/\./g, "");
-  const thesisCandidates = [`tesis-${ticker.toLowerCase()}.md`, `tesis-${slug}.md`];
+  const thesisCandidates = [`tesis-${tickerFileStem(ticker)}.md`, `tesis-${tickerSlug(ticker)}.md`];
   for (const name of thesisCandidates) {
     const tPath = join(projectDir(), "tesis", name);
     try {
@@ -861,7 +898,7 @@ const SCREENING_RUN_FILENAME = "run.json";
 
 /** Metadata of a candidate, read from the frontmatter of logs/pending-screening/*.md. */
 export interface ScreeningCandidateMeta extends ScreeningSelection {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   market: string;
   currency: Currency;
@@ -901,11 +938,11 @@ export async function writeScreeningCandidate(
   opts: { systemPrompt: string; userPrompt: string; technicalsText: string },
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
-  const filename = `${today}-${meta.ticker.toLowerCase()}.md`;
+  const filename = `${today}-${tickerFileStem(meta.ticker)}.md`;
 
   const content = [
     `---`,
-    `id: ${today.replace(/-/g, "")}-${meta.ticker.toLowerCase().replace(/\./g, "")}-screening`,
+    `id: ${today.replace(/-/g, "")}-${tickerSlug(meta.ticker)}-screening`,
     `title: "Screening candidate — ${meta.ticker} — ${today}"`,
     `tags: [project-note, log, pending-screening]`,
     `status: active`,
@@ -993,8 +1030,9 @@ export async function readScreeningCandidate(
     return v as number;
   };
 
-  const meta: ScreeningCandidateMeta = {
-    ticker: str("ticker"),
+  const checkedTicker = checkTicker(frontmatter.ticker);
+  if ("problem" in checkedTicker) errors.push(`ticker: ${checkedTicker.problem}`);
+  const fields: Omit<ScreeningCandidateMeta, "ticker"> = {
     name: str("name"),
     market: str("market"),
     currency: str("currency") as Currency,
@@ -1017,11 +1055,11 @@ export async function readScreeningCandidate(
       `asset_class must be one of [${ASSET_CLASSES.join(", ")}]; got: ${JSON.stringify(frontmatter.asset_class)}`,
     );
   }
-  if (errors.length > 0) {
+  if (errors.length > 0 || "problem" in checkedTicker) {
     throw new Error(`logs/pending-screening/${filename} has an invalid frontmatter:\n- ${errors.join("\n- ")}`);
   }
 
-  return { meta, content };
+  return { meta: { ticker: checkedTicker.ticker, ...fields }, content };
 }
 
 /** Deletes a logs/pending-screening/ file once resolved. */

@@ -19,10 +19,11 @@ import {
   type Decision,
 } from "../decisions.js";
 import type { BuyTicket, EngineTicket, Recommendation, Signal, WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const base = (overrides: Partial<Decision> = {}): Omit<Decision, "id"> => ({
   date: "2026-09-14",
-  ticker: "ADBE",
+  ticker: tk("ADBE"),
   currency: "USD",
   origin: "sistema",
   source: "monday-briefing",
@@ -32,7 +33,7 @@ const base = (overrides: Partial<Decision> = {}): Omit<Decision, "id"> => ({
 });
 
 const entry = (overrides: Partial<WatchlistEntry> = {}): WatchlistEntry => ({
-  ticker: "ADBE",
+  ticker: tk("ADBE"),
   name: "Applied Materials",
   market: "NASDAQ",
   currency: "USD",
@@ -45,7 +46,7 @@ describe("validateDecision", () => {
   it("accepts a minimal hold and gives it an id", () => {
     const d = buildDecision(base());
     assert.match(d.id, /^20260914-adbe-hold-[0-9a-f]{8}$/);
-    assert.equal(validateDecision(d), d);
+    assert.deepEqual(validateDecision(d), d);
   });
 
   it("drops undefined fields instead of writing them", () => {
@@ -184,7 +185,7 @@ describe("validateDecision", () => {
 
 describe("decisionFromRecommendation", () => {
   const signal = (overrides: Partial<Signal> = {}): Signal => ({
-    ticker: "ADBE",
+    ticker: tk("ADBE"),
     currency: "USD",
     triggers: ["big_move"],
     price: 500,
@@ -192,11 +193,11 @@ describe("decisionFromRecommendation", () => {
     cash: 1000,
     siloValue: 2400,
     strength: { rangePosition: 0.4567, bias: "MIXTO", atr14: 12.34567 },
-    benchmark: { ticker: "VOO", price: 700 },
+    benchmark: { ticker: tk("VOO"), price: 700 },
     ...overrides,
   });
   const rec = (overrides: Partial<Recommendation> = {}): Recommendation => ({
-    ticker: "ADBE",
+    ticker: tk("ADBE"),
     action: "BUY",
     ticket: { direction: "BUY", currency: "USD", target: 560 },
     thesis_summary: "t",
@@ -244,7 +245,7 @@ describe("decisionFromRecommendation", () => {
 
   it("the benchmark regime goes to its own field, not inside benchmark", () => {
     const withRegime = signal();
-    withRegime.benchmark = { ticker: "VOO", price: 700, regime: "adverso" };
+    withRegime.benchmark = { ticker: tk("VOO"), price: 700, regime: "adverso" };
     const d = decisionFromRecommendation(rec(), withRegime, {
       ...ctx,
       blocked: true,
@@ -270,7 +271,7 @@ describe("decisionFromRecommendation", () => {
 
   it("HOLD is recorded; a SELL or ADJUST_STOP not carried out keeps the position, and without a position it is not a decision", () => {
     const position = {
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD" as const,
       volume: 1,
       avgPrice: 480,
@@ -359,16 +360,16 @@ describe("twoMonthRuleWarning (art. 33.5.f LIRPF)", () => {
     );
 
   it("with a real account warns when buying back within two months of a loss-making sale (ADBE case)", () => {
-    const w = twoMonthRuleWarning([exit()], "ADBE", "2026-09-09", "real");
+    const w = twoMonthRuleWarning([exit()], tk("ADBE"), "2026-09-09", "real");
     assert.match(w!, /ADBE se vendió con pérdida \(-30 USD\) el 2026-08-31/);
     assert.match(w!, /antes del 2026-10-31/);
   });
 
   it("does not warn in demo, out of the window, with a gain or without pnl", () => {
-    assert.equal(twoMonthRuleWarning([exit()], "ADBE", "2026-09-09", "demo"), null);
-    assert.equal(twoMonthRuleWarning([exit()], "ADBE", "2026-10-31", "real"), null);
-    assert.equal(twoMonthRuleWarning([exit({ pnl: 12 })], "ADBE", "2026-09-09", "real"), null);
-    assert.equal(twoMonthRuleWarning([exit({ pnl: undefined })], "ADBE", "2026-09-09", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-09-09", "demo"), null);
+    assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-10-31", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit({ pnl: 12 })], tk("ADBE"), "2026-09-09", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit({ pnl: undefined })], tk("ADBE"), "2026-09-09", "real"), null);
   });
 
   it("pnl is only accepted in exit", () => {
@@ -597,15 +598,15 @@ describe("findRelatedProposal", () => {
 
   it("attributes the entry to the same ticker's proposal within the window", () => {
     assert.equal(
-      findRelatedProposal([proposal], { ticker: "ADBE", date: "2026-09-14", types: ["buy_proposal"] })?.id,
+      findRelatedProposal([proposal], { ticker: tk("ADBE"), date: "2026-09-14", types: ["buy_proposal"] })?.id,
       proposal.id,
     );
     assert.equal(
-      findRelatedProposal([proposal], { ticker: "ADBE", date: "2026-09-30", types: ["buy_proposal"] }),
+      findRelatedProposal([proposal], { ticker: tk("ADBE"), date: "2026-09-30", types: ["buy_proposal"] }),
       undefined,
     );
     assert.equal(
-      findRelatedProposal([proposal], { ticker: "HAL", date: "2026-09-14", types: ["buy_proposal"] }),
+      findRelatedProposal([proposal], { ticker: tk("HAL"), date: "2026-09-14", types: ["buy_proposal"] }),
       undefined,
     );
   });
@@ -622,7 +623,7 @@ describe("findRelatedProposal", () => {
       }),
     );
     assert.equal(
-      findRelatedProposal([proposal, used], { ticker: "ADBE", date: "2026-09-14", types: ["buy_proposal"] }),
+      findRelatedProposal([proposal, used], { ticker: tk("ADBE"), date: "2026-09-14", types: ["buy_proposal"] }),
       undefined,
     );
   });
@@ -637,7 +638,7 @@ describe("findRelatedProposal", () => {
       }),
     );
     const related = findRelatedProposal([blocked], {
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       date: "2026-09-14",
       types: ["buy_proposal", "buy_blocked"],
     });

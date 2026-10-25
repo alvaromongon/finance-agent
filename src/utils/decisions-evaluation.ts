@@ -20,10 +20,11 @@ import { splitRatio } from "./lots-check.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
 import { siloPerformance, type SiloPerformance, type SiloWarning } from "./silo-performance.js";
+import type { Ticker } from "../ticker.js";
 
 /** Framework parameters the evaluation uses; `config.framework` and `config.reference` by default. */
 export interface EvaluationFramework {
-  reference: Readonly<Record<Currency, string>>;
+  reference: Readonly<Record<Currency, Ticker>>;
   minRewardRisk: number;
   cutReviewTrades: number;
   cutDecisionTrades: number;
@@ -175,7 +176,7 @@ export function excursion(
 // ─── Per decision ────────────────────────────────────────────────────────────
 
 export interface DecisionEvaluation {
-  decision: Decision & { ticker: string };
+  decision: Decision & { ticker: Ticker };
   /** Benchmark of the decision's silo. */
   reference: string;
   /** Last close ≤ decision date; null = no usable history. */
@@ -197,7 +198,7 @@ export function evaluateDecisions(
 ): DecisionEvaluation[] {
   const byId = new Map(decisions.map((d) => [d.id, d] as const));
   return decisions
-    .filter((d): d is Decision & { ticker: string } => d.ticker != null && TRACKED_TYPES.includes(d.type))
+    .filter((d): d is Decision & { ticker: Ticker } => d.ticker != null && TRACKED_TYPES.includes(d.type))
     .map((d) => {
       const bars = barsBySymbol.get(d.ticker) ?? [];
       const reference = framework.reference[d.currency];
@@ -224,7 +225,7 @@ export function evaluateDecisions(
 // ─── Closed trades ───────────────────────────────────────────────────────────
 
 export interface ClosedTrade {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   /** Date of the lot's entry and of the exit that consumed its last units. */
   entryDate: string;
@@ -282,7 +283,7 @@ export interface UnmeasuredLots {
 export interface SkippedExit {
   currency: Currency;
   /** Absent when the exit has none (a malformed line). */
-  ticker?: string;
+  ticker?: Ticker;
   date: string;
   /** The entry id the exit cites, if it cites one. */
   lotId?: string;
@@ -290,7 +291,7 @@ export interface SkippedExit {
 
 export interface OversoldLot {
   currency: Currency;
-  ticker: string;
+  ticker: Ticker;
   lotId: string;
 }
 
@@ -299,7 +300,7 @@ export type InconsistentLotReason = "units_left" | "snapshot";
 
 export interface InconsistentLot {
   currency: Currency;
-  ticker: string;
+  ticker: Ticker;
   lotId: string;
   reason: InconsistentLotReason;
 }
@@ -429,7 +430,7 @@ function judgeLot(written: readonly LotExit[]): LotVerdict {
 }
 
 /** An exit that names its lot (ticker and entry id), so it can be reported by name. */
-type LotExit = Decision & { ticker: string; related_id: string; lot_units_left: number };
+type LotExit = Decision & { ticker: Ticker; related_id: string; lot_units_left: number };
 
 /** The exit carries what a measurement needs of its lot, including the units the lot has left. */
 const hasLotSnapshot = (exit: Decision): exit is LotExit =>
@@ -695,7 +696,7 @@ export type BoardWarning =
 /** A lot still held, the open half of a trade (ADR-0015): read from `Lots`, never from the log. */
 export interface OpenTrade {
   currency: Currency;
-  ticker: string;
+  ticker: Ticker;
   /** Id of the entry that opened the lot. */
   entryId: string;
   entryDate: string;
@@ -904,10 +905,10 @@ export function evaluationSymbols(
   decisions: readonly Decision[],
   portfolios: Record<Currency, PortfolioSnapshot>,
   framework: Pick<EvaluationFramework, "reference"> = configuredFramework(),
-): string[] {
+): Ticker[] {
   return [
     ...new Set([
-      ...decisions.map((d) => d.ticker).filter((t): t is string => t != null),
+      ...decisions.map((d) => d.ticker).filter((t): t is Ticker => t != null),
       ...CURRENCIES.flatMap((c) => portfolios[c].positions.map((p) => p.ticker)),
       ...CURRENCIES.map((c) => framework.reference[c]),
     ]),

@@ -7,6 +7,7 @@
 // every check that needs the log.
 import type { Decision } from "../decisions.js";
 import type { Lot, PortfolioSnapshot } from "../types.js";
+import type { Ticker } from "../ticker.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import { portfolioWhere } from "./vault-parser.js";
 
@@ -18,39 +19,19 @@ const where = (portfolio: PortfolioSnapshot): string => portfolioWhere(portfolio
 /**
  * Problems of a silo's `Volume` against its lots, from `portfolio.md` alone: a row of `Lots` the reader
  * skipped (it names the row and the reason), then a ticker whose `Volume` is not the sum of the `Units`
- * of its lots (a position with no lots, or lots of a ticker with no position row, count too). A ticker
- * that `Positions` and `Lots` write differing only in case is one problem, not two `Volume` mismatches.
- * One message per problem, empty if it is consistent. `caseReported` holds the lot tickers whose case
- * the caller already reported (against the decision log).
+ * of its lots (a position with no lots, or lots of a ticker with no position row, count too). One
+ * message per problem, empty if it is consistent.
  */
-export function volumeMismatches(
-  portfolio: PortfolioSnapshot,
-  caseReported: ReadonlySet<string> = new Set(),
-): string[] {
+export function volumeMismatches(portfolio: PortfolioSnapshot): string[] {
   const at = where(portfolio);
-  const lotUnits = new Map<string, number>();
+  const lotUnits = new Map<Ticker, number>();
   for (const lot of portfolio.lots) lotUnits.set(lot.ticker, (lotUnits.get(lot.ticker) ?? 0) + lot.units);
 
-  const volumes = new Map<string, number>();
+  const volumes = new Map<Ticker, number>();
   for (const p of portfolio.positions) volumes.set(p.ticker, (volumes.get(p.ticker) ?? 0) + p.volume);
 
   const problems = (portfolio.skippedLotRows ?? []).map((row) => `${at}: ${row}`);
-  const inCase = new Map<string, string>();
-  for (const ticker of volumes.keys()) inCase.set(ticker.toLowerCase(), ticker);
-  const apart = new Set<string>();
-  for (const ticker of lotUnits.keys()) {
-    const position = inCase.get(ticker.toLowerCase());
-    if (position === undefined || position === ticker || volumes.has(ticker)) continue;
-    apart.add(position);
-    apart.add(ticker);
-    if (!caseReported.has(ticker)) {
-      problems.push(
-        `${at}: ${ticker} in Lots and ${position} in Positions differ only in case; write the ticker the same in both`,
-      );
-    }
-  }
   for (const ticker of new Set([...volumes.keys(), ...lotUnits.keys()])) {
-    if (apart.has(ticker)) continue;
     const volume = volumes.get(ticker) ?? 0;
     const units = lotUnits.get(ticker) ?? 0;
     if (Math.abs(volume - units) > UNITS_TOLERANCE) {
@@ -80,7 +61,6 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
   const byId = new Map(decisions.map((d) => [d.id, d]));
   const problems: string[] = [];
   const seen = new Set<string>();
-  const caseReported = new Set<string>();
 
   for (const lot of portfolio.lots) {
     const name = `${lot.ticker}: lot ${lot.entryId}`;
@@ -106,12 +86,8 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
         `${at}: lot ${lot.entryId} is an entry of ${decision.ticker} recorded in ${decision.currency}, not ${portfolio.currency}`,
       );
     } else if (decision.ticker !== lot.ticker) {
-      const caseOnly = decision.ticker.toLowerCase() === lot.ticker.toLowerCase();
-      if (caseOnly) caseReported.add(lot.ticker);
       problems.push(
-        `${at}: lot ${lot.entryId} is on ${lot.ticker} but its entry in the decision log is ${decision.ticker}${
-          caseOnly ? " (they differ only in case)" : ""
-        }`,
+        `${at}: lot ${lot.entryId} is on ${lot.ticker} but its entry in the decision log is ${decision.ticker}`,
       );
     } else {
       for (const difference of snapshotDifferences(lot, decision)) {
@@ -121,7 +97,7 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
   }
 
   const usedUp = usedUpEntries(decisions);
-  problems.push(...volumeMismatches(portfolio, caseReported));
+  problems.push(...volumeMismatches(portfolio));
   problems.push(...entriesWithoutLot(portfolio, decisions, usedUp));
   problems.push(...lotsAlreadyUsedUp(portfolio, usedUp));
   return problems;
