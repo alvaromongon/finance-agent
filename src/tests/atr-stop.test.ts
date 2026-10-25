@@ -15,10 +15,11 @@ import {
 } from "../utils/atr-stop.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Position } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function position(overrides: Partial<Position> = {}): Position {
   return {
-    ticker: "MSFT",
+    ticker: tk("MSFT"),
     currency: "USD",
     volume: 1,
     avgPrice: 492.01,
@@ -109,10 +110,10 @@ describe("detectTightStops", () => {
   it("the bound is strict: exactly the minimum does not warn", () => {
     // Round numbers on purpose: the multiple is exact in binary and the test
     // checks the bound, not the floating-point error.
-    const atLimit = [position({ ticker: "X", stopLoss: 100 - MIN_STOP_ATR * 3 })];
+    const atLimit = [position({ ticker: tk("X"), stopLoss: 100 - MIN_STOP_ATR * 3 })];
     assert.deepEqual(detectTightStops(atLimit, new Map([["X", 100]]), new Map([["X", 3]])), []);
 
-    const slightlyCloser = [position({ ticker: "X", stopLoss: 100 - MIN_STOP_ATR * 3 + 0.01 })];
+    const slightlyCloser = [position({ ticker: tk("X"), stopLoss: 100 - MIN_STOP_ATR * 3 + 0.01 })];
     assert.equal(detectTightStops(slightlyCloser, new Map([["X", 100]]), new Map([["X", 3]])).length, 1);
   });
 
@@ -163,7 +164,7 @@ describe("fetchAtrForPositions", () => {
     };
 
     const atrs = await fetchAtrForPositions(
-      [position({ ticker: "AVGO" }), position({ ticker: "UNH", stopLoss: null })],
+      [position({ ticker: tk("AVGO") }), position({ ticker: tk("UNH"), stopLoss: null })],
       provider,
     );
 
@@ -182,7 +183,7 @@ describe("fetchAtrForPositions", () => {
     };
 
     const atrs = await fetchAtrForPositions(
-      [position({ ticker: "AVGO" }), position({ ticker: "UNH" })],
+      [position({ ticker: tk("AVGO") }), position({ ticker: tk("UNH") })],
       provider,
       (msg) => warnings.push(msg),
     );

@@ -7,6 +7,7 @@ process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { classifyRegime, formatRegimeLines } from "../utils/market-regime.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const flat = (n: number, value: number) => Array<number>(n).fill(value);
 
@@ -51,8 +52,8 @@ describe("classifyRegime", () => {
 describe("formatRegimeLines", () => {
   it("one line per silo with its effect, and without a regime it warns that it does not block", () => {
     const lines = formatRegimeLines({
-      EUR: { ticker: "EXSA.DE", price: 300, regime: "adverso" },
-      USD: { ticker: "VOO", price: 700 },
+      EUR: { ticker: tk("EXSA.DE"), price: 300, regime: "adverso" },
+      USD: { ticker: tk("VOO"), price: 700 },
     });
     assert.equal(lines.length, 2);
     assert.match(lines[0], /^Régimen EUR \(EXSA\.DE\): ADVERSO .*BLOQUEADA/);

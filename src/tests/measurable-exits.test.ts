@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { EvaluationReport } from "../utils/decisions-evaluation.js";
+import { parseTicker as tk } from "../ticker.js";
 
 /** The clock of every scenario: the Monday after the last bar. */
 const NOW = new Date("2026-10-19T12:00:00Z");
@@ -792,7 +793,7 @@ describe("measurable exits: the five R tests of spec #27", () => {
         exits.map((e) => e.pnl),
         [50, -25],
       );
-      const warning = twoMonthRuleWarning((await readLog()) as unknown as Decision[], "TCK", "2026-08-20", "real");
+      const warning = twoMonthRuleWarning((await readLog()) as unknown as Decision[], tk("TCK"), "2026-08-20", "real");
       assert.ok(warning?.includes("-25"), String(warning));
     });
 
@@ -815,7 +816,7 @@ describe("measurable exits: the five R tests of spec #27", () => {
         log.filter((d) => d.type === "exit").map((e) => e.pnl),
         [100, -50],
       );
-      const warning = twoMonthRuleWarning(log as unknown as Decision[], "TCK", "2026-08-20", "real");
+      const warning = twoMonthRuleWarning(log as unknown as Decision[], tk("TCK"), "2026-08-20", "real");
       assert.ok(warning?.includes("-50"), String(warning));
     });
 

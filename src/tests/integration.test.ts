@@ -35,9 +35,11 @@ import type {
   Signal,
   TriggerKind,
 } from "../types.js";
+import type { Ticker } from "../ticker.js";
 import type { TicketValidation } from "../risk.js";
 import { SPANISH } from "./fixtures/spanish.js";
 import { lotId, lotsSection } from "./fixtures/lots.js";
+import { parseTicker as tk } from "../ticker.js";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -100,7 +102,7 @@ watchlist:
 `;
 
 const MOCK_REC: Recommendation = {
-  ticker: "TEST.EU",
+  ticker: tk("TEST.EU"),
   action: "BUY",
   ticket: { direction: "BUY", currency: "EUR", target: 50 },
   thesis_summary: "Integration test BUY signal.",
@@ -118,7 +120,7 @@ describe("Integration — engine", () => {
   let updatePortfolioPrices: (currency: Currency, prices: Map<string, number>) => Promise<void>;
   let writeDecisionLog: typeof import("../vault-io.js").writeDecisionLog;
   let getLastLogForTicker: (
-    ticker: string,
+    ticker: Ticker,
     files?: string[],
   ) => Promise<{ price: number; triggers: TriggerKind[] } | null>;
   let listLogFiles: () => Promise<string[]>;
@@ -297,7 +299,7 @@ describe("Integration — engine", () => {
 
     it("appendScreeningLogEntries creates the screening-log with version and header, and reads it back", async () => {
       const log = {
-        ticker: "AAA",
+        ticker: tk("AAA"),
         name: "Aaa",
         index: "S&P 500",
         date: "2026-10-13",
@@ -434,7 +436,7 @@ describe("Integration — engine", () => {
       assert.ok(content.includes("triggers: [setup]"), "triggers en frontmatter");
       assert.ok(content.includes("| Setup | breakout a 45.2, objetivo 52.1 |"), "setup in the log");
 
-      const lastLog = await getLastLogForTicker("TEST.EU");
+      const lastLog = await getLastLogForTicker(tk("TEST.EU"));
       assert.deepEqual(lastLog, { price: 45.2, triggers: ["setup"] });
     });
 
@@ -442,7 +444,7 @@ describe("Integration — engine", () => {
       process.env.OUTPUT_LANGUAGE = "en";
       try {
         await writeDecisionLog(
-          { ...MOCK_REC, ticker: "TEST.US", thesis_summary: "English thesis.", assumptions: ["Brent holds"] },
+          { ...MOCK_REC, ticker: tk("TEST.US"), thesis_summary: "English thesis.", assumptions: ["Brent holds"] },
           {
             price: 45.2,
             blocked: true,
@@ -469,7 +471,7 @@ describe("Integration — engine", () => {
     });
 
     it("getLastLogForTicker returns null for a ticker without a log", async () => {
-      const lastLog = await getLastLogForTicker("NEVER.ANALYZED");
+      const lastLog = await getLastLogForTicker(tk("NEVER.ANALYZED"));
       assert.equal(lastLog, null);
     });
 
@@ -477,14 +479,14 @@ describe("Integration — engine", () => {
       const files = await listLogFiles();
       assert.ok(files.length > 0, "it must list the files already written in this test");
 
-      const withFiles = await getLastLogForTicker("TEST.EU", files);
-      const withoutFiles = await getLastLogForTicker("TEST.EU");
+      const withFiles = await getLastLogForTicker(tk("TEST.EU"), files);
+      const withoutFiles = await getLastLogForTicker(tk("TEST.EU"));
       assert.deepEqual(withFiles, withoutFiles);
     });
 
     it("getLastLogForTicker ignora logs blocked: true", async () => {
-      await writeDecisionLog({ ...MOCK_REC, ticker: "BLOCKED.EU" }, { price: 99, blocked: true });
-      const lastLog = await getLastLogForTicker("BLOCKED.EU");
+      await writeDecisionLog({ ...MOCK_REC, ticker: tk("BLOCKED.EU") }, { price: 99, blocked: true });
+      const lastLog = await getLastLogForTicker(tk("BLOCKED.EU"));
       assert.equal(lastLog, null);
     });
   });
@@ -506,8 +508,11 @@ describe("Integration — engine", () => {
     });
 
     it("same trigger, no relevant price change: there IS a cooldown", async () => {
-      await writeDecisionLog({ ...MOCK_REC, ticker: "COOLDOWN.EU", triggers: ["setup", "big_move"] }, { price: 100 });
-      const lastLog = await getLastLogForTicker("COOLDOWN.EU");
+      await writeDecisionLog(
+        { ...MOCK_REC, ticker: tk("COOLDOWN.EU"), triggers: ["setup", "big_move"] },
+        { price: 100 },
+      );
+      const lastLog = await getLastLogForTicker(tk("COOLDOWN.EU"));
       const skip = shouldSkipReanalysis({
         currentTriggers: ["setup"],
         currentPrice: 101, // Δ 1% < REANALYSIS_PRICE_DELTA_PCT (3% by default)
@@ -518,8 +523,8 @@ describe("Integration — engine", () => {
     });
 
     it("new trigger (big_move after a setup): there is NO cooldown", async () => {
-      await writeDecisionLog({ ...MOCK_REC, ticker: "COOLDOWN2.EU", triggers: ["setup"] }, { price: 100 });
-      const lastLog = await getLastLogForTicker("COOLDOWN2.EU");
+      await writeDecisionLog({ ...MOCK_REC, ticker: tk("COOLDOWN2.EU"), triggers: ["setup"] }, { price: 100 });
+      const lastLog = await getLastLogForTicker(tk("COOLDOWN2.EU"));
       const skip = shouldSkipReanalysis({
         currentTriggers: ["big_move"], // same price, different and never seen trigger
         currentPrice: 100,

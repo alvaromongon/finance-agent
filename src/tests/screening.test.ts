@@ -8,6 +8,7 @@ import {
   applyRetireWatchlistEntry,
 } from "../utils/vault-parser.js";
 import type { WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 // ── parseScreeningLog ─────────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ watchlist:
 `;
 
 const newEntry: WatchlistEntry = {
-  ticker: "AIR.PA",
+  ticker: tk("AIR.PA"),
   name: "Airbus",
   market: "Euronext Paris",
   currency: "EUR",
@@ -172,7 +173,7 @@ describe("applyAddWatchlistEntry", () => {
   });
 
   it("returns the same string if the ticker already exists (idempotent)", () => {
-    const duplicate: WatchlistEntry = { ...newEntry, ticker: "DEF.MI" };
+    const duplicate: WatchlistEntry = { ...newEntry, ticker: tk("DEF.MI") };
     const updated = applyAddWatchlistEntry(WATCHLIST_MD, duplicate);
     assert.equal(updated, WATCHLIST_MD);
   });
@@ -184,7 +185,7 @@ describe("applyAddWatchlistEntry", () => {
   });
 
   it("keeps asset_class when writing a new entry (round-trip)", () => {
-    const commodityEntry: WatchlistEntry = { ...newEntry, ticker: "4GLD.DE", asset_class: "commodity" };
+    const commodityEntry: WatchlistEntry = { ...newEntry, ticker: tk("4GLD.DE"), asset_class: "commodity" };
     const updated = applyAddWatchlistEntry(WATCHLIST_MD, commodityEntry);
     assert.ok(/asset_class:\s*commodity/.test(updated));
   });
@@ -203,23 +204,23 @@ describe("applyAddWatchlistEntry", () => {
 
 describe("applyRetireWatchlistEntry", () => {
   it("removes the ticker from the YAML block", () => {
-    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, "DEF.MI");
+    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, tk("DEF.MI"));
     assert.ok(!updated.includes("DEF.MI"));
   });
 
   it("does not change other tickers", () => {
     const md = applyAddWatchlistEntry(WATCHLIST_MD, newEntry);
-    const updated = applyRetireWatchlistEntry(md, "DEF.MI");
+    const updated = applyRetireWatchlistEntry(md, tk("DEF.MI"));
     assert.ok(updated.includes("AIR.PA"));
   });
 
   it("does not fail if the ticker does not exist", () => {
-    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, "NOEXISTE");
+    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, tk("NOEXISTE"));
     assert.ok(updated.includes("DEF.MI")); // the rest untouched
   });
 
   it("the result is still Markdown with a yaml block", () => {
-    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, "DEF.MI");
+    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, tk("DEF.MI"));
     assert.ok(updated.includes("```yaml"));
   });
 });

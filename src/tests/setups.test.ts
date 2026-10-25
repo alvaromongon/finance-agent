@@ -8,11 +8,12 @@ import { detectNewSetups, detectSetups, evaluateSetup, describeSetup } from "../
 import { detectPullback } from "../utils/setups/pullback.js";
 import { bar, extend, realBars, uptrend } from "./fixtures/setup-bars.js";
 import type { WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const { pullback: PULLBACK, breakout: BREAKOUT } = config.framework.setups;
 
 const entry: WatchlistEntry = {
-  ticker: "TEST",
+  ticker: tk("TEST"),
   name: "Test",
   market: "NYSE",
   currency: "USD",

@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { assertLotsMatch, lotsMismatches, volumeMismatches } from "../utils/lots-check.js";
 import { buildDecision, type Decision } from "../decisions.js";
 import type { Lot, PortfolioSnapshot, Position } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const entry = (id: string, ticker: string, currency: "EUR" | "USD" = "USD"): Decision =>
   buildDecision({
     id,
     date: "2026-06-15",
-    ticker,
+    ticker: tk(ticker),
     currency,
     origin: "sistema",
     source: "portfolio-sync",
@@ -27,7 +28,7 @@ const earlierEntry = (id: string, ticker: string): Decision => {
 };
 
 const position = (ticker: string, volume: number): Position => ({
-  ticker,
+  ticker: tk(ticker),
   currency: "USD",
   volume,
   avgPrice: 100,
@@ -37,7 +38,7 @@ const position = (ticker: string, volume: number): Position => ({
 });
 
 const lot = (entryId: string, units: number, ticker = "TCK"): Lot => ({
-  ticker,
+  ticker: tk(ticker),
   entryId,
   date: "2026-06-15",
   units,
@@ -99,7 +100,7 @@ describe("lotsMismatches", () => {
     const sell = buildDecision({
       id: "s",
       date: "2026-06-15",
-      ticker: "TCK",
+      ticker: tk("TCK"),
       currency: "USD",
       origin: "sistema",
       source: "portfolio-sync",
@@ -123,29 +124,6 @@ describe("lotsMismatches", () => {
     const sell = { ...entry("s", "TCK"), type: "exit" as const };
     const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("s", 5)]), [sell]);
     assert.match(message, /lot s is a decision of type exit in the decision log, not an entry/);
-  });
-
-  it("a ticker that differs only in case between Lots and the log is one message, not two Volume mismatches", () => {
-    const messages = lotsMismatches(portfolio([position("AAPL", 10)], [lot("a", 10, "aapl")]), [entry("a", "AAPL")]);
-    assert.equal(messages.length, 1, messages.join("\n"));
-    assert.match(
-      messages[0],
-      /lot a is on aapl but its entry in the decision log is AAPL \(they differ only in case\)/,
-    );
-  });
-
-  it("a ticker that differs only in case between Positions and Lots is one message from portfolio.md alone", () => {
-    const messages = volumeMismatches(portfolio([position("AAPL", 10)], [lot("a", 10, "aapl")]));
-    assert.equal(messages.length, 1, messages.join("\n"));
-    assert.match(messages[0], /aapl in Lots and AAPL in Positions differ only in case/);
-  });
-
-  it("a case difference does not hide a Volume that is wrong for other tickers", () => {
-    const messages = volumeMismatches(
-      portfolio([position("AAPL", 10), position("TCK", 7)], [lot("a", 10, "aapl"), lot("b", 5)]),
-    );
-    assert.equal(messages.length, 2);
-    assert.match(messages[1], /TCK: Volume 7.*\(5\)/);
   });
 
   it("reports the rows of Lots the reader skipped, with the file prefix", () => {
@@ -285,7 +263,7 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
     const exitOf = (entryId: string, left?: number): Decision =>
       buildDecision({
         date: "2026-08-10",
-        ticker: "TCK",
+        ticker: tk("TCK"),
         currency: "USD",
         origin: "sistema",
         source: "portfolio-sync",

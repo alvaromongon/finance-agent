@@ -29,6 +29,7 @@ import type {
   SellTicket,
   Signal,
 } from "../types.js";
+import type { Ticker } from "../ticker.js";
 
 /** Framework parameters plus what the broker accepts as an order (fractional and minimum). */
 export type Framework = typeof config.framework & OrderRules;
@@ -68,18 +69,18 @@ export function siloValue(portfolio: PortfolioSnapshot, prices?: ReadonlyMap<str
  * stock.
  */
 export function purchaseTaxPct(
-  ticker: string,
+  ticker: Ticker,
   assetClass?: AssetClass,
   framework: Framework = DEFAULT_FRAMEWORK,
 ): number {
   if (assetClass === "etf" || assetClass === "commodity") return 0;
   const table: Record<string, number> = framework.costs.purchaseTaxPctBySuffix;
-  const suffix = Object.keys(table).find((s) => ticker.toUpperCase().endsWith(s));
+  const suffix = Object.keys(table).find((s) => ticker.endsWith(s));
   return suffix ? table[suffix] : 0;
 }
 
 export interface SizingInput {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   /** Entry price: the signal's or the briefing's. */
   entry: number;

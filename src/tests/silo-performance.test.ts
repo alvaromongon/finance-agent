@@ -19,6 +19,7 @@ import {
 } from "../utils/silo-performance.js";
 import type { Currency, PortfolioSnapshot, Position } from "../types.js";
 import { weekdayBars } from "./fixtures/weekday-bars.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function assertClose(actual: number | null | undefined, expected: number, epsilon = 1e-6) {
   assert.ok(actual != null && Math.abs(actual - expected) < epsilon, `expected ${expected}, got ${actual}`);
@@ -57,12 +58,12 @@ const BARS = new Map([
 const DECISIONS = [
   decision({ type: "deposit", date: "2026-09-01", amount: 999 }), // before the start: already in the base cash
   decision({ type: "deposit", date: "2026-09-07", amount: 100 }),
-  decision({ type: "entry", date: "2026-09-08", ticker: "AAA", price: 60, amount: 300 }),
+  decision({ type: "entry", date: "2026-09-08", ticker: tk("AAA"), price: 60, amount: 300 }),
   decision({ type: "fx_conversion", date: "2026-09-09", amount: 100, costs: 0.5, fx_rate: 1.2 }),
 ];
 
 const AAA_POSITION: Position = {
-  ticker: "AAA",
+  ticker: tk("AAA"),
   currency: "EUR",
   volume: 5,
   avgPrice: 60,
@@ -132,8 +133,8 @@ describe("reconstructSilo", () => {
   it("an exit's units are its `units`, not amount / price: a rounded amount does not move the position", () => {
     // 10 units bought at 0.001 and 6 sold (the amount rounded to the cent, 0.01 / 0.001 would read 10): 4 are left.
     const decisions = [
-      decision({ type: "entry", date: "2026-09-08", ticker: "AAA", price: 0.001, amount: 0.01, units: 10 }),
-      decision({ type: "exit", date: "2026-09-09", ticker: "AAA", price: 0.001, amount: 0.01, units: 6 }),
+      decision({ type: "entry", date: "2026-09-08", ticker: tk("AAA"), price: 0.001, amount: 0.01, units: 10 }),
+      decision({ type: "exit", date: "2026-09-09", ticker: tk("AAA"), price: 0.001, amount: 0.01, units: 6 }),
     ];
     const history = reconstructSilo(
       input({ decisions, portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 4 }]) }),

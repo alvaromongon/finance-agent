@@ -3,7 +3,8 @@
 import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownNumber } from "./parse.js";
 import { DECISION_ORIGINS } from "../decisions.js";
-import type { Currency, Lot, Position } from "../types.js";
+import { checkTicker, type Ticker } from "../ticker.js";
+import type { Currency, Lot, Position, WatchlistEntry } from "../types.js";
 import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
 
 // `portfolio.md`'s grammar lives in the codec; these are re-exported for the readers of other files.
@@ -132,13 +133,19 @@ export const SCREENING_RESULTS = ["interesting", "not_interesting"] as const;
 export type ScreeningResultValue = (typeof SCREENING_RESULTS)[number];
 
 export interface ScreeningLogRow {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   index: string;
   date: string;
   result: ScreeningResultValue;
   summary: string;
   nextReview: string;
+}
+
+function screeningTicker(raw: string, date: string): Ticker {
+  const checked = checkTicker(raw);
+  if ("problem" in checked) throw new Error(`screening-log.md: row ${raw} of ${date}: ${checked.problem}`);
+  return checked.ticker;
 }
 
 /**
@@ -161,7 +168,7 @@ export function parseScreeningLog(md: string): ScreeningLogRow[] {
       return cells;
     })
     .map((cells) => ({
-      ticker: cells[0],
+      ticker: screeningTicker(cells[0], cells[3]),
       name: cells[1],
       index: cells[2],
       date: cells[3],
@@ -176,16 +183,17 @@ export function parseScreeningLog(md: string): ScreeningLogRow[] {
  * Claude adds at the end of the Monday Briefing.
  * Returns an empty array if there are no removals or the section is missing.
  */
-export function extractRetireList(reviewText: string): string[] {
+export function extractRetireList(reviewText: string): Ticker[] {
   // [ \t]* and not \s*: with an empty `RETIRE:`, \s* jumped to the next line
   // and returned "PLAN_SUMMARY: …" as if it were a ticker to remove.
   const match = /^##\s+AUTOMATED_ACTIONS\s*\nRETIRE:[ \t]*(.*)$/m.exec(normalizeEol(reviewText));
   const line = match?.[1]?.trim() ?? "";
+  // What does not parse as a ticker is not one to retire.
   return line
-    ? line
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean)
+    ? line.split(",").flatMap((t) => {
+        const checked = checkTicker(t);
+        return "ticker" in checked ? [checked.ticker] : [];
+      })
     : [];
 }
 
@@ -202,6 +210,25 @@ export function extractPlanSummary(reviewText: string): string {
 }
 
 /**
+ * The entries of the watchlist.md YAML block, with their tickers parsed (a ticker written in lower case
+ * reads as its upper-case value). An entry whose ticker does not parse throws, naming it.
+ */
+export function parseWatchlistBlock(block: string): WatchlistEntry[] {
+  const parsed = yaml.load(block) as { watchlist?: WatchlistEntry[] } | undefined;
+  return (parsed?.watchlist ?? []).map((entry, i) => {
+    const checked = checkTicker(entry?.ticker);
+    if ("problem" in checked) throw new Error(`watchlist.md: entry ${i + 1}: ${checked.problem}`);
+    return { ...entry, ticker: checked.ticker };
+  });
+}
+
+/** True if a raw watchlist entry names the ticker, whatever the case it was written in. */
+function namesTicker(entry: { ticker?: unknown }, ticker: Ticker): boolean {
+  const checked = checkTicker(entry?.ticker);
+  return "ticker" in checked && checked.ticker === ticker;
+}
+
+/**
  * Adds an entry to the watchlist.md YAML block.
  * Pure function: takes the current markdown and returns the updated one.
  * Returns the same string if the ticker already exists.
@@ -211,7 +238,7 @@ export function applyAddWatchlistEntry(md: string, entry: import("../types.js").
   const block = extractYamlBlock(md);
   const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
   const watchlist = parsed?.watchlist ?? [];
-  if (watchlist.some((e) => e.ticker === entry.ticker)) return md;
+  if (watchlist.some((e) => namesTicker(e, entry.ticker))) return md;
   watchlist.push(entry);
   const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
   return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
@@ -221,11 +248,11 @@ export function applyAddWatchlistEntry(md: string, entry: import("../types.js").
  * Removes a ticker from the watchlist.md YAML block.
  * Pure function: takes the current markdown and returns the updated one.
  */
-export function applyRetireWatchlistEntry(md: string, ticker: string): string {
+export function applyRetireWatchlistEntry(md: string, ticker: Ticker): string {
   md = normalizeEol(md);
   const block = extractYamlBlock(md);
   const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
-  const watchlist = (parsed?.watchlist ?? []).filter((e) => e.ticker !== ticker);
+  const watchlist = (parsed?.watchlist ?? []).filter((e) => !namesTicker(e, ticker));
   const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
   return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
 }
@@ -294,15 +321,18 @@ export function parsePositions(md: string, currency: Currency): Position[] {
   const positions: Position[] = [];
 
   for (const cells of rows) {
-    const ticker = (cells[col.ticker] ?? "").trim();
-    if (isPositionPlaceholder(ticker)) continue;
+    const rawTicker = (cells[col.ticker] ?? "").trim();
+    if (isPositionPlaceholder(rawTicker)) continue;
 
     const volume = parseMarkdownNumber(cells[col.volume]);
     const avgPrice = parseMarkdownNumber(cells[col.avgPrice]);
     if (volume == null || avgPrice == null) continue;
 
+    const checked = checkTicker(rawTicker);
+    if ("problem" in checked)
+      throw new Error(`## ${currency} — Positions: Ticker ${JSON.stringify(rawTicker)}: ${checked.problem}`);
     positions.push({
-      ticker,
+      ticker: checked.ticker,
       currency,
       volume,
       avgPrice,
@@ -420,6 +450,9 @@ function readLotRow(
   if (cells.every((c) => isPlaceholder(c.trim())) || /^entry id$/i.test(cell("entryId"))) return null;
   if (isPlaceholder(cell("entryId"))) return { reason: "no Entry id" };
   if (isPlaceholder(cell("ticker"))) return { reason: "no Ticker" };
+  const ticker = checkTicker(cell("ticker"));
+  if ("problem" in ticker)
+    return { reason: `Ticker ${JSON.stringify(cell("ticker"))} does not read: ${ticker.problem}` };
 
   const numbers = {} as Record<"units" | "entryUnits" | "entryPrice", number>;
   for (const key of ["units", "entryUnits", "entryPrice"] as const) {
@@ -440,7 +473,7 @@ function readLotRow(
 
   return {
     lot: {
-      ticker: cell("ticker"),
+      ticker: ticker.ticker,
       entryId: cell("entryId"),
       date,
       units: numbers.units,

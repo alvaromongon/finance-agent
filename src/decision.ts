@@ -47,6 +47,7 @@ import { applyLotChange, lotOfEntry, planSale, type SaleShare } from "./utils/po
 import { round, round2 } from "./utils/round.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
+import { tickerFileStem, type Ticker } from "./ticker.js";
 
 export interface RecordDecisionOptions {
   /** Tells in the console which backend recorded the decision, with a trailing space ("[pending] "). */
@@ -92,7 +93,7 @@ export async function recordDecision(
     date: detectedOn ?? today,
     rulesVersion,
     source: "heartbeat",
-    logLink: `logs/${today}-${rec.ticker.toLowerCase()}.md`,
+    logLink: `logs/${today}-${tickerFileStem(rec.ticker)}.md`,
     blocked: evaluation.blocked,
     reasons: codes,
     ticket: evaluation.ticket,
@@ -385,7 +386,7 @@ function withLots(
   text: string,
   currency: Currency,
   lots: readonly Lot[],
-  change: { ticker: string; newStopLoss?: number | null; currentPrice?: number },
+  change: { ticker: Ticker; newStopLoss?: number | null; currentPrice?: number },
 ): string {
   const own = lots.filter((lot) => lot.ticker === change.ticker);
   const volume = own.reduce((sum, lot) => sum + lot.units, 0);
@@ -405,7 +406,7 @@ function entryCostsTaken(history: readonly Decision[]): Map<string, number> {
 }
 
 /** ATR14 of the asset to evaluate the stop distance. Best-effort. */
-async function fetchAtr(provider: OwnerDecisionProvider, ticker: string): Promise<number | null> {
+async function fetchAtr(provider: OwnerDecisionProvider, ticker: Ticker): Promise<number | null> {
   try {
     const bars = (await provider.getHistorical?.(ticker, "1y")) ?? [];
     return atr14d(bars);

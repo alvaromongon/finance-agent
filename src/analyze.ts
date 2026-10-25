@@ -20,10 +20,11 @@ import type { HistoricalBar } from "./providers/types.js";
 import { sma, atr14d, findSupports, computeTechnicals, targetLevels, rangePosition } from "./utils/technicals.js";
 import { MIN_STOP_ATR, STOP_ATR_BY_HORIZON, suggestStop } from "./utils/atr-stop.js";
 import { detectSetups } from "./utils/setups/index.js";
+import { checkTicker, type Ticker } from "./ticker.js";
 
 // ── CLI arguments ───────────────────────────────────────────────────────────
 
-function parseArgs(): { ticker: string; range: string } {
+function parseArgs(): { ticker: Ticker; range: string } {
   const args = process.argv.slice(2);
   const tickerIdx = args.indexOf("--ticker");
   const rangeIdx = args.indexOf("--range");
@@ -33,8 +34,14 @@ function parseArgs(): { ticker: string; range: string } {
     process.exit(1);
   }
 
+  const checked = checkTicker(args[tickerIdx + 1]);
+  if ("problem" in checked) {
+    console.error(`--ticker: ${checked.problem}`);
+    process.exit(1);
+  }
+
   return {
-    ticker: args[tickerIdx + 1],
+    ticker: checked.ticker,
     range: rangeIdx !== -1 && args[rangeIdx + 1] ? args[rangeIdx + 1] : "1y",
   };
 }
@@ -49,7 +56,7 @@ function pct(a: number, b: number): string {
   return ((a / b - 1) * 100).toFixed(1) + "%";
 }
 
-function printReport(ticker: string, bars: HistoricalBar[], currentPrice: number): void {
+function printReport(ticker: Ticker, bars: HistoricalBar[], currentPrice: number): void {
   const closes = bars.map((b) => b.close);
 
   const w52High = Math.max(...bars.map((b) => b.high));

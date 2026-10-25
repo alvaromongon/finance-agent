@@ -6,9 +6,10 @@ import { extend, uptrend } from "./fixtures/setup-bars.js";
 import { buildDecision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { PortfolioSnapshot, WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const entry = (ticker: string): WatchlistEntry => ({
-  ticker,
+  ticker: tk(ticker),
   name: ticker,
   market: "NYSE",
   currency: "USD",
@@ -43,7 +44,7 @@ const portfolio = (positions: PortfolioSnapshot["positions"] = []): PortfolioSna
   syncedAt: "2026-09-24T00:00:00Z",
 });
 const held = {
-  ticker: "HELD",
+  ticker: tk("HELD"),
   currency: "USD" as const,
   volume: 1,
   avgPrice: 200,
@@ -59,7 +60,7 @@ const scan = (over: Partial<Parameters<typeof scanSetups>[0]> = {}) =>
     provider,
     date: "2026-09-24",
     rulesVersion: "0.7",
-    benchmark: { ticker: "VOO", price: 800, regime: "favorable" },
+    benchmark: { ticker: tk("VOO"), price: 800, regime: "favorable" },
     log: () => {},
     ...over,
   });
@@ -99,7 +100,7 @@ describe("scanSetups (ADR-0013)", () => {
   });
 
   it("in an adverse regime the pullback does not escalate: it stays buy_blocked with its setup", async () => {
-    const { signals, decisions } = await scan({ benchmark: { ticker: "VOO", price: 800, regime: "adverso" } });
+    const { signals, decisions } = await scan({ benchmark: { ticker: tk("VOO"), price: 800, regime: "adverso" } });
     assert.deepEqual(signals, []);
     const pb = decisions.find((d) => d.ticker === "PB")!;
     assert.equal(pb.type, "buy_blocked");
@@ -111,7 +112,7 @@ describe("scanSetups (ADR-0013)", () => {
   it("the signal carries the engine conviction: screening quintile and catalyst, the day's regime and R:R", async () => {
     const screened = buildDecision({
       date: "2026-09-19",
-      ticker: "PB",
+      ticker: tk("PB"),
       currency: "USD",
       origin: "sistema",
       source: "screening",
@@ -134,7 +135,7 @@ describe("scanSetups (ADR-0013)", () => {
   });
 
   it("blocked ones and armed breakouts carry a conviction too, to measure them", async () => {
-    const { decisions } = await scan({ benchmark: { ticker: "VOO", price: 800, regime: "adverso" } });
+    const { decisions } = await scan({ benchmark: { ticker: tk("VOO"), price: 800, regime: "adverso" } });
     for (const d of decisions) {
       assert.ok(d.conviction, `${d.ticker} without conviction`);
       assert.ok(d.conviction_points && !d.conviction_points.includes("regime_favorable"));

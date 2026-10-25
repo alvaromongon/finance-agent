@@ -19,6 +19,7 @@ import {
   LotsTableError,
   type LotColumn,
 } from "./vault-parser.js";
+import { checkTicker, type Ticker } from "../ticker.js";
 
 /** Decimals of an exit's amount: its exact share of the sale amount, with the float noise cleared. */
 const AMOUNT_DECIMALS = 8;
@@ -76,7 +77,7 @@ export function allocateByWeight(total: number, weights: readonly number[], deci
 // ─── Sale: first in, first out ────────────────────────────────────────────────
 
 export interface SalePlanInput {
-  ticker: string;
+  ticker: Ticker;
   /** Units sold. */
   units: number;
   /**
@@ -192,7 +193,7 @@ function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, 
 
 /** What a lot change does to the ticker's row in `Positions`. */
 export interface PositionChange {
-  ticker: string;
+  ticker: Ticker;
   /** New `Volume`, the sum of the ticker's lots' units; 0 or less deletes the row. */
   volume: number;
   /** New `Avg price`; the row keeps its own if absent. */
@@ -258,7 +259,11 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
   const withPositions = setTableRows(withLots, currency, "Positions", POSITION_HEADER, (header, rows) => {
     const col = positionColumns(header, currency);
     const kept = rows.filter((cells) => !isPositionPlaceholder((cells[col.ticker] ?? "").trim()));
-    const at = kept.flatMap((cells, i) => ((cells[col.ticker] ?? "").trim() === change.ticker ? [i] : []));
+    // The row names the ticker in any case; the one the engine writes carries the canonical value.
+    const at = kept.flatMap((cells, i) => {
+      const checked = checkTicker((cells[col.ticker] ?? "").trim());
+      return "ticker" in checked && checked.ticker === change.ticker ? [i] : [];
+    });
     if (at.length > 1) {
       throw new Error(
         `portfolio.md: ${change.ticker} is on ${at.length} rows of "## ${currency} — Positions": merge them into one row (nothing was recorded)`,
@@ -266,6 +271,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
     }
     if (change.volume <= UNITS_TOLERANCE) return at.length === 0 ? kept : kept.filter((_, i) => i !== at[0]);
     if (at.length === 1) {
+      kept[at[0]][col.ticker] = change.ticker;
       kept[at[0]][col.volume] = num(change.volume, 0);
       if (change.avgPrice != null) kept[at[0]][col.avgPrice] = num(change.avgPrice, 2);
       return kept;

@@ -168,6 +168,14 @@ entry, or whose exits disagree about the entry or about the units left, is incon
 measured, and the evaluation report names it. An exit that carries no snapshot of its lot, or no
 units left, is not measured either, and the report names it.
 
+### Ticker
+
+The symbol of an asset (`TCK`, `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), in the form Yahoo Finance
+uses. Its canonical form is trimmed and upper case: letters, digits and `. - ^ =`, with at least
+one letter or digit. The engine makes a ticker only by parsing, so `tck` and `TCK` are one ticker
+everywhere and two tickers are equal exactly when `===` says so
+([ADR-0016](decisions/0016-domain-values-are-branded-types-made-by-parsing.md)).
+
 ### Rules version
 
 The version of the trading rules stamped on every decision, so results can be split by the rules

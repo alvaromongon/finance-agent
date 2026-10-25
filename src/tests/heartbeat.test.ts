@@ -2,9 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { collectWatchedTickers, evaluateSignals, riskTriggers } from "../heartbeat.js";
 import type { PortfolioSnapshot, Position, WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const baseEntry = (): WatchlistEntry => ({
-  ticker: "TEST",
+  ticker: tk("TEST"),
   name: "Test Asset",
   market: "TEST",
   currency: "EUR",
@@ -24,7 +25,7 @@ const withPosition = (stopLoss: number | null): PortfolioSnapshot => ({
   ...emptyPortfolio(),
   positions: [
     {
-      ticker: "TEST",
+      ticker: tk("TEST"),
       currency: "EUR",
       volume: 10,
       avgPrice: 45,
@@ -57,7 +58,15 @@ describe("evaluateSignals — approaching_stop", () => {
   it("a price above the margin does not fire", () => {
     const triggers = riskTriggers({
       price: 44,
-      position: { ticker: "TEST", currency: "EUR", volume: 10, avgPrice: 45, currentPrice: 45, pl: 0, stopLoss: 42 },
+      position: {
+        ticker: tk("TEST"),
+        currency: "EUR",
+        volume: 10,
+        avgPrice: 45,
+        currentPrice: 45,
+        pl: 0,
+        stopLoss: 42,
+      },
       stopProximityPct: 3,
       bigMovePct: 5,
     });
@@ -76,7 +85,15 @@ describe("evaluateSignals — approaching_stop", () => {
   it("a null stopLoss does not fire", () => {
     const triggers = riskTriggers({
       price: 40,
-      position: { ticker: "TEST", currency: "EUR", volume: 10, avgPrice: 45, currentPrice: 45, pl: 0, stopLoss: null },
+      position: {
+        ticker: tk("TEST"),
+        currency: "EUR",
+        volume: 10,
+        avgPrice: 45,
+        currentPrice: 45,
+        pl: 0,
+        stopLoss: null,
+      },
       stopProximityPct: 3,
       bigMovePct: 5,
     });
@@ -87,7 +104,7 @@ describe("evaluateSignals — approaching_stop", () => {
 // T-08: checks approaching_stop with realistic parameters
 describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
   const defEntry = (): WatchlistEntry => ({
-    ticker: "DEF.MI",
+    ticker: tk("DEF.MI"),
     name: "Example Defence",
     market: "Euronext Milan",
     currency: "EUR",
@@ -100,7 +117,7 @@ describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
     cash: 5,
     positions: [
       {
-        ticker: "DEF.MI",
+        ticker: tk("DEF.MI"),
         currency: "EUR",
         volume: 1,
         avgPrice: 46.8,
@@ -134,7 +151,7 @@ describe("evaluateSignals — T-08 approaching_stop DEF.MI", () => {
     const triggers = riskTriggers({
       price: 46.0,
       position: {
-        ticker: "DEF.MI",
+        ticker: tk("DEF.MI"),
         currency: "EUR",
         volume: 1,
         avgPrice: 46.8,
@@ -249,8 +266,8 @@ describe("evaluateSignals — portfolio ∪ watchlist union", () => {
       currency: "EUR",
       cash: 100,
       positions: [
-        { ticker: "A", currency: "EUR", volume: 1, avgPrice: 10, currentPrice: 10, pl: 0, stopLoss: 9 },
-        { ticker: "B", currency: "EUR", volume: 1, avgPrice: 20, currentPrice: 20, pl: 0, stopLoss: 19 },
+        { ticker: tk("A"), currency: "EUR", volume: 1, avgPrice: 10, currentPrice: 10, pl: 0, stopLoss: 9 },
+        { ticker: tk("B"), currency: "EUR", volume: 1, avgPrice: 20, currentPrice: 20, pl: 0, stopLoss: 19 },
       ],
       lots: [],
       syncedAt: "2026-01-01T00:00:00Z",
@@ -270,12 +287,20 @@ describe("collectWatchedTickers", () => {
     const portfolio: PortfolioSnapshot = {
       ...emptyPortfolio(),
       positions: [
-        { ticker: "TEST", currency: "EUR", volume: 1, avgPrice: 1, currentPrice: 1, pl: 0, stopLoss: null },
-        { ticker: "ONLY_PORTFOLIO", currency: "EUR", volume: 1, avgPrice: 1, currentPrice: 1, pl: 0, stopLoss: null },
+        { ticker: tk("TEST"), currency: "EUR", volume: 1, avgPrice: 1, currentPrice: 1, pl: 0, stopLoss: null },
+        {
+          ticker: tk("ONLY-PORTFOLIO"),
+          currency: "EUR",
+          volume: 1,
+          avgPrice: 1,
+          currentPrice: 1,
+          pl: 0,
+          stopLoss: null,
+        },
       ],
     };
-    const watchlist = [baseEntry(), { ...baseEntry(), ticker: "ONLY_WATCHLIST" }];
-    assert.deepEqual(collectWatchedTickers(watchlist, portfolio), ["TEST", "ONLY_WATCHLIST", "ONLY_PORTFOLIO"]);
+    const watchlist = [baseEntry(), { ...baseEntry(), ticker: tk("ONLY-WATCHLIST") }];
+    assert.deepEqual(collectWatchedTickers(watchlist, portfolio), ["TEST", "ONLY-WATCHLIST", "ONLY-PORTFOLIO"]);
   });
 
   it("without a watchlist or positions returns an empty array", () => {

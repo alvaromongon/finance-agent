@@ -12,6 +12,7 @@ import { tradeUnits, type Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { closeOnOrBefore, daysBetween } from "./forward-returns.js";
+import type { Ticker } from "../ticker.js";
 
 /** Rounding tolerance: cents in cash, ten-thousandths in units. */
 const CASH_EPSILON = 0.01;
@@ -45,7 +46,7 @@ export function flowAmount(d: Decision, currency: Currency): number | null {
 }
 
 interface TradeEffect {
-  ticker: string;
+  ticker: Ticker;
   units: number;
   cash: number;
 }
@@ -76,7 +77,7 @@ export interface SiloDay {
  */
 export type SiloWarning =
   | { kind: "negativeCash"; currency: Currency; start: string; cash: number }
-  | { kind: "oversold"; currency: Currency; ticker: string; units: number; start: string }
+  | { kind: "oversold"; currency: Currency; ticker: Ticker; units: number; start: string }
   | { kind: "missingCloses"; currency: Currency; tickers: string[] }
   | { kind: "noShadow"; currency: Currency; reference: string };
 
@@ -114,7 +115,7 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
 
   // Undo from today back to before the start.
   let cash = portfolio.totalCash ?? portfolio.cash;
-  const units = new Map<string, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
+  const units = new Map<Ticker, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
   for (const e of events) {
     cash -= (e.flow ?? 0) + (e.trade?.cash ?? 0);
     if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) - e.trade.units);

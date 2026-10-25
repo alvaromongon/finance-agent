@@ -15,6 +15,7 @@ import { detectBreakout, type BreakoutParams } from "./breakout.js";
 import { detectPullback, type PullbackParams } from "./pullback.js";
 import type { HistoricalBar } from "../../providers/types.js";
 import type { BuyTicket, Currency, MarketRegime, Setup, WatchlistEntry } from "../../types.js";
+import type { Ticker } from "../../ticker.js";
 
 export interface SetupParams {
   pullback: PullbackParams;
@@ -50,7 +51,7 @@ export interface SetupContext {
 }
 
 export interface SetupEvaluation {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   setup: Setup;
   /** Technicals at the last session's close. */

@@ -38,13 +38,14 @@ import { closes, weekdayBars } from "./fixtures/weekday-bars.js";
 import { en } from "../i18n/en.js";
 import { es } from "../i18n/es.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function assertClose(actual: number | null | undefined, expected: number, epsilon = 1e-9) {
   assert.ok(actual != null && Math.abs(actual - expected) < epsilon, `esperado ${expected}, obtenido ${actual}`);
 }
 
 const FRAMEWORK: EvaluationFramework = {
-  reference: { EUR: "EXSA.DE", USD: "VOO" },
+  reference: { EUR: tk("EXSA.DE"), USD: tk("VOO") },
   minRewardRisk: 2,
   cutReviewTrades: 30,
   cutDecisionTrades: 50,
@@ -54,7 +55,7 @@ const FRAMEWORK: EvaluationFramework = {
 const decision = (fields: Partial<Decision> & Pick<Decision, "type">): Decision =>
   buildDecision({
     date: "2026-09-01",
-    ticker: "AAA",
+    ticker: tk("AAA"),
     currency: "USD",
     origin: "sistema",
     source: "monday-briefing",
@@ -300,7 +301,7 @@ const ownerEntry = decision({
   type: "entry",
   source: "portfolio-sync",
   origin: "propietario",
-  ticker: "BBB",
+  ticker: tk("BBB"),
   date: "2026-09-03",
   amount: 500,
   stop_initial: 95,
@@ -310,7 +311,7 @@ const ownerExit = decision({
   type: "exit",
   source: "portfolio-sync",
   origin: "propietario",
-  ticker: "BBB",
+  ticker: tk("BBB"),
   date: "2026-09-10",
   price: 95,
   amount: 475,
@@ -333,7 +334,7 @@ const lotExit = (fields: Partial<Decision> = {}): Decision =>
   decision({
     type: "exit",
     source: "portfolio-sync",
-    ticker: "LOT",
+    ticker: tk("LOT"),
     date: "2026-09-10",
     price: 120,
     amount: 480,
@@ -381,17 +382,17 @@ describe("closedTrades", () => {
 
   it("without an initial stop R is not made up, and an exit without a snapshot is not a trade", () => {
     const trades = closedTrades([
-      fullExit({ ticker: "CCC", stop_initial: undefined }),
+      fullExit({ ticker: tk("CCC"), stop_initial: undefined }),
       // Legacy exits cite their entry but carry no snapshot: no legacy path, they are skipped.
       decision({
         type: "exit",
         source: "portfolio-sync",
-        ticker: "DDD",
+        ticker: tk("DDD"),
         price: 110,
         amount: 110,
         related_id: entry.id,
       }),
-      decision({ type: "exit", source: "portfolio-sync", ticker: "EEE", price: 110, amount: 110 }),
+      decision({ type: "exit", source: "portfolio-sync", ticker: tk("EEE"), price: 110, amount: 110 }),
     ]);
     assert.equal(trades.length, 1);
     assert.equal(trades[0].ticker, "CCC");
@@ -622,7 +623,7 @@ describe("closedTrades", () => {
       const measured = measureTrades([
         lotExit({ amount: 480, lot_units_left: 9 }),
         lotExit({ amount: 720, lot_units_left: 0 }),
-        fullExit({ ticker: "OK", related_id: "lot-ok" }),
+        fullExit({ ticker: tk("OK"), related_id: "lot-ok" }),
       ]);
       assert.deepEqual(
         measured.trades.map((t) => t.ticker),
@@ -829,7 +830,7 @@ describe("unmeasured exits and lots", () => {
     decision({
       type: "exit",
       source: "portfolio-sync",
-      ticker,
+      ticker: tk(ticker),
       date: "2026-09-12",
       price: 110,
       amount: 110,
@@ -869,7 +870,7 @@ describe("unmeasured exits and lots", () => {
 
   it("names an oversold lot by ticker and entry id, and a measured trade stays measured", () => {
     // Lot-a is a clean 10-unit lot; lot-b sells 12 units of a 10-unit lot.
-    const decisions = [fullExit(), fullExit({ ticker: "OVR", related_id: "lot-b", amount: 1440 })];
+    const decisions = [fullExit(), fullExit({ ticker: tk("OVR"), related_id: "lot-b", amount: 1440 })];
     const measured = measureTrades(decisions);
     assert.deepEqual(measured.unmeasured.oversold, [{ currency: "USD", ticker: "OVR", lotId: "lot-b" }]);
     assert.deepEqual(measured.unmeasured.exitsWithoutSnapshot, []);
@@ -886,9 +887,9 @@ describe("unmeasured exits and lots", () => {
   it("a lot whose exits do not add up is a warning of its own kind, as data, in both languages", () => {
     const decisions = [
       fullExit(),
-      lotExit({ ticker: "BAD", related_id: "lot-c", amount: 480, lot_units_left: 9 }),
-      lotExit({ ticker: "DIS", related_id: "lot-d", amount: 480, lot_units_left: 6 }),
-      lotExit({ ticker: "DIS", related_id: "lot-d", amount: 720, lot_units_left: 0, entry_price: 101 }),
+      lotExit({ ticker: tk("BAD"), related_id: "lot-c", amount: 480, lot_units_left: 9 }),
+      lotExit({ ticker: tk("DIS"), related_id: "lot-d", amount: 480, lot_units_left: 6 }),
+      lotExit({ ticker: tk("DIS"), related_id: "lot-d", amount: 720, lot_units_left: 0, entry_price: 101 }),
     ];
     const { report } = withBoard(decisions);
     assert.deepEqual(
@@ -913,8 +914,8 @@ describe("unmeasured exits and lots", () => {
   it("the unmeasured kinds sit under one heading, grouped by kind, not by comparing translated titles", () => {
     const { report } = withBoard([
       bare("DDD"),
-      fullExit({ ticker: "OVR", amount: 1440 }),
-      lotExit({ ticker: "BAD", related_id: "lot-c", amount: 480, lot_units_left: 9 }),
+      fullExit({ ticker: tk("OVR"), amount: 1440 }),
+      lotExit({ ticker: tk("BAD"), related_id: "lot-c", amount: 480, lot_units_left: 9 }),
     ]);
     for (const m of [en, es]) {
       const groups = boardWarnings(report.board, m).filter((g) => g.title === m.evaluation.unmeasured.title);
@@ -925,7 +926,7 @@ describe("unmeasured exits and lots", () => {
   });
 
   it("every kind goes through the board's one warnings list, as structured data", () => {
-    const { report } = withBoard([bare("DDD"), fullExit({ ticker: "OVR", amount: 1440 })]);
+    const { report } = withBoard([bare("DDD"), fullExit({ ticker: tk("OVR"), amount: 1440 })]);
     const unmeasured = lotWarnings(report.board);
     assert.deepEqual(unmeasured[0], {
       kind: "exitsWithoutSnapshot",
@@ -983,7 +984,7 @@ describe("unmeasured exits and lots", () => {
   });
 
   it("the warnings are put into words by the renderer, in its language", () => {
-    const { report } = withBoard([bare("DDD"), fullExit({ ticker: "OVR", amount: 1440 })]);
+    const { report } = withBoard([bare("DDD"), fullExit({ ticker: tk("OVR"), amount: 1440 })]);
     const english = extractCutBoard(renderDecisionsEvaluation(report, en))!;
     assert.match(english, /Some exits and lots were not measured/);
     assert.match(english, /1 exit without a lot snapshot/);
@@ -1016,7 +1017,7 @@ describe("unmeasured exits and lots", () => {
 
 /** A held lot of the 10-unit lot of `lotExit` (ticker LOT, entry `lot-a`), with `units` still open. */
 const heldLot = (fields: Partial<Lot> = {}): Lot => ({
-  ticker: "LOT",
+  ticker: tk("LOT"),
   entryId: "lot-a",
   date: "2026-08-03",
   units: 6,
@@ -1065,7 +1066,7 @@ describe("open trades come from Lots", () => {
   });
 
   it("two lots, one of them sold in part: both are open, an untouched one and a partly sold one", () => {
-    const untouched = heldLot({ ticker: "TWO", entryId: "lot-b", units: 5, entryUnits: 5, date: "2026-08-10" });
+    const untouched = heldLot({ ticker: tk("TWO"), entryId: "lot-b", units: 5, entryUnits: 5, date: "2026-08-10" });
     const board = boardOf([lotExit()], [heldLot(), untouched]);
     assert.deepEqual(
       board.open.map((o) => [o.ticker, o.units]),
@@ -1086,7 +1087,7 @@ describe("open trades come from Lots", () => {
   });
 
   it("an entry with no lot is not an open trade, and an exit's related_id does not make one", () => {
-    const withoutLot = decision({ type: "entry", ticker: "NOL", amount: 500, rules_version: "1.0" });
+    const withoutLot = decision({ type: "entry", ticker: tk("NOL"), amount: 500, rules_version: "1.0" });
     assert.deepEqual(boardOf([withoutLot], []).open, []);
     assert.deepEqual(boardOf([lotExit()], []).open, [], "a partly sold lot that is not in Lots is not held");
   });
@@ -1095,7 +1096,7 @@ describe("open trades come from Lots", () => {
     const entryLine = decision({
       type: "entry",
       id: "lot-a",
-      ticker: "LOT",
+      ticker: tk("LOT"),
       date: "2026-08-03",
       amount: 1000,
       rules_version: "1.0",
@@ -1213,7 +1214,7 @@ describe("a log loaded without its archive (#69)", () => {
     const entryLine = decision({
       type: "entry",
       id: "lot-a",
-      ticker: "LOT",
+      ticker: tk("LOT"),
       date: "2026-08-03",
       amount: 1000,
       rules_version: "1.0",
@@ -1258,9 +1259,9 @@ describe("decisionGroupings", () => {
     const screen = (fields: Partial<Decision>) => decision({ type: "screen_rejected", source: "screening", ...fields });
     const evals = evaluateDecisions(
       [
-        screen({ ticker: "RANKED", rank: 1, score: 1 }),
-        screen({ ticker: "EXPLORED", rank: 40, score: 0.2, exploration: true }),
-        screen({ ticker: "DRAWN" }),
+        screen({ ticker: tk("RANKED"), rank: 1, score: 1 }),
+        screen({ ticker: tk("EXPLORED"), rank: 40, score: 0.2, exploration: true }),
+        screen({ ticker: tk("DRAWN") }),
       ],
       new Map(),
       FRAMEWORK,
@@ -1277,7 +1278,7 @@ describe("decisionGroupings", () => {
 
   it("groups the interesting ones by rubric conviction, only since the engine computes it", () => {
     const interesting = (ticker: string, fields: Partial<Decision>) =>
-      decision({ type: "screen_interesting", source: "screening", ticker, ...fields });
+      decision({ type: "screen_interesting", source: "screening", ticker: tk(ticker), ...fields });
     const evals = evaluateDecisions(
       [
         interesting("HIGH", { conviction: "high", rules_version: "0.8" }),
@@ -1302,7 +1303,7 @@ describe("decisionGroupings", () => {
     const buy = (ticker: string, fields: Partial<Decision>) =>
       decision({
         type: "buy_blocked",
-        ticker,
+        ticker: tk(ticker),
         price: 100,
         eligibility: { verdict: "blocked", reasons: ["rr_below_min"] },
         ...fields,
@@ -1331,7 +1332,7 @@ describe("decisionGroupings", () => {
 
   it("splits the blocked ones into two disjoint groups: by regime and by other reasons", () => {
     const blocked = (ticker: string, reasons: string[]) =>
-      decision({ type: "buy_blocked", ticker, price: 100, eligibility: { verdict: "blocked", reasons } });
+      decision({ type: "buy_blocked", ticker: tk(ticker), price: 100, eligibility: { verdict: "blocked", reasons } });
     const evals = evaluateDecisions(
       [blocked("REGIME", ["trend_bearish", "regime_adverse"]), blocked("RR", ["rr_below_min"])],
       new Map(),
@@ -1357,7 +1358,7 @@ describe("evaluationSymbols", () => {
         ...snapshot("EUR", 0),
         positions: [
           {
-            ticker: "SAN.MC",
+            ticker: tk("SAN.MC"),
             currency: "EUR" as const,
             volume: 1,
             avgPrice: 1,
