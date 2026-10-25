@@ -275,7 +275,7 @@ export async function updatePortfolioPrices(currency: Currency, prices: Map<Tick
   const updated = mapTableRows(model, currency, "Positions", (cells) => {
     if (isPositionPlaceholder(cells[col.ticker] ?? "")) return null;
     // The map is keyed by the parsed ticker, so the cell is parsed to look it up. A cell that does not
-    // parse, or a ticker without a price, leaves the row alone; a priced row keeps its cell text.
+    // parse, or a ticker without a price, leaves the row alone; a priced row carries the canonical (upper-case) ticker.
     const checked = checkTicker(cells[col.ticker]);
     if (!("ticker" in checked)) return null;
     const current = prices.get(checked.ticker);
@@ -286,6 +286,7 @@ export async function updatePortfolioPrices(currency: Currency, prices: Map<Tick
     if (avgPrice == null || volume == null) return null;
 
     const next = [...cells];
+    next[col.ticker] = checked.ticker;
     next[col.currentPrice] = fmtEU(current);
     next[col.pl] = fmtEU((current - avgPrice) * volume);
     return next;

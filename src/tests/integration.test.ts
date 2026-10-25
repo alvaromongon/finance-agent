@@ -397,13 +397,13 @@ describe("Integration — engine", () => {
       assert.ok(updated.includes("48,00"));
     });
 
-    it("prices a lower-case Positions row by its parsed ticker and keeps the cell text as written", async () => {
+    it("prices a lower-case Positions row by its parsed ticker and writes the upper-case ticker into the row", async () => {
       const lower = PORTFOLIO_MD.replace("| TEST.EU | 10 |", "| test.eu | 10 |");
       assert.notEqual(lower, PORTFOLIO_MD, "the fixture must end up lower case");
       await writeFile(join(tempDir, "portfolio.md"), lower, "utf8");
       await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
-      assert.match(updated, /\| test\.eu \| 10 \| 45,00 \| 48,00 \| 30,00 \| 42,00 \|/);
+      assert.match(updated, /\| TEST\.EU \| 10 \| 45,00 \| 48,00 \| 30,00 \| 42,00 \|/);
     });
 
     it("leaves a Positions row whose ticker does not parse byte-identical", async () => {
