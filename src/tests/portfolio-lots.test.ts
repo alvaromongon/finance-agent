@@ -192,6 +192,38 @@ describe("planSale: first in, first out", () => {
   });
 });
 
+describe("planSale: an amount too large to count in cents, or entry units of 0, is refused with a message (#87)", () => {
+  it("a lot whose entry price makes the result too large to count in cents is refused, naming the lot", () => {
+    assert.throws(
+      () => planSale([lot("big-1", 10, { entryPrice: 1e307 })], sale(4), new Map()),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /lot big-1 \(TCK\).*Entry price.*too large to count in cents/);
+        return true;
+      },
+    );
+  });
+
+  it("a partial sale of a lot whose Entry units are 0 is refused, naming the lot and its entry units", () => {
+    assert.throws(
+      () => planSale([lot("zero-1", 10, { entryUnits: 0, entryCosts: money(5) })], sale(4), new Map()),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /lot zero-1 \(TCK\).*Entry units.* 0/);
+        return true;
+      },
+    );
+  });
+
+  it("a lot whose Entry units are 0 and is used up, or has no entry costs, is sold as before", () => {
+    assert.equal(
+      planSale([lot("zero-2", 10, { entryUnits: 0, entryCosts: money(5) })], sale(10), new Map())[0].entryCosts,
+      5,
+    );
+    assert.equal(planSale([lot("zero-3", 10, { entryUnits: 0 })], sale(4), new Map())[0].entryCosts, undefined);
+  });
+});
+
 describe("planSale: what each exit carries", () => {
   it("the amounts of the exits are exact shares by units and add up to the sale amount, the remainder on the last", () => {
     // 3 lots of 1 unit; 1000.01 over 3 equal shares: not rounded to the cent.

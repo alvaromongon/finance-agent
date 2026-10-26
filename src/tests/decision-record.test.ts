@@ -508,6 +508,49 @@ describe("decision:record (recordOwnerDecision)", () => {
     });
   });
 
+  describe("an amount too large to count in cents is refused with a message (#87)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 25, units: 3, stop: 20 };
+    const sell = { type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, units: 1 };
+    /** Rewrites the log and portfolio.md as the owner could have left them, then expects the refusal and no write. */
+    const refused = async (edit: (log: string, portfolio: string) => [string, string], message: RegExp) => {
+      const [log, portfolio] = edit(
+        await readFile(decisionsPath(), "utf8"),
+        await readFile(join(vaultDir, "portfolio.md"), "utf8"),
+      );
+      await writeFile(decisionsPath(), log, "utf8");
+      await writeFile(join(vaultDir, "portfolio.md"), portfolio, "utf8");
+      await assert.rejects(record(sell), (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, message);
+        assert.match(err.message, /nothing was recorded/);
+        return true;
+      });
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
+    };
+
+    it("a lot whose Entry price is too large to count in cents refuses the sale, naming the lot", async () => {
+      const entry = await record(entryOf);
+      await refused(
+        (log, portfolio) => [
+          log.replace('"price":25,', '"price":5e306,'),
+          portfolio.replace(/\| 25(\.00)? \|/g, "| 5e306 |"),
+        ],
+        new RegExp(`lot ${entry.id} \\(ADBE\\).*Entry price.*too large to count in cents`),
+      );
+    });
+
+    it("entry costs that the exits of a lot took, too large together, refuse the sale, naming the entry", async () => {
+      const entry = await record(entryOf);
+      await record(sell);
+      await record(sell);
+      await refused(
+        (log, portfolio) => [log.replaceAll('"type":"exit",', '"type":"exit","entry_costs":9e305,'), portfolio],
+        new RegExp(`entry_costs.*${entry.id}.*too large to count in cents`),
+      );
+    });
+  });
+
   it("an exit refuses related_id: a sale consumes the lots first in, first out, and nothing is written", async () => {
     const entry = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
     const before = await readFile(decisionsPath(), "utf8");
