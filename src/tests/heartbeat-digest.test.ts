@@ -2,6 +2,7 @@
 // with one section per kind of alert, and only with what was not sent today.
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { digestKeys, onlyNew, renderHeartbeatDigest, type HeartbeatDigest } from "../utils/heartbeat-digest.js";
@@ -11,27 +12,28 @@ import { detectNewSetups } from "../utils/setups/index.js";
 import { scanSetups } from "../utils/setups/scan.js";
 import { extend, uptrend } from "./fixtures/setup-bars.js";
 import type { Position, Signal } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function position(overrides: Partial<Position> = {}): Position {
   return {
-    ticker: "MSFT",
+    ticker: tk("MSFT"),
     currency: "USD",
     volume: 1,
     avgPrice: 492.01,
     currentPrice: 501.02,
-    pl: 9.01,
+    pl: money(9.01),
     stopLoss: 500,
     ...overrides,
   };
 }
 
 const breaches = detectStopBreaches(
-  [position({ ticker: "CAT", avgPrice: 218, stopLoss: 213 })],
+  [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
   new Map([["CAT", 210.77]]),
 );
 
 const tightStops = detectTightStops(
-  [position(), position({ ticker: "AVGO", avgPrice: 200, stopLoss: 366 })],
+  [position(), position({ ticker: tk("AVGO"), avgPrice: 200, stopLoss: 366 })],
   new Map([
     ["MSFT", 501.02],
     ["AVGO", 369.53],
@@ -53,17 +55,17 @@ const firstArmed = Array.from({ length: 16 }, (_, i) => base.slice(0, run.length
   detectNewSetups(bars).some((s) => s.state === "armed"),
 )!;
 const { notices } = await scanSetups({
-  watchlist: [{ ticker: "BO", name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
-  portfolio: { currency: "USD", cash: 1000, positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
+  watchlist: [{ ticker: tk("BO"), name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
+  portfolio: { currency: "USD", cash: money(1000), positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
   provider: { getHistorical: async () => firstArmed },
   date: "2026-09-24",
   rulesVersion: "0.7",
-  benchmark: { ticker: "VOO", price: 800, regime: "favorable" },
+  benchmark: { ticker: tk("VOO"), price: 800, regime: "favorable" },
   log: () => {},
 });
 
 const escalated: Signal[] = [
-  { ticker: "XOM", currency: "USD", triggers: ["big_move"], price: 112.4, cash: 0, siloValue: 0 },
+  { ticker: tk("XOM"), currency: "USD", triggers: ["big_move"], price: 112.4, cash: 0, siloValue: 0 },
 ];
 
 const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
@@ -72,6 +74,8 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   minAtr: 2,
   breaches: [],
   lotsWarnings: [],
+  tickerWarnings: [],
+  unreadableCells: [],
   tightStops: [],
   armed: [],
   escalated: [],
@@ -170,6 +174,35 @@ describe("onlyNew / digestKeys", () => {
     const withLots = digest({ lotsWarnings });
     assert.deepEqual(digestKeys(withLots), []);
     assert.deepEqual(onlyNew(withLots, new Set(digestKeys(withLots))).lotsWarnings, lotsWarnings);
+  });
+
+  it("the lots section says what it covers: the owner-approved label, heading, intro and closing (#69)", () => {
+    const email = renderHeartbeatDigest(digest({ lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"] }))!;
+
+    assert.match(email.subject, /problema con los lotes/);
+    assert.doesNotMatch(email.subject, /no cuadran/);
+    assert.match(email.body, /## `portfolio\.md`: problema con los lotes/);
+    const text = email.body.replace(/\s+/g, " ");
+    assert.match(
+      text,
+      /La tabla `Lots` no se puede leer, falta, o no concuerda con `Positions` o con el registro de decisiones\. El heartbeat sigue/,
+    );
+    assert.match(
+      text,
+      /Corrige `Lots` a mano: que exista y se lea, que cada `Volume` sea la suma de las `Units` de sus lotes y cada `Entry id` sea una entrada del registro/,
+    );
+  });
+
+  it("an unreadable money cell has its own section and is never marked as sent (#86)", () => {
+    const unreadableCells = ['## USD — Cash: "Available cash" "1e307" is too large to count in cents (read as 0)'];
+    const withCells = digest({ unreadableCells });
+    const email = renderHeartbeatDigest(withCells)!;
+
+    assert.match(email.subject, /celda que no se puede contar/);
+    assert.match(email.body, /## `portfolio\.md`: celda que no se puede contar/);
+    assert.ok(email.body.includes(`- ${unreadableCells[0]}`));
+    assert.deepEqual(digestKeys(withCells), []);
+    assert.deepEqual(onlyNew(withCells, new Set()).unreadableCells, unreadableCells);
   });
 
   it("the crossed stop leaves no key: there is nothing to remember", () => {

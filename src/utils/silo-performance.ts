@@ -8,14 +8,14 @@
 // date are undone and each session is valued at the close. If something is
 // missing from the log, the reconstruction does not add up (negative cash or
 // units at the start) and a warning is raised instead of hiding it.
-import { messages, type Messages } from "../i18n/index.js";
-import type { Decision } from "../decisions.js";
+import { tradeUnits, type Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { closeOnOrBefore, daysBetween } from "./forward-returns.js";
+import { isMoreThanACent } from "../money.js";
+import type { Ticker } from "../ticker.js";
 
-/** Rounding tolerance: cents in cash, ten-thousandths in units. */
-const CASH_EPSILON = 0.01;
+/** Rounding tolerance of units: ten-thousandths. (Cash is compared at the cent, in `money.ts`.) */
 const UNITS_EPSILON = 1e-4;
 
 /** Money entering (+) or leaving (−) a silo without being a trade. */
@@ -46,7 +46,7 @@ export function flowAmount(d: Decision, currency: Currency): number | null {
 }
 
 interface TradeEffect {
-  ticker: string;
+  ticker: Ticker;
   units: number;
   cash: number;
 }
@@ -57,7 +57,7 @@ interface TradeEffect {
  */
 function tradeEffect(d: Decision, currency: Currency): TradeEffect | null {
   if (d.currency !== currency || d.ticker == null || d.price == null || d.amount == null) return null;
-  const units = d.units ?? d.amount / d.price;
+  const units = tradeUnits(d);
   if (d.type === "entry") return { ticker: d.ticker, units, cash: -(d.amount + (d.costs ?? 0)) };
   if (d.type === "exit") return { ticker: d.ticker, units: -units, cash: d.amount - (d.costs ?? 0) };
   return null;
@@ -71,12 +71,22 @@ export interface SiloDay {
   flow: number;
 }
 
+/**
+ * A reconstruction that does not add up, as data: the renderer puts it into words in its own
+ * language (`boardWarnings`), so nothing here is text.
+ */
+export type SiloWarning =
+  | { kind: "negativeCash"; currency: Currency; start: string; cash: number }
+  | { kind: "oversold"; currency: Currency; ticker: Ticker; units: number; start: string }
+  | { kind: "missingCloses"; currency: Currency; tickers: string[] }
+  | { kind: "noShadow"; currency: Currency; reference: string };
+
 export interface SiloHistory {
   /** State before the first measured day, valued the day before: the shadow's starting point. */
   base: { date: string; value: number };
   days: SiloDay[];
   flows: SiloFlow[];
-  warnings: string[];
+  warnings: SiloWarning[];
 }
 
 export interface SiloInput {
@@ -95,7 +105,7 @@ export interface SiloInput {
 }
 
 /** Silo value on each session since `start`, rebuilt from portfolio.md and the log. */
-export function reconstructSilo(input: SiloInput, m: Messages = messages()): SiloHistory {
+export function reconstructSilo(input: SiloInput): SiloHistory {
   const { currency, portfolio, start, asOf, bars } = input;
   const events = input.decisions
     .filter((d) => d.date >= start && d.date <= asOf)
@@ -104,20 +114,20 @@ export function reconstructSilo(input: SiloInput, m: Messages = messages()): Sil
     .sort((a, b) => a.date.localeCompare(b.date));
 
   // Undo from today back to before the start.
-  let cash = portfolio.totalCash ?? portfolio.cash;
-  const units = new Map<string, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
+  let cash: number = portfolio.totalCash ?? portfolio.cash;
+  const units = new Map<Ticker, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
   for (const e of events) {
     cash -= (e.flow ?? 0) + (e.trade?.cash ?? 0);
     if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) - e.trade.units);
   }
 
-  const warnings: string[] = [];
-  if (cash < -CASH_EPSILON) {
-    warnings.push(m.evaluation.siloWarnings.negativeCash(currency, start, cash.toFixed(2)));
+  const warnings: SiloWarning[] = [];
+  if (isMoreThanACent(-cash)) {
+    warnings.push({ kind: "negativeCash", currency, start, cash });
   }
   for (const [ticker, u] of units) {
     if (u < -UNITS_EPSILON) {
-      warnings.push(m.evaluation.siloWarnings.oversold(currency, ticker, u.toFixed(4), start));
+      warnings.push({ kind: "oversold", currency, ticker, units: u, start });
     }
   }
 
@@ -165,7 +175,7 @@ export function reconstructSilo(input: SiloInput, m: Messages = messages()): Sil
   }
 
   if (missing.size > 0) {
-    warnings.push(m.evaluation.siloWarnings.missingCloses(currency, [...missing].join(", ")));
+    warnings.push({ kind: "missingCloses", currency, tickers: [...missing] });
   }
   return { base, days, flows, warnings };
 }
@@ -197,7 +207,7 @@ export function drawdown(history: Pick<SiloHistory, "base" | "days">): Drawdown 
   let previous = history.base.value;
   for (const day of history.days) {
     // The flow comes in at the close: the day's return is that of the money already there.
-    if (previous > CASH_EPSILON) index *= (day.value - day.flow) / previous;
+    if (isMoreThanACent(previous)) index *= (day.value - day.flow) / previous;
     previous = day.value;
     if (index > peak) {
       peak = index;
@@ -252,7 +262,7 @@ export function moneyWeightedReturn(
     weighted += (f.amount * Math.max(0, days - daysBetween(start.date, f.date))) / days;
   }
   const capital = start.value + weighted;
-  if (capital <= CASH_EPSILON) return null;
+  if (!isMoreThanACent(capital)) return null;
   return ((end.value - start.value - net) / capital) * 100;
 }
 
@@ -269,17 +279,22 @@ export interface SiloPerformance {
   realReturnPct: number | null;
   shadowReturnPct: number | null;
   drawdown: Drawdown;
-  warnings: string[];
+}
+
+/** A silo's performance and what did not add up while measuring it (the board holds the warnings once). */
+export interface SiloMeasurement {
+  performance: SiloPerformance;
+  warnings: SiloWarning[];
 }
 
 /** Real silo against its shadow, with the drawdown. */
-export function siloPerformance(input: SiloInput, m: Messages = messages()): SiloPerformance {
-  const history = reconstructSilo(input, m);
+export function siloPerformance(input: SiloInput): SiloMeasurement {
+  const history = reconstructSilo(input);
   const real = (history.days.at(-1) ?? history.base).value;
   const shadow = shadowValue(history.base, history.flows, input.bars.get(input.reference) ?? [], input.asOf);
   const warnings = [...history.warnings];
-  if (shadow == null) warnings.push(m.evaluation.siloWarnings.noShadow(input.currency, input.reference));
-  return {
+  if (shadow == null) warnings.push({ kind: "noShadow", currency: input.currency, reference: input.reference });
+  const performance: SiloPerformance = {
     currency: input.currency,
     reference: input.reference,
     start: input.start,
@@ -289,6 +304,6 @@ export function siloPerformance(input: SiloInput, m: Messages = messages()): Sil
     shadowReturnPct:
       shadow == null ? null : moneyWeightedReturn(history.base, { date: input.asOf, value: shadow }, history.flows),
     drawdown: drawdown(history),
-    warnings,
   };
+  return { performance, warnings };
 }

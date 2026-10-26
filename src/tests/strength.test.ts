@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { attachStrength } from "../utils/strength.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Signal } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 /** Rising series of `n` sessions: enough for SMA200 and an ALCISTA bias. */
 function risingBars(n = 260): HistoricalBar[] {
@@ -28,7 +29,7 @@ function flatBars(n = 260): HistoricalBar[] {
 }
 
 const signal = (ticker = "XOM", price = 230): Signal => ({
-  ticker,
+  ticker: tk(ticker),
   currency: "USD",
   triggers: ["big_move"],
   price,

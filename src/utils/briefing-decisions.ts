@@ -13,19 +13,21 @@
 // Pure functions: monday-briefing.ts supplies the network (technicals, benchmark).
 import { messages, type Messages } from "../i18n/index.js";
 import { asHorizon, benchmarkFields, buildDecision, strengthFields, type Decision } from "../decisions.js";
+import { ZERO } from "../money.js";
 import { validateTicket } from "../risk.js";
 import { buildAdjustStopTicket, buildSellTicket, describeTicket } from "./sizing.js";
 import { snapshotFromTechnicals } from "./strength.js";
 import { type Technicals } from "./technicals.js";
 import { CONVICTIONS } from "../types.js";
 import type { Benchmark, Conviction, Currency, EngineTicket, Horizon, Position, WatchlistEntry } from "../types.js";
+import { checkTicker, parseTicker, type Ticker } from "../ticker.js";
 
 export const PROPOSAL_ACTIONS = ["SELL", "ADJUST_STOP"] as const;
 export type ProposalAction = (typeof PROPOSAL_ACTIONS)[number];
 
 /** An actionable proposal from the position health section. */
 export interface BriefingProposal {
-  ticker: string;
+  ticker: Ticker;
   action: ProposalAction;
   conviction: Conviction;
   horizon?: Horizon;
@@ -73,9 +75,10 @@ export function validateProposals(raw: unknown): BriefingProposal[] {
     for (const key of Object.keys(o)) {
       if (!KNOWN_PROPOSAL_FIELDS.has(key)) errors.push(`${at}.${key} is not a PROPOSALS field`);
     }
-    if (typeof o.ticker !== "string" || o.ticker.trim() === "") errors.push(`${at}.ticker must be a non-empty string`);
-    else if (seen.has(o.ticker)) errors.push(`${at}: ${o.ticker} appears twice`);
-    else seen.add(o.ticker);
+    const ticker = checkTicker(o.ticker);
+    if ("problem" in ticker) errors.push(`${at}.ticker: ${ticker.problem}`);
+    else if (seen.has(ticker.ticker)) errors.push(`${at}: ${ticker.ticker} appears twice`);
+    else seen.add(ticker.ticker);
     if (o.action === "BUY") {
       errors.push(`${at}: the briefing proposes no buys; the only way in is the heartbeat setups (ADR-0013)`);
     } else if (!PROPOSAL_ACTIONS.includes(o.action as ProposalAction)) {
@@ -93,7 +96,7 @@ export function validateProposals(raw: unknown): BriefingProposal[] {
   });
 
   if (errors.length > 0) throw new Error(`Invalid PROPOSALS:\n- ${errors.join("\n- ")}`);
-  return raw as BriefingProposal[];
+  return (raw as BriefingProposal[]).map((p) => ({ ...p, ticker: parseTicker(p.ticker) }));
 }
 
 /** Price and technicals of a ticker at finalize time. */
@@ -110,14 +113,14 @@ export interface BriefingDecisionsInput {
   /** Watchlist of both silos, for each position's horizon. */
   watchlist: WatchlistEntry[];
   positions: Position[];
-  snapshots: ReadonlyMap<string, TickerSnapshot>;
+  snapshots: ReadonlyMap<Ticker, TickerSnapshot>;
   /** Each silo's benchmark with its regime, which goes to each decision. */
   benchmarks: Partial<Record<Currency, Benchmark>>;
 }
 
 /** Engine ticket for a proposal, with its block reasons. */
 export interface BriefingTicket {
-  ticker: string;
+  ticker: Ticker;
   action: ProposalAction;
   ticket: EngineTicket | null;
   codes: string[];
@@ -141,7 +144,7 @@ export function buildBriefingDecisions(input: BriefingDecisionsInput): {
   // Tickers that already have a decision recorded from their proposal.
   const decided = new Set<string>();
 
-  const common = (ticker: string, currency: Currency, price: number | undefined) => {
+  const common = (ticker: Ticker, currency: Currency, price: number | undefined) => {
     const snapshot = input.snapshots.get(ticker);
     return {
       date: input.date,
@@ -174,7 +177,7 @@ export function buildBriefingDecisions(input: BriefingDecisionsInput): {
     if (proposal.action === "SELL") {
       const ticket = buildSellTicket(proposal.amount ?? position.volume * price, price, currency);
       // A sale uses no cash: it is only checked against the position.
-      const codes = validateTicket(ticket, { cash: 0, position }).errors.map((e) => e.code);
+      const codes = validateTicket(ticket, { cash: ZERO, position }).errors.map((e) => e.code);
       tickets.push({ ticker, action: "SELL", ticket, codes });
       if (codes.length === 0) {
         decisions.push(buildDecision({ ...base, type: "sell", amount: ticket.amount }));

@@ -11,6 +11,7 @@
 // fields once it has a consumer.
 import { messages, type Messages } from "./i18n/index.js";
 import { randomUUID } from "node:crypto";
+import { checkTicker, parseTicker, tickerIdPart, type Ticker } from "./ticker.js";
 import {
   CONVICTION_POINTS,
   CONVICTIONS,
@@ -21,6 +22,7 @@ import {
   SETUP_STATES,
   TREND_BIASES,
 } from "./types.js";
+import { money, withinACent, type Money } from "./money.js";
 import { round } from "./utils/round.js";
 import type {
   Benchmark,
@@ -73,7 +75,7 @@ export interface Decision {
   /** Date of the event, YYYY-MM-DD. */
   date: string;
   /** `null` in money flows (deposit, withdrawal, fx_conversion). */
-  ticker: string | null;
+  ticker: Ticker | null;
   /** Silo. In `fx_conversion`, the one the money comes from. */
   currency: Currency;
   origin: DecisionOrigin;
@@ -82,7 +84,7 @@ export interface Decision {
   /** Asset price on the date. */
   price?: number;
   /** Silo benchmark (ADR-0009) on the same date. Best-effort. */
-  benchmark?: { ticker: string; price: number };
+  benchmark?: { ticker: Ticker; price: number };
   /** Silo market regime on the date (ADR-0010). Absent without benchmark history. */
   regime?: MarketRegime;
   /** Amount in the silo currency: buy, sale, deposit or converted amount. */
@@ -90,9 +92,9 @@ export interface Decision {
   /** `fx_conversion`: target currency per unit of source, before fee. */
   fx_rate?: number;
   /** Costs in the silo currency (FX fee, transaction tax). */
-  costs?: number;
+  costs?: Money;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
-  pnl?: number;
+  pnl?: Money;
   /** Stop at entry: the base of R. In an `exit`, the one of its lot (part of the lot snapshot). */
   stop_initial?: number;
   /** `adjust_stop`: stop level after the adjustment. */
@@ -149,7 +151,7 @@ export interface Decision {
    * Snapshot: this exit's share of the lot's entry costs, in the silo currency: pro rata to the units
    * it sold, the remainder on the last exit of the lot, so the exits add up to the lot's costs.
    */
-  entry_costs?: number;
+  entry_costs?: Money;
   /** Snapshot: date of the entry, YYYY-MM-DD. */
   entry_date?: string;
   /**
@@ -247,6 +249,67 @@ const isStringList = (v: unknown): v is string[] =>
 export const isAssumptionList = (v: unknown): v is string[] => isStringList(v) && v.length >= 1 && v.length <= 3;
 
 /**
+ * Units an `entry` or `exit` moved: its own `units` (`decision:record` writes them on every trade) and,
+ * only for a line without them (written by hand), `amount / price`, whose units are not exact. The one
+ * rule, for every consumer of a line's units. The caller has checked `price` and `amount` are there.
+ */
+export const tradeUnits = (d: Decision): number => d.units ?? d.amount! / d.price!;
+
+/**
+ * The one rule "a lot cannot be sold before it was bought" (the same day is a round trip), for the
+ * validation of a recorded exit and for the refusal of a sale before it is recorded.
+ */
+export const entryAfterExit = (entryDate: string, exitDate: string): boolean => entryDate > exitDate;
+
+/**
+ * What is wrong with the lot snapshot (`entry_*` and `related_id`) of a decision, if it has one: an empty
+ * list is a complete and coherent snapshot of an `exit`. The one definition of "a snapshot a measurement
+ * can use": `validateDecision` reports these problems and the evaluation's guard (`hasLotSnapshot`)
+ * leaves out an exit that has any. This covers the snapshot's presence, its dates, origin, rules version and
+ * lot id; the numeric fields (entry price and units, initial stop, `lot_units_left`) are checked by
+ * `validateDecision` and, on a line that was never validated, only for being present by the guard, so on those
+ * the two can disagree.
+ */
+export function lotSnapshotProblems(raw: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  if (raw.type !== "exit") errors.push("the lot snapshot (entry_*) only goes in exit");
+  else {
+    // All or nothing: half a snapshot would be measured as a different trade.
+    for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
+      if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
+      // The lot's entry id names the lot: an empty one would merge lots under one key.
+      else if (field === SNAPSHOT_LOT_ID && (typeof raw[field] !== "string" || raw[field].trim() === ""))
+        errors.push(`${field} must be a non-empty string`);
+    }
+  }
+  if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
+    errors.push(`entry_date must be YYYY-MM-DD; got: ${JSON.stringify(raw.entry_date)}`);
+  }
+  if (
+    raw.type === "exit" &&
+    typeof raw.entry_date === "string" &&
+    DATE_RE.test(raw.entry_date) &&
+    typeof raw.date === "string" &&
+    DATE_RE.test(raw.date) &&
+    entryAfterExit(raw.entry_date, raw.date)
+  ) {
+    errors.push(`entry_date ${raw.entry_date} is after the exit's date ${raw.date}`);
+  }
+  if (raw.entry_origin != null && !DECISION_ORIGINS.includes(raw.entry_origin as DecisionOrigin)) {
+    errors.push(
+      `entry_origin must be one of [${DECISION_ORIGINS.join(", ")}]; got: ${JSON.stringify(raw.entry_origin)}`,
+    );
+  }
+  if (
+    raw.entry_rules_version != null &&
+    (typeof raw.entry_rules_version !== "string" || raw.entry_rules_version.trim() === "")
+  ) {
+    errors.push("entry_rules_version must be a non-empty string");
+  }
+  return errors;
+}
+
+/**
  * Validates a decision against the schema. It collects every problem and throws
  * a single error, like `validateRecommendation`: a malformed line must not
  * reach the log, because everything measured later will read it as is.
@@ -283,8 +346,9 @@ export function validateDecision(raw: unknown): Decision {
   const type = raw.type as DecisionType;
   if (FLOW_TYPES.includes(type)) {
     if (raw.ticker != null) errors.push(`ticker must be null in ${type}`);
-  } else if (typeof raw.ticker !== "string" || raw.ticker.trim() === "") {
-    errors.push("ticker must be a non-empty string");
+  } else {
+    const checked = checkTicker(raw.ticker);
+    if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
   }
 
   for (const field of [
@@ -320,20 +384,7 @@ export function validateDecision(raw: unknown): Decision {
     if (raw[field] == null) errors.push(`${field} is required in ${type}`);
   }
 
-  if (SNAPSHOT_FIELDS.some((f) => raw[f] != null)) {
-    if (type !== "exit") errors.push("the lot snapshot (entry_*) only goes in exit");
-    else {
-      // All or nothing: half a snapshot would be measured as a different trade.
-      for (const field of [...REQUIRED_SNAPSHOT, SNAPSHOT_LOT_ID] as const) {
-        if (raw[field] == null) errors.push(`${field} is required with the lot snapshot`);
-      }
-    }
-    if (raw.entry_date != null && (typeof raw.entry_date !== "string" || !DATE_RE.test(raw.entry_date))) {
-      errors.push(`entry_date must be YYYY-MM-DD; got: ${JSON.stringify(raw.entry_date)}`);
-    }
-    if (raw.entry_origin != null) oneOf("entry_origin", DECISION_ORIGINS);
-    if (raw.entry_rules_version != null) nonEmpty("entry_rules_version");
-  }
+  if (SNAPSHOT_FIELDS.some((f) => raw[f] != null)) errors.push(...lotSnapshotProblems(raw));
 
   if (raw.lot_units_left != null && !(type === "exit" && SNAPSHOT_FIELDS.some((f) => raw[f] != null))) {
     errors.push("lot_units_left only goes with the lot snapshot of an exit");
@@ -354,7 +405,7 @@ export function validateDecision(raw: unknown): Decision {
 
   if (raw.benchmark != null) {
     const b = raw.benchmark;
-    if (!isObj(b) || typeof b.ticker !== "string" || typeof b.price !== "number" || !(b.price > 0)) {
+    if (!isObj(b) || typeof b.price !== "number" || !(b.price > 0)) {
       errors.push(`benchmark must be { ticker, price > 0 }; got: ${JSON.stringify(b)}`);
     }
   }
@@ -444,12 +495,31 @@ export function validateDecision(raw: unknown): Decision {
   if (errors.length > 0) {
     throw new Error(`Invalid decision:\n- ${errors.join("\n- ")}`);
   }
-  return raw as unknown as Decision;
+  // Canonical tickers: a decision written in another case reads as its upper-case value.
+  const decision = raw as unknown as Decision;
+  const { benchmark, ...rest } = decision;
+  // A benchmark whose ticker does not parse is dropped, not the whole line (it is a side measurement, and
+  // the line was accepted before the ticker became a parsed value): the decision keeps its other fields.
+  const benchmarkTicker = benchmark ? checkTicker(benchmark.ticker) : undefined;
+  if (benchmarkTicker && "problem" in benchmarkTicker) {
+    console.warn(`[decisions] WARNING: decision ${decision.id}: benchmark dropped: ${benchmarkTicker.problem}`);
+  }
+  return {
+    ...rest,
+    ...(decision.ticker != null ? { ticker: parseTicker(decision.ticker) } : {}),
+    // Settled money is whole cents from here on, whatever the line or the owner wrote.
+    ...(decision.costs != null ? { costs: money(decision.costs) } : {}),
+    ...(decision.pnl != null ? { pnl: money(decision.pnl) } : {}),
+    ...(decision.entry_costs != null ? { entry_costs: money(decision.entry_costs) } : {}),
+    ...(benchmark && benchmarkTicker && "ticker" in benchmarkTicker
+      ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
+      : {}),
+  };
 }
 
 /** Readable unique id: date, asset (or silo) and type, plus a random suffix. */
 export function newDecisionId(date: string, subject: string, type: DecisionType): string {
-  const slug = subject.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const slug = tickerIdPart(subject);
   return `${date.replace(/-/g, "")}-${slug}-${type}-${randomUUID().slice(0, 8)}`;
 }
 
@@ -530,7 +600,7 @@ export function decisionFromRecommendation(
         ...common,
         type: ctx.blocked ? "buy_blocked" : "buy_proposal",
         amount: positive(buy?.amount),
-        costs: buy?.costs,
+        costs: buy?.costs == null ? undefined : money(buy.costs),
         stop_initial: buy?.stop,
         target: positive(rec.ticket.target),
         assumptions: rec.assumptions,
@@ -555,7 +625,7 @@ export function decisionFromRecommendation(
  */
 export function twoMonthRuleWarning(
   history: readonly Decision[],
-  ticker: string,
+  ticker: Ticker,
   date: string,
   accountEnv: string | undefined,
   m: Messages = messages(),
@@ -609,7 +679,7 @@ export interface OwnerDecisionInput {
   type: OwnerDecisionType;
   /** YYYY-MM-DD; today by default. */
   date?: string;
-  ticker?: string;
+  ticker?: Ticker;
   currency: Currency;
   price?: number;
   /** Amount; in entry/exit `units` can be given instead. */
@@ -620,9 +690,9 @@ export interface OwnerDecisionInput {
   /** fx_conversion: market rate; or `received`, what reached the other silo. */
   fx_rate?: number;
   received?: number;
-  costs?: number;
+  costs?: Money;
   /** exit: realized result; if missing, computed with the average price in portfolio.md. */
-  pnl?: number;
+  pnl?: Money;
   /** To force the origin when the engine cannot infer it. */
   origin?: DecisionOrigin;
   related_id?: string;
@@ -660,8 +730,12 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   }
 
   const has = (f: string) => raw[f] != null;
-  if (["entry", "exit", "adjust_stop"].includes(type) && (typeof raw.ticker !== "string" || raw.ticker.trim() === "")) {
-    errors.push(`ticker is required in ${type}`);
+  if (["entry", "exit", "adjust_stop"].includes(type)) {
+    if (raw.ticker == null) errors.push(`ticker is required in ${type}`);
+    else {
+      const checked = checkTicker(raw.ticker);
+      if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
+    }
   }
   if (FLOW_TYPES.includes(type) && has("ticker")) errors.push(`ticker does not apply in ${type}`);
   if ((type === "entry" || type === "exit") && !has("price")) errors.push(`price is required in ${type}`);
@@ -673,7 +747,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     // measures units as amount / price) must read the same units, so a contradiction is refused.
     const { units, amount, price } = raw as { units: number; amount: number; price: number };
     if (Number.isFinite(units) && Number.isFinite(amount) && Number.isFinite(price) && price > 0) {
-      if (Math.abs(amount - units * price) > 0.01 + 1e-9) {
+      if (!withinACent(amount, units * price)) {
         errors.push(
           `units ${units} × price ${price} = ${round(units * price, 2)}, not the amount ${amount} (give units or amount, or make them agree to the cent)`,
         );
@@ -691,7 +765,13 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (errors.length > 0) {
     throw new Error(`Invalid decision:record input:\n- ${errors.join("\n- ")}`);
   }
-  return raw as unknown as OwnerDecisionInput;
+  const input = raw as unknown as OwnerDecisionInput;
+  return {
+    ...input,
+    ...(has("ticker") ? { ticker: parseTicker(input.ticker) } : {}),
+    ...(input.costs != null ? { costs: money(input.costs) } : {}),
+    ...(input.pnl != null ? { pnl: money(input.pnl) } : {}),
+  };
 }
 
 /**
@@ -702,9 +782,9 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
 export function resolveFxConversion(
   input: Pick<OwnerDecisionInput, "amount" | "fx_rate" | "received" | "costs">,
   commissionPct: number,
-): { costs: number; fx_rate: number } {
+): { costs: Money; fx_rate: number } {
   const amount = input.amount!;
-  const costs = input.costs ?? round((amount * commissionPct) / 100, 2);
+  const costs = input.costs ?? money((amount * commissionPct) / 100);
   const fx_rate = input.fx_rate ?? round(input.received! / (amount - costs), 6);
   return { costs, fx_rate };
 }
@@ -749,7 +829,7 @@ export const PROPOSAL_WINDOW_DAYS = 10;
  */
 export function findRelatedProposal(
   decisions: readonly Decision[],
-  query: { ticker: string; date: string; types: readonly DecisionType[] },
+  query: { ticker: Ticker; date: string; types: readonly DecisionType[] },
 ): Decision | undefined {
   const used = new Set(decisions.map((d) => d.related_id).filter(Boolean));
   return decisions

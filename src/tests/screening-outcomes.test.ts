@@ -18,6 +18,7 @@ import type { HistoricalBar } from "../providers/types.js";
 import { closes, weekdayBars } from "./fixtures/weekday-bars.js";
 import { en } from "../i18n/en.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { parseTicker as tk } from "../ticker.js";
 
 // ─── cohortOf / benchmarkFor ─────────────────────────────────────────────────
 
@@ -261,7 +262,7 @@ function fakeEval(opts: {
         };
   return {
     row: {
-      ticker: "X",
+      ticker: tk("X"),
       name: "X",
       index: "S&P 500",
       date: "2026-07-04",

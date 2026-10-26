@@ -27,7 +27,7 @@ ticket already computed. **It never places orders**: you decide and execute at y
 
 - **SLO**: the quality of its proposals against what actually happened, executed or not, with confidence bounds ([SLO](#slo)). Operational cost: at most one Claude call per escalated signal.
 - **Terms** such as R, plan R, silo or setup are defined in the [glossary](docs/glossary.md).
-- **Quality**: 974 tests, line coverage ≥ 80% enforced in CI (97.4% measured), type-checked lint, CodeQL, Dependabot, dependency audit, and a pre-push hook that runs the same checks ([Quality gates](#quality-gates)).
+- **Quality**: an offline unit and component test suite (`npm test`), line coverage ≥ 80% enforced in CI (97.4% measured), type-checked lint, CodeQL, Dependabot, dependency audit, and a pre-push hook that runs the same checks ([Quality gates](#quality-gates)).
 
 ## Requirements
 

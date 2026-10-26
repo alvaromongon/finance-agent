@@ -14,6 +14,7 @@ import { mkdtemp, rm, mkdir, readFile, readdir, writeFile, access } from "node:f
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BuyTicket, EngineTicket, Recommendation } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const BUY_TICKET: BuyTicket = {
   kind: "BUY",
@@ -34,7 +35,7 @@ const BUY_TICKET: BuyTicket = {
 };
 
 const BUY_REC: Recommendation = {
-  ticker: "NVDA",
+  ticker: tk("NVDA"),
   action: "BUY",
   ticket: {
     direction: "BUY",

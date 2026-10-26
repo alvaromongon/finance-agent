@@ -4,6 +4,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -19,10 +20,11 @@ import {
   type Decision,
 } from "../decisions.js";
 import type { BuyTicket, EngineTicket, Recommendation, Signal, WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const base = (overrides: Partial<Decision> = {}): Omit<Decision, "id"> => ({
   date: "2026-09-14",
-  ticker: "ADBE",
+  ticker: tk("ADBE"),
   currency: "USD",
   origin: "sistema",
   source: "monday-briefing",
@@ -32,7 +34,7 @@ const base = (overrides: Partial<Decision> = {}): Omit<Decision, "id"> => ({
 });
 
 const entry = (overrides: Partial<WatchlistEntry> = {}): WatchlistEntry => ({
-  ticker: "ADBE",
+  ticker: tk("ADBE"),
   name: "Applied Materials",
   market: "NASDAQ",
   currency: "USD",
@@ -45,7 +47,7 @@ describe("validateDecision", () => {
   it("accepts a minimal hold and gives it an id", () => {
     const d = buildDecision(base());
     assert.match(d.id, /^20260914-adbe-hold-[0-9a-f]{8}$/);
-    assert.equal(validateDecision(d), d);
+    assert.deepEqual(validateDecision(d), d);
   });
 
   it("drops undefined fields instead of writing them", () => {
@@ -184,7 +186,7 @@ describe("validateDecision", () => {
 
 describe("decisionFromRecommendation", () => {
   const signal = (overrides: Partial<Signal> = {}): Signal => ({
-    ticker: "ADBE",
+    ticker: tk("ADBE"),
     currency: "USD",
     triggers: ["big_move"],
     price: 500,
@@ -192,11 +194,11 @@ describe("decisionFromRecommendation", () => {
     cash: 1000,
     siloValue: 2400,
     strength: { rangePosition: 0.4567, bias: "MIXTO", atr14: 12.34567 },
-    benchmark: { ticker: "VOO", price: 700 },
+    benchmark: { ticker: tk("VOO"), price: 700 },
     ...overrides,
   });
   const rec = (overrides: Partial<Recommendation> = {}): Recommendation => ({
-    ticker: "ADBE",
+    ticker: tk("ADBE"),
     action: "BUY",
     ticket: { direction: "BUY", currency: "USD", target: 560 },
     thesis_summary: "t",
@@ -244,7 +246,7 @@ describe("decisionFromRecommendation", () => {
 
   it("the benchmark regime goes to its own field, not inside benchmark", () => {
     const withRegime = signal();
-    withRegime.benchmark = { ticker: "VOO", price: 700, regime: "adverso" };
+    withRegime.benchmark = { ticker: tk("VOO"), price: 700, regime: "adverso" };
     const d = decisionFromRecommendation(rec(), withRegime, {
       ...ctx,
       blocked: true,
@@ -270,12 +272,12 @@ describe("decisionFromRecommendation", () => {
 
   it("HOLD is recorded; a SELL or ADJUST_STOP not carried out keeps the position, and without a position it is not a decision", () => {
     const position = {
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD" as const,
       volume: 1,
       avgPrice: 480,
       currentPrice: 500,
-      pl: 20,
+      pl: money(20),
       stopLoss: 450,
     };
     const sell = rec({
@@ -353,26 +355,26 @@ describe("twoMonthRuleWarning (art. 33.5.f LIRPF)", () => {
         date: "2026-08-31",
         price: 460,
         amount: 460,
-        pnl: -30,
+        pnl: money(-30),
         ...overrides,
       }),
     );
 
   it("with a real account warns when buying back within two months of a loss-making sale (ADBE case)", () => {
-    const w = twoMonthRuleWarning([exit()], "ADBE", "2026-09-09", "real");
+    const w = twoMonthRuleWarning([exit()], tk("ADBE"), "2026-09-09", "real");
     assert.match(w!, /ADBE se vendió con pérdida \(-30 USD\) el 2026-08-31/);
     assert.match(w!, /antes del 2026-10-31/);
   });
 
   it("does not warn in demo, out of the window, with a gain or without pnl", () => {
-    assert.equal(twoMonthRuleWarning([exit()], "ADBE", "2026-09-09", "demo"), null);
-    assert.equal(twoMonthRuleWarning([exit()], "ADBE", "2026-10-31", "real"), null);
-    assert.equal(twoMonthRuleWarning([exit({ pnl: 12 })], "ADBE", "2026-09-09", "real"), null);
-    assert.equal(twoMonthRuleWarning([exit({ pnl: undefined })], "ADBE", "2026-09-09", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-09-09", "demo"), null);
+    assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-10-31", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit({ pnl: money(12) })], tk("ADBE"), "2026-09-09", "real"), null);
+    assert.equal(twoMonthRuleWarning([exit({ pnl: undefined })], tk("ADBE"), "2026-09-09", "real"), null);
   });
 
   it("pnl is only accepted in exit", () => {
-    assert.throws(() => buildDecision(base({ pnl: -5 })), /pnl only goes in exit/);
+    assert.throws(() => buildDecision(base({ pnl: money(-5) })), /pnl only goes in exit/);
   });
 });
 
@@ -384,7 +386,7 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
     entry_price: 100,
     stop_initial: 90,
     entry_units: 10,
-    entry_costs: 4,
+    entry_costs: money(4),
     entry_date: "2026-06-15",
     entry_origin: "sistema",
     entry_rules_version: "1.0",
@@ -419,6 +421,21 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
     );
   });
 
+  it("an entry date after the exit's own date is refused, naming both dates (#48)", () => {
+    assert.throws(
+      () => buildDecision(exitLine({ ...snapshot, date: "2026-06-14", entry_date: "2026-06-15" })),
+      /entry_date 2026-06-15 is after the exit's date 2026-06-14/,
+    );
+  });
+
+  it("an entry date equal to the exit's date is accepted: a same-day round trip (#48)", () => {
+    assert.doesNotThrow(() => buildDecision(exitLine({ ...snapshot, date: "2026-06-15", entry_date: "2026-06-15" })));
+  });
+
+  it("an entry date before the exit's date is accepted (#48)", () => {
+    assert.doesNotThrow(() => buildDecision(exitLine({ ...snapshot, date: "2026-06-16", entry_date: "2026-06-15" })));
+  });
+
   it("the snapshot needs the entry id: it is what identifies the lot", () => {
     const { related_id: _id, ...noId } = snapshot;
     assert.throws(() => buildDecision(exitLine(noId)), /related_id is required with the lot snapshot/);
@@ -438,7 +455,10 @@ describe("validateDecision: the lot snapshot of an exit (ADR-0015)", () => {
   it("rejects values that cannot be a lot", () => {
     assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_units: 0 })), /entry_units must be a number > 0/);
     assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_price: -1 })), /entry_price must be a number > 0/);
-    assert.throws(() => buildDecision(exitLine({ ...snapshot, entry_costs: -1 })), /entry_costs must be a number >= 0/);
+    assert.throws(
+      () => buildDecision(exitLine({ ...snapshot, entry_costs: money(-1) })),
+      /entry_costs must be a number >= 0/,
+    );
     assert.throws(
       () => buildDecision(exitLine({ ...snapshot, entry_date: "15/06/2026" })),
       /entry_date must be YYYY-MM-DD/,
@@ -532,7 +552,7 @@ describe("resolveFxConversion", () => {
   });
 
   it("respects the fee and the rate the owner gives", () => {
-    assert.deepEqual(resolveFxConversion({ amount: 100, fx_rate: 1.17, costs: 0.8 }, 0.5), {
+    assert.deepEqual(resolveFxConversion({ amount: 100, fx_rate: 1.17, costs: money(0.8) }, 0.5), {
       costs: 0.8,
       fx_rate: 1.17,
     });
@@ -582,15 +602,15 @@ describe("findRelatedProposal", () => {
 
   it("attributes the entry to the same ticker's proposal within the window", () => {
     assert.equal(
-      findRelatedProposal([proposal], { ticker: "ADBE", date: "2026-09-14", types: ["buy_proposal"] })?.id,
+      findRelatedProposal([proposal], { ticker: tk("ADBE"), date: "2026-09-14", types: ["buy_proposal"] })?.id,
       proposal.id,
     );
     assert.equal(
-      findRelatedProposal([proposal], { ticker: "ADBE", date: "2026-09-30", types: ["buy_proposal"] }),
+      findRelatedProposal([proposal], { ticker: tk("ADBE"), date: "2026-09-30", types: ["buy_proposal"] }),
       undefined,
     );
     assert.equal(
-      findRelatedProposal([proposal], { ticker: "HAL", date: "2026-09-14", types: ["buy_proposal"] }),
+      findRelatedProposal([proposal], { ticker: tk("HAL"), date: "2026-09-14", types: ["buy_proposal"] }),
       undefined,
     );
   });
@@ -607,7 +627,7 @@ describe("findRelatedProposal", () => {
       }),
     );
     assert.equal(
-      findRelatedProposal([proposal, used], { ticker: "ADBE", date: "2026-09-14", types: ["buy_proposal"] }),
+      findRelatedProposal([proposal, used], { ticker: tk("ADBE"), date: "2026-09-14", types: ["buy_proposal"] }),
       undefined,
     );
   });
@@ -622,7 +642,7 @@ describe("findRelatedProposal", () => {
       }),
     );
     const related = findRelatedProposal([blocked], {
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       date: "2026-09-14",
       types: ["buy_proposal", "buy_blocked"],
     });
@@ -651,6 +671,51 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
     assert.throws(
       () => buildDecision(base({ type: "adjust_stop", stop: 90, units: 4 })),
       /units only goes in entry or exit/,
+    );
+  });
+});
+
+describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
+  it("costs and pnl given with sub-cent decimals are rounded to the cent", () => {
+    const input = validateOwnerInput({
+      type: "exit",
+      ticker: "CAT",
+      currency: "USD",
+      price: 30,
+      units: 2,
+      costs: 1.234,
+      pnl: 5.678,
+    });
+    assert.equal(input.costs, 1.23);
+    assert.equal(input.pnl, 5.68);
+  });
+
+  it("an fx_conversion computes its fx_rate from the cost in cents (main used 1.234)", () => {
+    const input = validateOwnerInput({
+      type: "fx_conversion",
+      currency: "EUR",
+      amount: 100,
+      received: 118,
+      costs: 1.234,
+    });
+    const { costs, fx_rate } = resolveFxConversion(input, 0);
+    assert.equal(costs, 1.23);
+    assert.equal(fx_rate, 1.194695); // 118 / 98.77; with 1.234 it was 1.194743
+  });
+
+  it("units × price that overflows is reported in the validation list, not as a RangeError", () => {
+    assert.throws(
+      () =>
+        validateOwnerInput({
+          type: "entry",
+          ticker: "CAT",
+          currency: "USD",
+          price: 1e200,
+          units: 1e200,
+          amount: 5,
+          stop: 1,
+        }),
+      /Invalid decision:record input/,
     );
   });
 });

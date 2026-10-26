@@ -168,6 +168,25 @@ entry, or whose exits disagree about the entry or about the units left, is incon
 measured, and the evaluation report names it. An exit that carries no snapshot of its lot, or no
 units left, is not measured either, and the report names it.
 
+### Ticker
+
+The symbol of an asset (`TCK`, `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), in the form Yahoo Finance
+uses. Its canonical form is trimmed and upper case: letters, digits and `. - ^ =`, with at least
+one letter or digit. The engine makes a ticker only by parsing, so `tck` and `TCK` are one ticker
+everywhere and two tickers are equal exactly when `===` says so. A value that does not parse
+(for example `M&M.NS`) is not a ticker: the readers skip its row with a warning, and only
+`decision:record` and `decisions:evaluate` refuse the file.
+
+### Money
+
+An amount of the silo currency, always a whole number of cents (`src/money.ts`). The engine makes a
+money value only through `money()`, compares two at the cent, shares one over weights by the
+largest-remainder method (the shares add up exactly to the total, none is negative) and writes it
+with two decimals. Prices, exchange rates, units and percentages are not money and stay plain
+numbers. The one exception is the `amount` of an exit: it is its exact share of the sale amount and
+keeps up to 8 decimals, so a lot worth under half of the last decimal (`5e-9`, the dust limit) has
+an amount of 0 and cannot be sold.
+
 ### Rules version
 
 The version of the trading rules stamped on every decision, so results can be split by the rules

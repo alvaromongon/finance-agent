@@ -4,10 +4,10 @@
  * portfolio.md. Hand-calculated expectations; the recorder itself is tested in measurable-exits.test.ts
  * and decision-record.test.ts.
  */
+import { addMoney, money, ZERO, type Money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  allocateByWeight,
   applyLotChange,
   lotOfEntry,
   planSale,
@@ -17,9 +17,10 @@ import {
 import { parseLots, parsePositions } from "../utils/vault-parser.js";
 import { buildDecision } from "../decisions.js";
 import type { Lot } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const lot = (entryId: string, units: number, overrides: Partial<Lot> = {}): Lot => ({
-  ticker: "TCK",
+  ticker: tk("TCK"),
   entryId,
   date: "2026-06-15",
   units,
@@ -34,7 +35,7 @@ const lot = (entryId: string, units: number, overrides: Partial<Lot> = {}): Lot 
 });
 
 const sale = (units: number, overrides: Partial<SalePlanInput> = {}): SalePlanInput => ({
-  ticker: "TCK",
+  ticker: tk("TCK"),
   units,
   price: 130,
   amount: Math.round(units * 130 * 100) / 100,
@@ -46,14 +47,14 @@ describe("lotOfEntry", () => {
     const entry = buildDecision({
       id: "e1",
       date: "2026-06-15",
-      ticker: "TCK",
+      ticker: tk("TCK"),
       currency: "USD",
       origin: "propietario",
       source: "portfolio-sync",
       type: "entry",
       price: 100,
       amount: 1000,
-      costs: 2.5,
+      costs: money(2.5),
       stop_initial: 90,
       rule_violations: ["no_stop", "overrode_block"],
       rules_version: "1.1",
@@ -77,7 +78,7 @@ describe("lotOfEntry", () => {
     const entry = buildDecision({
       id: "e2",
       date: "2026-06-15",
-      ticker: "TCK",
+      ticker: tk("TCK"),
       currency: "USD",
       origin: "sistema",
       source: "portfolio-sync",
@@ -128,7 +129,11 @@ describe("planSale: first in, first out", () => {
   });
 
   it("only the lots of the sold ticker are consumed", () => {
-    const shares = planSale([lot("x", 10, { ticker: "OTH", date: "2026-01-01" }), lot("a", 10)], sale(5), new Map());
+    const shares = planSale(
+      [lot("x", 10, { ticker: tk("OTH"), date: "2026-01-01" }), lot("a", 10)],
+      sale(5),
+      new Map(),
+    );
     assert.deepEqual(
       shares.map((s) => s.lot.entryId),
       ["a"],
@@ -144,7 +149,7 @@ describe("planSale: first in, first out", () => {
   });
 
   it("a sale with no lots for the ticker is an error naming the ticker", () => {
-    assert.throws(() => planSale([lot("x", 10, { ticker: "OTH" })], sale(1), new Map()), /no open lots for TCK/);
+    assert.throws(() => planSale([lot("x", 10, { ticker: tk("OTH") })], sale(1), new Map()), /no open lots for TCK/);
     assert.throws(() => planSale([], sale(1), new Map()), /no open lots for TCK/);
   });
 
@@ -187,6 +192,50 @@ describe("planSale: first in, first out", () => {
   });
 });
 
+describe("planSale: an amount too large to count in cents, or entry units of 0, is refused with a message (#87)", () => {
+  it("a lot whose entry price makes the result too large to count in cents is refused, naming the lot", () => {
+    assert.throws(
+      () => planSale([lot("big-1", 10, { entryPrice: 1e307 })], sale(4), new Map()),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /lot big-1 \(TCK\).*Entry price.*too large to count in cents/);
+        return true;
+      },
+    );
+  });
+
+  it("a sale over several lots whose results are too large together is refused with a message, even with pnl 0", () => {
+    const lots = [lot("big-a", 1, { entryPrice: 1.5e306 }), lot("big-b", 1, { entryPrice: 1.5e306 })];
+    assert.throws(
+      () => planSale(lots, sale(2, { price: 10, pnl: money(0) }), new Map()),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /TCK.*too large to count in cents/);
+        return true;
+      },
+    );
+  });
+
+  it("a partial sale of a lot whose Entry units are 0 is refused, naming the lot and its entry units", () => {
+    assert.throws(
+      () => planSale([lot("zero-1", 10, { entryUnits: 0, entryCosts: money(5) })], sale(4), new Map()),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /lot zero-1 \(TCK\).*Entry units.* 0/);
+        return true;
+      },
+    );
+  });
+
+  it("a lot whose Entry units are 0 and is used up, or has no entry costs, is sold as before", () => {
+    assert.equal(
+      planSale([lot("zero-2", 10, { entryUnits: 0, entryCosts: money(5) })], sale(10), new Map())[0].entryCosts,
+      5,
+    );
+    assert.equal(planSale([lot("zero-3", 10, { entryUnits: 0 })], sale(4), new Map())[0].entryCosts, undefined);
+  });
+});
+
 describe("planSale: what each exit carries", () => {
   it("the amounts of the exits are exact shares by units and add up to the sale amount, the remainder on the last", () => {
     // 3 lots of 1 unit; 1000.01 over 3 equal shares: not rounded to the cent.
@@ -206,14 +255,14 @@ describe("planSale: what each exit carries", () => {
   });
 
   it("an exit's amount keeps its sub-cent value when the units are tiny and the price low", () => {
-    const shares = planSale([lot("a", 4)], { ticker: "TCK", units: 4, price: 0.001, amount: 0.004 }, new Map());
+    const shares = planSale([lot("a", 4)], { ticker: tk("TCK"), units: 4, price: 0.001, amount: 0.004 }, new Map());
     assert.equal(shares[0].amount, 0.004);
   });
 
   it("the costs of the sale are split the same way and stay absent when there are none", () => {
     const lots = [lot("a", 1), lot("b", 1), lot("c", 1)];
     assert.deepEqual(
-      planSale(lots, sale(3, { costs: 1 }), new Map()).map((s) => s.costs),
+      planSale(lots, sale(3, { costs: money(1) }), new Map()).map((s) => s.costs),
       [0.33, 0.33, 0.34],
     );
     assert.deepEqual(
@@ -232,23 +281,54 @@ describe("planSale: what each exit carries", () => {
   });
 
   it("a pnl the owner gives for the whole sale is split by units, the remainder on the last", () => {
-    const shares = planSale([lot("a", 10), lot("b", 10)], sale(15, { pnl: 100 }), new Map());
+    const shares = planSale([lot("a", 10), lot("b", 10)], sale(15, { pnl: money(100) }), new Map());
     assert.deepEqual(
       shares.map((s) => s.pnl),
       [66.67, 33.33],
     );
   });
 
+  describe("an owner-given pnl keeps each lot's own result and shares only the difference (#71)", () => {
+    // Two lots of 5 units sold together at 120.
+    const gain = [lot("a", 5, { entryPrice: 100 }), lot("b", 5, { entryPrice: 130, date: "2026-06-22" })];
+    const loss = [lot("a", 5, { entryPrice: 110 }), lot("b", 5, { entryPrice: 150, date: "2026-06-22" })];
+    const pnls = (lots: Lot[], pnl?: number) =>
+      planSale(lots, sale(10, { price: 120, ...(pnl === undefined ? {} : { pnl: money(pnl) }) }), new Map()).map(
+        (s) => s.pnl,
+      );
+
+    it("net gain, computed: +100 and -50", () => assert.deepEqual(pnls(gain), [100, -50]));
+    it("net gain, +50 given: the same, the losing lot stays a loss", () =>
+      assert.deepEqual(pnls(gain, 50), [100, -50]));
+    it("net loss, computed: +50 and -150", () => assert.deepEqual(pnls(loss), [50, -150]));
+    it("net loss, -100 given: the same, the winning lot stays a gain", () =>
+      assert.deepEqual(pnls(loss, -100), [50, -150]));
+
+    it("a total that differs by costs (+48 against +50): each lot keeps its sign and they add up to +48", () => {
+      // Difference -2 shared 5/5: -1 each.
+      assert.deepEqual(pnls(gain, 48), [99, -51]);
+    });
+
+    it("the difference is shared by units in whole cents, adding up to the owner's total", () => {
+      // Lots of 1 and 2 units (entry 100): computed 20 and 40 at 120; +61 given: difference +1 -> 0.33/0.67.
+      const lots = [lot("a", 1), lot("b", 2, { date: "2026-06-22" })];
+      assert.deepEqual(
+        planSale(lots, sale(3, { price: 120, pnl: money(61) }), new Map()).map((s) => s.pnl),
+        [20.33, 40.67],
+      );
+    });
+  });
+
   it("the entry costs are shared pro rata to the units sold, the remainder on the last exit of the lot", () => {
     // Entry costs 1 over 3 units: 0.33 + 0.33 + 0.34, so the three exits add up exactly to 1.
-    const l = lot("a", 3, { entryCosts: 1 });
-    const prior = new Map<string, number>();
+    const l = lot("a", 3, { entryCosts: money(1) });
+    const prior = new Map<string, Money>();
     let current = l;
     const shares: (number | undefined)[] = [];
     for (let i = 0; i < 3; i++) {
       const [share] = planSale([current], sale(1), prior);
       shares.push(share.entryCosts);
-      prior.set("a", (prior.get("a") ?? 0) + (share.entryCosts ?? 0));
+      prior.set("a", addMoney(prior.get("a") ?? ZERO, share.entryCosts ?? ZERO));
       current = { ...current, units: share.unitsLeft };
     }
     assert.deepEqual(shares, [0.33, 0.33, 0.34]);
@@ -307,7 +387,7 @@ last_manual_sync: 2026-10-16T18:00:00Z
   const usdLots = (md: string) => parseLots(md, "USD");
   const usdPositions = (md: string) => parsePositions(md, "USD");
   const change = (overrides: Partial<PositionChange> = {}): PositionChange => ({
-    ticker: "TCK",
+    ticker: tk("TCK"),
     volume: 10,
     avgPrice: 100,
     ...overrides,
@@ -354,7 +434,7 @@ last_manual_sync: 2026-10-16T18:00:00Z
 
   it("consuming a lot partly rewrites its Units and keeps the rest of the row", () => {
     const first = lot("a", 10, {
-      entryCosts: 2.5,
+      entryCosts: money(2.5),
       rulesViolations: ["no_stop", "overrode_block"],
       origin: "propietario",
     });
@@ -370,7 +450,7 @@ last_manual_sync: 2026-10-16T18:00:00Z
 
   it("when the last lot goes, its Positions row is deleted and the tables stay readable", () => {
     let md = applyLotChange(PORTFOLIO, "USD", [lot("a", 10)], change({ newStopLoss: 90, currentPrice: 100 }));
-    md = applyLotChange(md, "USD", [], { ticker: "TCK", volume: 0 });
+    md = applyLotChange(md, "USD", [], { ticker: tk("TCK"), volume: 0 });
     assert.deepEqual(usdLots(md), []);
     assert.deepEqual(usdPositions(md), []);
     assert.match(md, /## USD — Positions\n\n\| Ticker \| Volume/);
@@ -391,9 +471,14 @@ last_manual_sync: 2026-10-16T18:00:00Z
       "EUR",
       [
         parseLots(PORTFOLIO, "EUR")[0],
-        lot("b", 0.30000000000000004, { ticker: "IBE.MC", entryPrice: 12.5, initialStop: 11.25, entryCosts: 1.5 }),
+        lot("b", 0.30000000000000004, {
+          ticker: tk("IBE.MC"),
+          entryPrice: 12.5,
+          initialStop: 11.25,
+          entryCosts: money(1.5),
+        }),
       ],
-      change({ ticker: "IBE.MC", volume: 0.3, avgPrice: 12.5, newStopLoss: 11.25, currentPrice: 12.5 }),
+      change({ ticker: tk("IBE.MC"), volume: 0.3, avgPrice: 12.5, newStopLoss: 11.25, currentPrice: 12.5 }),
     );
     assert.match(
       md,
@@ -422,29 +507,71 @@ last_manual_sync: 2026-10-16T18:00:00Z
     assert.equal(usdLots(md)[0].entryId, "a");
   });
 
-  it("keeps a row that does not read as a lot, the owner's note, where it is", () => {
-    const withNote = PORTFOLIO.replace(
+  it("refuses a Lots table with a row that does not read: it is never rewritten around the row", () => {
+    const withBadRow = PORTFOLIO.replace(
       "| SAP.DE | sap-1 |",
       "| SAP.DE | sap-0 | 2026-09-01 | TBD | 5 | 1 | — | — | sistema | 1.0 | — |\n| SAP.DE | sap-1 |",
     );
-    const md = applyLotChange(withNote, "EUR", parseLots(withNote, "EUR"), {
-      ticker: "SAP.DE",
-      volume: 2,
-      avgPrice: 180,
+    assert.throws(
+      () => applyLotChange(withBadRow, "EUR", [], { ticker: tk("SAP.DE"), volume: 2, avgPrice: 180 }),
+      /portfolio\.md \(EUR\): Lots row 1 \(SAP\.DE, sap-0\): Units "TBD" is not a number.*nothing was recorded/,
+    );
+  });
+
+  it("a ticker on several Positions rows is an internal error: the lots check refuses it first", () => {
+    const twice = PORTFOLIO.replace(
+      "| SAP.DE | 2 | 180,00 | 186,40 | 12,80 | 168,00 |",
+      "| SAP.DE | 1 | 180,00 | 186,40 | 6,40 | 168,00 |\n| SAP.DE | 1 | 180,00 | 186,40 | 6,40 | 168,00 |",
+    );
+    assert.throws(
+      () => applyLotChange(twice, "EUR", parseLots(twice, "EUR"), { ticker: tk("SAP.DE"), volume: 2, avgPrice: 180 }),
+      /portfolio\.md \(EUR\): internal error: SAP\.DE is on 2 rows of Positions.*nothing was recorded/,
+    );
+  });
+
+  describe("a Lots table split by blank lines or notes is one table", () => {
+    const rowOf = (id: string, date: string) =>
+      `| TCK | ${id} | ${date} | 10 | 10 | 100,00 | — | — | sistema | 1.0 | — |`;
+    const split = (rows: string[]) =>
+      PORTFOLIO.replace(/(## USD — Lots\n\n\|[^\n]*\n\|[^\n]*\n)/, (head) => `${head}${rows.join("\n")}\n`);
+    const lotIds = (md: string) => parseLots(md, "USD").map((l) => l.entryId);
+
+    it("a blank line between the separator and the first lot: the next entry is added once, the table is contiguous", () => {
+      const md = split(["", rowOf("a", "2026-06-01"), rowOf("b", "2026-06-02")]);
+      assert.deepEqual(lotIds(md), ["a", "b"], "the reader sees one table");
+      const out = applyLotChange(md, "USD", [...parseLots(md, "USD"), lot("c", 10)], change({ currentPrice: 100 }));
+      assert.deepEqual(lotIds(out), ["a", "b", "c"]);
+      assert.equal(out.match(/^\| TCK \| [abc] \|/gm)?.length, 3, "no lot is written twice");
+      assert.match(out, /\|---\|\n\| TCK \| a \|[^\n]*\n\| TCK \| b \|[^\n]*\n\| TCK \| c \|/, "one block");
     });
-    assert.ok(md.includes("| SAP.DE | sap-0 | 2026-09-01 | TBD |"), md);
-    assert.equal(parseLots(md, "EUR").length, 1);
+
+    it("a blank line between two lots: the same", () => {
+      const md = split([rowOf("a", "2026-06-01"), "", rowOf("b", "2026-06-02")]);
+      assert.deepEqual(lotIds(md), ["a", "b"]);
+      const out = applyLotChange(md, "USD", [...parseLots(md, "USD"), lot("c", 10)], change({ currentPrice: 100 }));
+      assert.deepEqual(lotIds(out), ["a", "b", "c"]);
+      assert.equal(out.match(/^\| TCK \| [abc] \|/gm)?.length, 3, "no lot is written twice");
+      assert.match(out, /\|---\|\n\| TCK \| a \|[^\n]*\n\| TCK \| b \|[^\n]*\n\| TCK \| c \|/, "one block");
+    });
+
+    it("a note between two lots stays, under the table", () => {
+      const md = split([rowOf("a", "2026-06-01"), "Checked with the broker.", rowOf("b", "2026-06-02")]);
+      const out = applyLotChange(md, "USD", parseLots(md, "USD"), change({ currentPrice: 100 }));
+      assert.deepEqual(lotIds(out), ["a", "b"]);
+      assert.match(out, /\| TCK \| b \|[^\n]*\nChecked with the broker\.\n/);
+    });
   });
 
   it("works with CRLF line ends, as the rest of the vault reads them", () => {
     const md = applyLotChange(PORTFOLIO.replace(/\n/g, "\r\n"), "USD", [lot("a", 10)], change({ newStopLoss: 90 }));
     assert.equal(usdLots(md).length, 1);
+    assert.ok(!/[^\r]\n/.test(md), "every line end of the file is still CRLF");
   });
 });
 
 describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
   it("a lot of 10 at 0.001 sold 6 units keeps its 4 units when the owner gave the units", () => {
-    const shares = planSale([lot("a", 10)], { ticker: "TCK", units: 6, price: 0.001, amount: 0.01 }, new Map());
+    const shares = planSale([lot("a", 10)], { ticker: tk("TCK"), units: 6, price: 0.001, amount: 0.01 }, new Map());
     assert.deepEqual(
       shares.map((s) => [s.unitsSold, s.unitsLeft]),
       [[6, 4]],
@@ -454,7 +581,7 @@ describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
   it("derived from an amount, the same remainder is dust and the lot is used up", () => {
     const shares = planSale(
       [lot("a", 10)],
-      { ticker: "TCK", units: 6, price: 0.001, amount: 0.01, unitsFromAmount: true },
+      { ticker: tk("TCK"), units: 6, price: 0.001, amount: 0.01, unitsFromAmount: true },
       new Map(),
     );
     assert.deepEqual(
@@ -465,78 +592,36 @@ describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
 
   it("exact units above the open units are refused even by less than half a cent of price", () => {
     assert.throws(
-      () => planSale([lot("a", 10)], { ticker: "TCK", units: 10.001, price: 1, amount: 10 }, new Map()),
+      () => planSale([lot("a", 10)], { ticker: tk("TCK"), units: 10.001, price: 1, amount: 10 }, new Map()),
       /Cannot sell 10\.001/,
     );
-  });
-});
-
-describe("allocateByWeight: shares in whole units of the last decimal, never negative, adding up exactly", () => {
-  it("shares 0.02 of costs over lots of 30/30/30/10 as 0, 0.01, 0.01, 0 (BLOCKING of the 4th review of PR #56)", () => {
-    assert.deepEqual(allocateByWeight(0.02, [30, 30, 30, 10], 2), [0, 0.01, 0.01, 0]);
-  });
-
-  it("gives the leftover cents to the largest remainders, the later one on a tie", () => {
-    assert.deepEqual(allocateByWeight(1, [1, 1, 1], 2), [0.33, 0.33, 0.34]);
-    assert.deepEqual(allocateByWeight(100, [10, 5], 2), [66.67, 33.33]);
-  });
-
-  it("a negative total gives shares that are all <= 0 and add up to it", () => {
-    assert.deepEqual(allocateByWeight(-100, [10, 5], 2), [-66.67, -33.33]);
-    assert.deepEqual(allocateByWeight(-0.02, [30, 30, 30, 10], 2), [0, -0.01, -0.01, 0]);
-  });
-
-  it("every share is a whole number of units of the last decimal and they add up to the total, for any split", () => {
-    for (const total of [0.01, 0.02, 0.07, 1, 3.33, 1000.01]) {
-      for (const weights of [
-        [30, 30, 30, 10],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0.1, 0.2, 0.3],
-        [5, 1e-6, 5],
-      ]) {
-        const shares = allocateByWeight(total, weights, 2);
-        assert.ok(
-          shares.every((x) => x >= 0 && Math.abs(x * 100 - Math.round(x * 100)) < 1e-9),
-          `${total} ${JSON.stringify(weights)}`,
-        );
-        assert.equal(
-          Math.round(shares.reduce((a, b) => a + b, 0) * 100),
-          Math.round(total * 100),
-          `${total} ${JSON.stringify(weights)}`,
-        );
-      }
-    }
-  });
-
-  it("works at 8 decimals, as the amount of an exit is shared", () => {
-    const shares = allocateByWeight(0.00000003, [1, 1, 1, 1], 8);
-    assert.deepEqual(shares, [0, 1e-8, 1e-8, 1e-8]);
   });
 });
 
 describe("planSale: the costs of a sale never go negative (BLOCKING of the 4th review of PR #56)", () => {
   it("a sale of 100 units over lots of 30/30/30/10 with costs 0.02 gives non-negative shares adding up to 0.02", () => {
     const lots = [lot("a", 30), lot("b", 30), lot("c", 30), lot("d", 10)];
-    const costs = planSale(lots, sale(100, { costs: 0.02 }), new Map()).map((s) => s.costs);
+    const costs = planSale(lots, sale(100, { costs: money(0.02) }), new Map()).map((s) => s.costs);
     assert.deepEqual(costs, [0, 0.01, 0.01, 0]);
   });
 
-  it("an owner-given pnl is split by the same helper: whole cents, adding up to the sale's", () => {
+  it("the difference to an owner-given pnl is split by the same helper: whole cents, adding up to the sale's", () => {
+    // Sold at the entry price (computed 0 each), so the whole 0.02 is the difference.
     const lots = [lot("a", 30), lot("b", 30), lot("c", 30), lot("d", 10)];
-    const pnl = planSale(lots, sale(100, { pnl: 0.02 }), new Map()).map((s) => s.pnl);
+    const pnl = planSale(lots, sale(100, { price: 100, pnl: money(0.02) }), new Map()).map((s) => s.pnl);
     assert.deepEqual(pnl, [0, 0.01, 0.01, 0]);
   });
 });
 
 describe("planSale: a lot's entry costs shared across several partial sales", () => {
-  const sellInParts = (entryCosts: number, entryUnits: number, parts: number[]): number[] => {
+  const sellInParts = (entryCosts: Money, entryUnits: number, parts: number[]): number[] => {
     let current = lot("a", entryUnits, { entryCosts });
-    const prior = new Map<string, number>();
+    const prior = new Map<string, Money>();
     const shares: number[] = [];
     for (const units of parts) {
       const [share] = planSale([current], sale(units), prior);
       shares.push(share.entryCosts!);
-      prior.set("a", (prior.get("a") ?? 0) + share.entryCosts!);
+      prior.set("a", addMoney(prior.get("a") ?? ZERO, share.entryCosts!));
       current = { ...current, units: share.unitsLeft };
     }
     return shares;
@@ -551,7 +636,7 @@ describe("planSale: a lot's entry costs shared across several partial sales", ()
       [0.05, 9, [2, 2, 2, 2, 1]],
     ];
     for (const [costs, units, parts] of cases) {
-      const shares = sellInParts(costs, units, parts);
+      const shares = sellInParts(money(costs), units, parts);
       assert.ok(
         shares.every((x) => x >= 0),
         `${costs} ${JSON.stringify(parts)}: ${JSON.stringify(shares)}`,
@@ -583,7 +668,7 @@ describe("applyLotChange: a section with no table gets one and keeps the blank l
       "## EUR — Cash",
       "",
     ].join("\n");
-    const out = applyLotChange(md, "USD", [lot("a", 10)], { ticker: "TCK", volume: 10, avgPrice: 100 });
+    const out = applyLotChange(md, "USD", [lot("a", 10)], { ticker: tk("TCK"), volume: 10, avgPrice: 100 });
     assert.match(
       out,
       /## USD — Positions\n\n\| Ticker \|[^\n]*\n\|[^\n]*\n\| TCK \|[^\n]*\n\n## USD — Lots\n\n\| Ticker \| Entry id[^\n]*\n[^\n]*\n\| TCK \| a \|[^\n]*\n\n## EUR — Cash/,
@@ -608,7 +693,7 @@ describe("applyLotChange: a section with no table gets one and keeps the blank l
       "",
       "",
     ].join("\n");
-    const out = applyLotChange(md, "USD", [lot("a", 10)], { ticker: "TCK", volume: 10, avgPrice: 100 });
+    const out = applyLotChange(md, "USD", [lot("a", 10)], { ticker: tk("TCK"), volume: 10, avgPrice: 100 });
     assert.match(out, /\| TCK \| 10[^\n]*\n\nNothing yet\.\n\n## USD — Lots/);
   });
 });

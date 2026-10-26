@@ -5,6 +5,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildDecision, type Decision } from "../decisions.js";
@@ -19,6 +20,7 @@ import {
 } from "../utils/silo-performance.js";
 import type { Currency, PortfolioSnapshot, Position } from "../types.js";
 import { weekdayBars } from "./fixtures/weekday-bars.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function assertClose(actual: number | null | undefined, expected: number, epsilon = 1e-6) {
   assert.ok(actual != null && Math.abs(actual - expected) < epsilon, `expected ${expected}, got ${actual}`);
@@ -36,7 +38,7 @@ const decision = (fields: Partial<Decision> & Pick<Decision, "type" | "date">): 
 
 const snapshot = (currency: Currency, cash: number, positions: Position[] = []): PortfolioSnapshot => ({
   currency,
-  cash,
+  cash: money(cash),
   positions,
   lots: [],
   syncedAt: "2026-09-10",
@@ -57,17 +59,17 @@ const BARS = new Map([
 const DECISIONS = [
   decision({ type: "deposit", date: "2026-09-01", amount: 999 }), // before the start: already in the base cash
   decision({ type: "deposit", date: "2026-09-07", amount: 100 }),
-  decision({ type: "entry", date: "2026-09-08", ticker: "AAA", price: 60, amount: 300 }),
-  decision({ type: "fx_conversion", date: "2026-09-09", amount: 100, costs: 0.5, fx_rate: 1.2 }),
+  decision({ type: "entry", date: "2026-09-08", ticker: tk("AAA"), price: 60, amount: 300 }),
+  decision({ type: "fx_conversion", date: "2026-09-09", amount: 100, costs: money(0.5), fx_rate: 1.2 }),
 ];
 
 const AAA_POSITION: Position = {
-  ticker: "AAA",
+  ticker: tk("AAA"),
   currency: "EUR",
   volume: 5,
   avgPrice: 60,
   currentPrice: 55,
-  pl: -25,
+  pl: money(-25),
   stopLoss: null,
 };
 const EUR_TODAY = snapshot("EUR", 700, [AAA_POSITION]);
@@ -125,15 +127,15 @@ describe("reconstructSilo", () => {
   });
 
   it("uses portfolio.md total cash, not the available balance", () => {
-    const history = reconstructSilo(input({ portfolio: { ...EUR_TODAY, cash: 133, totalCash: 700 } }));
+    const history = reconstructSilo(input({ portfolio: { ...EUR_TODAY, cash: money(133), totalCash: money(700) } }));
     assert.equal(history.base.value, 1000);
   });
 
   it("an exit's units are its `units`, not amount / price: a rounded amount does not move the position", () => {
     // 10 units bought at 0.001 and 6 sold (the amount rounded to the cent, 0.01 / 0.001 would read 10): 4 are left.
     const decisions = [
-      decision({ type: "entry", date: "2026-09-08", ticker: "AAA", price: 0.001, amount: 0.01, units: 10 }),
-      decision({ type: "exit", date: "2026-09-09", ticker: "AAA", price: 0.001, amount: 0.01, units: 6 }),
+      decision({ type: "entry", date: "2026-09-08", ticker: tk("AAA"), price: 0.001, amount: 0.01, units: 10 }),
+      decision({ type: "exit", date: "2026-09-09", ticker: tk("AAA"), price: 0.001, amount: 0.01, units: 6 }),
     ];
     const history = reconstructSilo(
       input({ decisions, portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 4 }]) }),
@@ -145,18 +147,23 @@ describe("reconstructSilo", () => {
 
   it("warns if the log does not match portfolio.md", () => {
     const fewerUnits = reconstructSilo(input({ portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 3 }]) }));
-    assert.match(fewerUnits.warnings.join("\n"), /AAA tendría -2\.0000 unidades/);
+    assert.deepEqual(fewerUnits.warnings, [
+      { kind: "oversold", currency: "EUR", ticker: "AAA", units: -2, start: "2026-09-07" },
+    ]);
 
     const unrecordedDeposit = reconstructSilo(
       input({ decisions: [...DECISIONS, decision({ type: "deposit", date: "2026-09-08", amount: 2000 })] }),
     );
-    assert.match(unrecordedDeposit.warnings.join("\n"), /la caja al 2026-09-07 sale negativa/);
+    // The log holds a 2,000 deposit that today's cash does not show: the base cash would be 1,000 − 2,000.
+    assert.deepEqual(unrecordedDeposit.warnings, [
+      { kind: "negativeCash", currency: "EUR", start: "2026-09-07", cash: -1000 },
+    ]);
   });
 
   it("without closes for an asset values it at the last known price and warns", () => {
     const history = reconstructSilo(input({ bars: new Map([["EXSA.DE", BARS.get("EXSA.DE")!]]) }));
     assertClose(history.days.at(-1)?.value, 975, 1e-9);
-    assert.match(history.warnings.join("\n"), /sin cierres de AAA/);
+    assert.deepEqual(history.warnings, [{ kind: "missingCloses", currency: "EUR", tickers: ["AAA"] }]);
   });
 });
 
@@ -219,11 +226,11 @@ describe("moneyWeightedReturn", () => {
 
 describe("siloPerformance", () => {
   it("real against shadow, with returns and drawdown", () => {
-    const eur = siloPerformance(input());
+    const { performance: eur, warnings } = siloPerformance(input());
     assertClose(eur.real, 975);
     assertClose(eur.shadow, 999);
     assert.ok(eur.realReturnPct! < eur.shadowReturnPct!);
-    assert.deepEqual(eur.warnings, []);
+    assert.deepEqual(warnings, []);
   });
 
   // Real case of 2026-09-15: Yahoo did not have VOO's Monday 09-14 session,
@@ -234,7 +241,7 @@ describe("siloPerformance", () => {
       ["VOO", weekdayBars("2026-09-10", [800, 810])], // Thu 09-10 and Fri 09-11
       ["AAA", weekdayBars("2026-09-11", [100, 90])], // Fri 09-11 and Mon 09-14
     ]);
-    const perf = siloPerformance({
+    const { performance: perf } = siloPerformance({
       currency: "USD",
       portfolio: snapshot("USD", 0, [{ ...AAA_POSITION, currency: "USD", volume: 1 }]),
       decisions: [],
@@ -249,8 +256,37 @@ describe("siloPerformance", () => {
   });
 
   it("without a benchmark warns and leaves the shadow empty", () => {
-    const eur = siloPerformance(input({ reference: "NO.EXISTE" }));
+    const { performance: eur, warnings } = siloPerformance(input({ reference: "NO.EXISTE" }));
     assert.equal(eur.shadow, null);
-    assert.match(eur.warnings.join("\n"), /no hay cartera sombra/);
+    assert.deepEqual(warnings, [{ kind: "noShadow", currency: "EUR", reference: "NO.EXISTE" }]);
+  });
+});
+
+describe("cash and capital thresholds are the exact cent of main (#79)", () => {
+  it("warns about negative cash from -0.011 on", () => {
+    const history = reconstructSilo(
+      input({
+        decisions: [decision({ type: "deposit", date: "2026-09-08", amount: 1000.012 })],
+        portfolio: snapshot("EUR", 1000),
+      }),
+    );
+    assert.deepEqual(
+      history.warnings.filter((w) => w.kind === "negativeCash").map((w) => w.kind),
+      ["negativeCash"],
+    );
+  });
+
+  it("a money-weighted return needs capital over one cent: 0.012 is enough, 0.01 is not", () => {
+    const end = { date: AS_OF, value: 0.02 };
+    assert.notEqual(moneyWeightedReturn({ date: "2026-09-04", value: 0.012 }, end, []), null);
+    assert.equal(moneyWeightedReturn({ date: "2026-09-04", value: 0.01 }, end, []), null);
+  });
+
+  it("the drawdown index follows a previous value over one cent: 0.012 is enough", () => {
+    const dd = drawdown({
+      base: { date: "2026-09-04", value: 0.012 },
+      days: [{ date: "2026-09-07", value: 0.006, flow: 0 }],
+    });
+    assert.equal(dd.maxPct, 50);
   });
 });

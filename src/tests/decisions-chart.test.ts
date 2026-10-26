@@ -10,6 +10,7 @@ import type { DecisionEvaluation } from "../utils/decisions-evaluation.js";
 import { buildProposalSeries, renderProposalQualitySvg } from "../utils/decisions-chart.js";
 import { en } from "../i18n/en.js";
 import { es } from "../i18n/es.js";
+import { parseTicker as tk } from "../ticker.js";
 
 interface ProposalFixture {
   date: string;
@@ -24,7 +25,7 @@ interface ProposalFixture {
 function evaluation({ date, resultR, benchmarkPct, type = "buy_proposal" }: ProposalFixture): DecisionEvaluation {
   const decision = buildDecision({
     date,
-    ticker: "AAA",
+    ticker: tk("AAA"),
     currency: "USD",
     origin: "sistema",
     source: "monday-briefing",

@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { EvaluationReport } from "../utils/decisions-evaluation.js";
+import { parseTicker as tk } from "../ticker.js";
 
 /** The clock of every scenario: the Monday after the last bar. */
 const NOW = new Date("2026-10-19T12:00:00Z");
@@ -297,6 +298,15 @@ describe("measurable exits: the five R tests of spec #27", () => {
       });
     }
 
+    it("a lot row that does not read, named with the row and the reason", async () => {
+      const text = `${portfolioMd()}| TCK | bad-1 | 01/02/2026 | 1 | 1 | 1 | — | — | sistema | 1.0 | — |\n`;
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      await assert.rejects(
+        evaluate(),
+        /portfolio\.md \(USD\): Lots row 1 \(TCK, bad-1\): Date "01\/02\/2026" is not YYYY-MM-DD/,
+      );
+    });
+
     it("a deleted Lots section", async () => {
       const full = portfolioMd();
       await writeFile(join(vaultDir, "portfolio.md"), full.slice(0, full.indexOf("## USD — Lots")), "utf8");
@@ -446,6 +456,40 @@ describe("measurable exits: the five R tests of spec #27", () => {
 
   it("R4: archiving any quarter, even one that separates an entry from a later exit, leaves the decisions:evaluate output unchanged", async () => {
     await assertArchivingChangesNothing("before");
+  });
+
+  it("R4 (#69): with the archive unset the evaluation warns that decisions are missing before the earliest loaded; with it set, it does not", async () => {
+    await resetVault();
+    await record({ type: "deposit", currency: "USD", amount: 5000, date: "2026-02-02" });
+    await entry(100, 10, 90, "2026-06-15");
+    await exit(120, 10, "2026-08-10");
+    await archiveQuarter("T1", "2026-01-01", "2026-03-31");
+    await archiveQuarter("T2", "2026-04-01", "2026-06-30");
+    const warned = () =>
+      (console.warn as unknown as { mock: { calls: { arguments: unknown[] }[] } }).mock.calls
+        .map((c) => String(c.arguments[0]))
+        .join("\n");
+
+    const withArchive = await evaluate();
+    assert.deepEqual(
+      withArchive.board.warnings.filter((w) => w.kind === "decisionsMissing"),
+      [],
+    );
+    assert.doesNotMatch(warned(), /decisions are missing/);
+
+    delete process.env.DECISIONS_ARCHIVE_DIR;
+    try {
+      const report = await evaluate();
+      assert.equal(report.board.counterStart, "2026-06-15", "it warns, it does not refuse");
+      assert.deepEqual(
+        report.board.warnings.filter((w) => w.kind === "decisionsMissing"),
+        [{ kind: "decisionsMissing", before: "2026-08-10" }],
+      );
+      assert.match(warned(), /decisions are missing before 2026-08-10: is `DECISIONS_ARCHIVE_DIR` set\?/);
+      assert.match(renderDecisionsEvaluation(report), /Faltan decisiones|Part of the decision log was not loaded/);
+    } finally {
+      process.env.DECISIONS_ARCHIVE_DIR = archiveDir;
+    }
   });
 
   it("R4: a lot sold in part stays one open trade, and the counter starts the same, whichever quarter is archived", async () => {
@@ -694,6 +738,26 @@ describe("measurable exits: the five R tests of spec #27", () => {
       assertRs(tradeRs(await evaluate()), [29 / 30]);
     });
 
+    it("the entry costs of a lot are shared across its exits even when an earlier exit sits in an archived quarter", async () => {
+      // 4 units at 100 with 4 of costs (1 per unit), stop 90 (1R = 10). Half is sold in 2026-T3, which is then
+      // archived; the other half is sold afterwards. The second exit takes what the first left of the
+      // costs, read from the archive: 2 and 2. Without the archive it would take all 4.
+      await entry(100, 4, 90, "2026-06-15", { costs: 4 });
+      await exit(110.6, 2, "2026-08-10");
+      await archiveQuarter("T3", "2026-07-01", "2026-09-30");
+      await exit(120.6, 2, "2026-10-12");
+
+      const live = (await readLog()).filter((d) => d.type === "exit");
+      assert.deepEqual(
+        live.map((e) => e.entry_costs),
+        [2],
+        "the second exit is the only one live, and takes half of the costs",
+      );
+      assert.equal(live[0].lot_units_left, 0);
+      // R = 0.5 × (110.6 − 100 − 1) / 10 + 0.5 × (120.6 − 100 − 1) / 10 = 0.5 × 0.96 + 0.5 × 1.96.
+      assertRs(tradeRs(await evaluate()), [1.46]);
+    });
+
     it("the amounts of a sale's exits add up to the sale amount", async () => {
       await entry(100, 1, 90, "2026-06-15");
       await entry(100, 1, 90, "2026-06-16");
@@ -729,8 +793,31 @@ describe("measurable exits: the five R tests of spec #27", () => {
         exits.map((e) => e.pnl),
         [50, -25],
       );
-      const warning = twoMonthRuleWarning((await readLog()) as unknown as Decision[], "TCK", "2026-08-20", "real");
+      const warning = twoMonthRuleWarning((await readLog()) as unknown as Decision[], tk("TCK"), "2026-08-20", "real");
       assert.ok(warning?.includes("-25"), String(warning));
+    });
+
+    it("a sale with an owner-given net gain still warns of the losing lot's loss (#71)", async () => {
+      // Sale of 10 at 120: A (entry 100, +100) and B (entry 130, -50); the owner gives +50 for the sale.
+      await entry(100, 5, 90, "2026-06-15");
+      await entry(130, 5, 120, "2026-06-22");
+      await record({
+        type: "exit",
+        ticker: "TCK",
+        currency: "USD",
+        price: 120,
+        units: 10,
+        pnl: 50,
+        date: "2026-08-10",
+      });
+
+      const log = await readLog();
+      assert.deepEqual(
+        log.filter((d) => d.type === "exit").map((e) => e.pnl),
+        [100, -50],
+      );
+      const warning = twoMonthRuleWarning(log as unknown as Decision[], tk("TCK"), "2026-08-20", "real");
+      assert.ok(warning?.includes("-50"), String(warning));
     });
 
     describe("errors write nothing", () => {
@@ -739,16 +826,17 @@ describe("measurable exits: the five R tests of spec #27", () => {
         log: await readFile(decisionsPath(), "utf8").catch(() => null),
         portfolio: await readFile(join(vaultDir, "portfolio.md"), "utf8").catch(() => null),
       });
-      const assertRefused = async (trade: Promise<unknown>, message: RegExp) => {
+      /** `trade` starts the trade; it runs after the "before" snapshot, so an early rejection cannot race it. */
+      const assertRefused = async (trade: () => Promise<unknown>, message: RegExp) => {
         const before = await files();
-        await assert.rejects(trade, message);
+        await assert.rejects(trade(), message);
         assert.deepEqual(await files(), before, "neither the log nor the portfolio changed");
       };
 
       it("a sale with no lots for the ticker", async () => {
         await entry(100, 10, 90, "2026-06-15");
         await assertRefused(
-          record({ type: "exit", ticker: "OTH", currency: "USD", price: 10, units: 1, date: "2026-08-10" }),
+          () => record({ type: "exit", ticker: "OTH", currency: "USD", price: 10, units: 1, date: "2026-08-10" }),
           /no open lots for OTH/,
         );
       });
@@ -770,14 +858,14 @@ describe("measurable exits: the five R tests of spec #27", () => {
       it("a sale of more units than the ticker's open units", async () => {
         await entry(100, 10, 90, "2026-06-15");
         await entry(110, 10, 100, "2026-06-22");
-        await assertRefused(exit(120, 21, "2026-08-10"), /21.*TCK.*20/);
+        await assertRefused(() => exit(120, 21, "2026-08-10"), /21.*TCK.*20/);
       });
 
       it("a sale on a portfolio that fails the lots check", async () => {
         await entry(100, 10, 90, "2026-06-15");
         const md = await readPortfolioMd();
         await writeFile(join(vaultDir, "portfolio.md"), corruptPositions(md, /\| TCK \| 10 \|/, "| TCK | 7 |"), "utf8");
-        await assertRefused(exit(120, 1, "2026-08-10"), /TCK.*Volume/);
+        await assertRefused(() => exit(120, 1, "2026-08-10"), /TCK.*Volume/);
       });
     });
 

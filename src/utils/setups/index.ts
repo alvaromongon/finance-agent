@@ -8,6 +8,7 @@ import { messages, type Messages } from "../../i18n/index.js";
 import { config } from "../../config.js";
 import { validateTicket } from "../../risk.js";
 import { evaluateEntryEligibility, type EntryEligibility } from "../entry-eligibility.js";
+import { formatMoney } from "../../money.js";
 import { round2 } from "../round.js";
 import { buildBuyTicket, fmtUnits } from "../sizing.js";
 import { computeTechnicals, type Technicals } from "../technicals.js";
@@ -15,6 +16,7 @@ import { detectBreakout, type BreakoutParams } from "./breakout.js";
 import { detectPullback, type PullbackParams } from "./pullback.js";
 import type { HistoricalBar } from "../../providers/types.js";
 import type { BuyTicket, Currency, MarketRegime, Setup, WatchlistEntry } from "../../types.js";
+import type { Ticker } from "../../ticker.js";
 
 export interface SetupParams {
   pullback: PullbackParams;
@@ -50,7 +52,7 @@ export interface SetupContext {
 }
 
 export interface SetupEvaluation {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   setup: Setup;
   /** Technicals at the last session's close. */
@@ -107,7 +109,7 @@ export function describeSetup(ev: SetupEvaluation, m: Messages = messages()): st
     setup.target,
   );
   const sizing = ticket
-    ? t.sizing(ticket.stop, fmtUnits(ticket.units), ticket.amount.toFixed(2), cur, ticket.rrNet.toFixed(2))
+    ? t.sizing(ticket.stop, fmtUnits(ticket.units), formatMoney(ticket.amount), cur, ticket.rrNet.toFixed(2))
     : "";
   const dist = ev.eligibility.sma50DistanceAtr;
   const metrics = dist != null ? t.sma50Distance(round2(dist)) : "";

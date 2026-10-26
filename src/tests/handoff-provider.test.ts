@@ -1,9 +1,11 @@
 /**
  * Test of HandoffAnalystProvider.escalate(): writes the file in logs/pending/
  * without calling the network. Same pattern as integration.test.ts
- * — VAULT_PROJECT_DIR is set BEFORE the first import of config.js, so the
+ * — VAULT_PROJECT_DIR is set BEFORE the first import
+ * of config.js, so the
  * app modules are imported dynamically inside before().
  */
+import { money } from "../money.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
@@ -12,9 +14,10 @@ import { tmpdir } from "node:os";
 
 import type { Signal, WatchlistEntry } from "../types.js";
 import type { HandoffAnalystProvider as HandoffAnalystProviderType } from "../analyst/handoff-provider.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const baseEntry = (): WatchlistEntry => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   name: "Exxon",
   market: "NYSE",
   currency: "USD",
@@ -23,7 +26,7 @@ const baseEntry = (): WatchlistEntry => ({
 });
 
 const baseSignal = (overrides: Partial<Signal> = {}): Signal => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   currency: "USD",
   triggers: ["big_move"],
   price: 124.5,
@@ -138,12 +141,12 @@ describe("HandoffAnalystProvider.escalate", () => {
         entry: undefined,
         triggers: ["approaching_stop"],
         position: {
-          ticker: "XOM",
+          ticker: tk("XOM"),
           currency: "USD",
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),

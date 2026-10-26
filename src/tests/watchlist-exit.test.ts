@@ -9,9 +9,10 @@ import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, WatchlistEntry } from "../types.js";
 import { en } from "../i18n/en.js";
 import { describeExit, describeExitDetail } from "../utils/screening-helpers.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const entry = (ticker: string, currency: Currency = "USD"): WatchlistEntry => ({
-  ticker,
+  ticker: tk(ticker),
   name: ticker,
   market: currency === "USD" ? "NYSE" : "Xetra",
   currency,
@@ -32,7 +33,7 @@ const ranked = (
   bars: HistoricalBar[] = flat,
   currency: Currency = "USD",
 ): RankedTicker<RankableTicker> => ({
-  item: { ticker, currency },
+  item: { ticker: tk(ticker), currency },
   rank,
   score: 0.5,
   proximity: 1,
@@ -83,11 +84,11 @@ describe("mechanicalExits", () => {
       ranking: {
         ...base.ranking,
         excluded: [
-          { ticker: "LOW", reason: "below_sma200" },
-          { ticker: "THIN", reason: "illiquid" },
-          { ticker: "YOUNG", reason: "short_history" },
-          { ticker: "GAP", reason: "no_data" },
-          { ticker: "OLD", reason: "stale" },
+          { ticker: tk("LOW"), reason: "below_sma200" },
+          { ticker: tk("THIN"), reason: "illiquid" },
+          { ticker: tk("YOUNG"), reason: "short_history" },
+          { ticker: tk("GAP"), reason: "no_data" },
+          { ticker: tk("OLD"), reason: "stale" },
         ],
       },
     });
@@ -113,7 +114,7 @@ describe("mechanicalExits", () => {
       { ticker: "R1", reason: "no_setup", weeks: 4 },
     ]);
     assert.equal(
-      describeExitDetail({ ticker: "R1", reason: "no_setup", weeks: 4 }),
+      describeExitDetail({ ticker: tk("R1"), reason: "no_setup", weeks: 4 }),
       "sin setup en las últimas 4 semanas",
     );
   });

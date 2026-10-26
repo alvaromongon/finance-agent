@@ -8,7 +8,12 @@ import { readDecisionHistory, readPortfolio, readRulesVersion } from "./vault-io
 import { closeOnOrBefore, historyRangeCovering, loadClosedBars } from "./utils/forward-returns.js";
 import { boardWarnings } from "./utils/decisions-evaluation-render.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
-import { buildEvaluationReport, evaluationSymbols, type EvaluationReport } from "./utils/decisions-evaluation.js";
+import {
+  barsFrom,
+  buildEvaluationReport,
+  evaluationSymbols,
+  type EvaluationReport,
+} from "./utils/decisions-evaluation.js";
 
 // Same pair as the Monday Briefing: dollars per euro.
 const EUR_USD_TICKER = "EURUSD=X";
@@ -28,8 +33,7 @@ export async function loadEvaluationReport(tag: string, now = new Date()): Promi
   assertLotsMatch(eur, decisions);
   assertLotsMatch(usd, decisions);
 
-  const earliest = decisions.map((d) => d.date).sort()[0] ?? today;
-  const range = historyRangeCovering(earliest, today);
+  const range = historyRangeCovering(barsFrom(decisions, portfolios) ?? today, today);
   const symbols = [...evaluationSymbols(decisions, portfolios), EUR_USD_TICKER];
 
   console.log(`${tag} ${decisions.length} decisions, ${symbols.length} symbols (range=${range})...`);

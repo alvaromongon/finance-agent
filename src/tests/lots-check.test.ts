@@ -1,14 +1,16 @@
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertLotsMatch, lotsMismatches, volumeMismatches } from "../utils/lots-check.js";
 import { buildDecision, type Decision } from "../decisions.js";
 import type { Lot, PortfolioSnapshot, Position } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const entry = (id: string, ticker: string, currency: "EUR" | "USD" = "USD"): Decision =>
   buildDecision({
     id,
     date: "2026-06-15",
-    ticker,
+    ticker: tk(ticker),
     currency,
     origin: "sistema",
     source: "portfolio-sync",
@@ -27,17 +29,17 @@ const earlierEntry = (id: string, ticker: string): Decision => {
 };
 
 const position = (ticker: string, volume: number): Position => ({
-  ticker,
+  ticker: tk(ticker),
   currency: "USD",
   volume,
   avgPrice: 100,
   currentPrice: 100,
-  pl: 0,
+  pl: money(0),
   stopLoss: null,
 });
 
 const lot = (entryId: string, units: number, ticker = "TCK"): Lot => ({
-  ticker,
+  ticker: tk(ticker),
   entryId,
   date: "2026-06-15",
   units,
@@ -52,7 +54,7 @@ const lot = (entryId: string, units: number, ticker = "TCK"): Lot => ({
 
 const portfolio = (positions: Position[], lots: Lot[]): PortfolioSnapshot => ({
   currency: "USD",
-  cash: 0,
+  cash: money(0),
   positions,
   lots,
   syncedAt: "2026-10-16T18:00:00.000Z",
@@ -99,7 +101,7 @@ describe("lotsMismatches", () => {
     const sell = buildDecision({
       id: "s",
       date: "2026-06-15",
-      ticker: "TCK",
+      ticker: tk("TCK"),
       currency: "USD",
       origin: "sistema",
       source: "portfolio-sync",
@@ -110,6 +112,30 @@ describe("lotsMismatches", () => {
     });
     const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("s", 5)]), [sell]);
     assert.match(message, /s.*not an entry/);
+  });
+
+  it("says an entry without a ticker has none, instead of calling it not an entry", () => {
+    const noTicker: Decision = { ...entry("e", "TCK"), ticker: null };
+    const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("e", 5)]), [noTicker]);
+    assert.match(message, /lot e is an entry in the decision log that has no ticker/);
+    assert.doesNotMatch(message, /a entry|not an entry/);
+  });
+
+  it("names the type of a decision that is not an entry", () => {
+    const sell = { ...entry("s", "TCK"), type: "exit" as const };
+    const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("s", 5)]), [sell]);
+    assert.match(message, /lot s is a decision of type exit in the decision log, not an entry/);
+  });
+
+  it("reports the rows of Lots the reader skipped, with the file prefix", () => {
+    const p = {
+      ...portfolio([], []),
+      skippedLotRows: [{ message: 'Lots row 2 (XOM, x1): Origin "Sistema" is not sistema or propietario' }],
+    };
+    assert.deepEqual(volumeMismatches(p), [
+      'portfolio.md (USD): Lots row 2 (XOM, x1): Origin "Sistema" is not sistema or propietario',
+    ]);
+    assert.equal(lotsMismatches(p, []).length, 1);
   });
 
   it("flags a lot whose entry was recorded in the other currency", () => {
@@ -163,6 +189,45 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
       );
     });
   }
+
+  describe("Entry costs are compared with the entry's costs, to the cent (#68)", () => {
+    const costed = [{ ...entry("a", "TCK"), costs: money(4) }];
+    const withCosts = (entryCosts: number | null, overrides: Partial<Lot> = {}) =>
+      held({ entryCosts: entryCosts === null ? null : money(entryCosts), ...overrides });
+
+    for (const [name, value] of [
+      ["40.00", 40],
+      ["0.40", 0.4],
+      ["an empty cell", null],
+    ] as const) {
+      it(`${name} against costs 4 is refused, naming both`, () => {
+        const messages = lotsMismatches(withCosts(value), costed);
+        assert.equal(messages.length, 1, JSON.stringify(messages));
+        assert.match(messages[0], /TCK.*lot a.*Entry costs .* differs from 4/);
+      });
+    }
+
+    it("two costs that are the same at the cent pass, whatever the float noise between them", () => {
+      // 0.02 - 0.015 is 0.005000000000000004 in floats; as `Money` both sides are the same whole cents.
+      const log2 = [{ ...entry("a", "TCK"), costs: money(0.02) }];
+      assert.deepEqual(lotsMismatches(held({ entryCosts: money(0.015) }), log2), []);
+    });
+
+    it("a value against an entry with no costs is a difference too", () => {
+      assert.match(lotsMismatches(withCosts(4), log)[0] ?? "", /Entry costs 4 differs from —/);
+    });
+
+    it("4.00 passes, and so does no costs on both sides", () => {
+      assert.deepEqual(lotsMismatches(withCosts(4), costed), []);
+      assert.deepEqual(lotsMismatches(withCosts(null), log), []);
+    });
+
+    it("a 2:1 split with the costs unchanged passes; changing them in the split is refused", () => {
+      const split = { units: 20, entryUnits: 20, entryPrice: 50, initialStop: 45 };
+      assert.deepEqual(lotsMismatches(withCosts(4, split), costed), []);
+      assert.equal(lotsMismatches(withCosts(2, split), costed).length, 1);
+    });
+  });
 
   describe("a split correction scales units, price and stop by one ratio (B2 of PR #56)", () => {
     it("a 2:1 split passes: units × 2, entry price and initial stop ÷ 2", () => {
@@ -238,7 +303,7 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
     const exitOf = (entryId: string, left?: number): Decision =>
       buildDecision({
         date: "2026-08-10",
-        ticker: "TCK",
+        ticker: tk("TCK"),
         currency: "USD",
         origin: "sistema",
         source: "portfolio-sync",
@@ -309,6 +374,65 @@ describe("volumeMismatches: Volume against the lots, from portfolio.md alone", (
   it("flags lots of a ticker that has no position row", () => {
     const [message] = volumeMismatches(portfolio([], [lot("c", 5, "OTH")]));
     assert.match(message, /OTH.*Volume 0.*5/);
+  });
+});
+
+describe("one unreadable Lots row reports only itself (#68)", () => {
+  const unreadable = {
+    message: 'Lots row 1 (TCK, a): Units "6x" is not a number; the row is skipped',
+    ticker: tk("TCK"),
+    entryId: "a",
+  };
+  const broken = (overrides: Partial<PortfolioSnapshot> = {}) => ({
+    ...portfolio([position("TCK", 10), position("OTH", 5)], [lot("c", 5, "OTH")]),
+    skippedLotRows: [unreadable],
+    ...overrides,
+  });
+  const log = [entry("a", "TCK"), entry("c", "OTH")];
+
+  it("gives the row, not the Volume of its ticker nor 'no lot' for its entry", () => {
+    const messages = lotsMismatches(broken(), log);
+    assert.deepEqual(messages, [`portfolio.md (USD): ${unreadable.message}`]);
+  });
+
+  it("finds the ticker through the log when the row's own Ticker cell does not read", () => {
+    const row = { message: "Lots row 1 (a): Ticker does not read; the row is skipped", entryId: "a" };
+    assert.deepEqual(lotsMismatches(broken({ skippedLotRows: [row] }), log), [`portfolio.md (USD): ${row.message}`]);
+  });
+
+  it("still reports the problems of the other tickers, in the same round", () => {
+    const messages = lotsMismatches(broken({ positions: [position("TCK", 10), position("OTH", 9)] }), log);
+    assert.equal(messages.length, 2, JSON.stringify(messages));
+    assert.match(messages[0], /Lots row 1/);
+    assert.match(messages[1], /OTH.*Volume 9.*5/);
+  });
+});
+
+describe("a ticker on several Positions rows is named up front (#68)", () => {
+  const rows = [
+    { ...position("TCK", 4), written: "tck" },
+    { ...position("TCK", 6), written: "TCK" },
+  ];
+
+  it("names the ticker and both rows as written, even when the summed Volume matches the lots", () => {
+    const p = portfolio(rows, [lot("a", 10)]);
+    const messages = lotsMismatches(p, [entry("a", "TCK")]);
+    assert.equal(messages.length, 1, JSON.stringify(messages));
+    assert.match(messages[0], /^portfolio\.md \(USD\): TCK is on 2 rows of "## USD — Positions" \(tck, TCK\)/);
+    assert.deepEqual(volumeMismatches(p), messages, "the heartbeat warns of it too, from portfolio.md alone");
+  });
+
+  it("comes in the same round as the other lots messages", () => {
+    const messages = lotsMismatches(portfolio(rows, [lot("ghost", 10)]), []);
+    assert.ok(messages.some((m) => m.includes("TCK is on 2 rows")));
+    assert.ok(messages.some((m) => /ghost.*not in the decision log/.test(m)));
+  });
+});
+
+describe("the message of a lot that is not in the log points at the archive (#68, 75-3)", () => {
+  it("names DECISIONS_ARCHIVE_DIR", () => {
+    const [message] = lotsMismatches(portfolio([position("TCK", 5)], [lot("old", 5)]), []);
+    assert.match(message, /lot old is not in the decision log.*DECISIONS_ARCHIVE_DIR/);
   });
 });
 

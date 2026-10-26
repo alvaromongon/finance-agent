@@ -27,21 +27,35 @@ parentheses so a code comment that cites it can be found here.
      fails at once (an alert that does not go out is worse than a run that does not run).
   2. Read `portfolio.md` and `watchlist.md`. The tickers watched are the union of open positions and
      watchlist candidates, so a position is watched for risk even without a watchlist entry.
-     With nothing to watch the run ends. It also checks that each `Volume` is the sum of
-     its [lots](glossary.md#lot)' units, from `portfolio.md` alone (it does not read the decision
-     log); on a mismatch it does not refuse the file, it keeps watching and puts a warning in the
-     digest (see [Lots](input-format.md#portfoliomd)). The same holds for a `Lots` table that
-     does not read (a misspelled column in its header) and for a `Lots` section that is missing
-     (a misspelled heading, or a deleted empty section): the lots count as empty for that run and the
-     warning names `portfolio.md` and the expected section. Only the `Lots` check is tolerant: a
-     missing `Cash` or `Positions` section, or a table of them that does not read, still stops the
-     run. No lots-check failure stops the run or comes before the stop and price checks.
-     The warning is loud: unlike tight stops it is not deduplicated, so it is in every digest
-     while it lasts, and a lots warning alone still produces a digest.
+     With nothing to watch the run ends. A `Lots` table that does not read (a misspelled column in
+     its header) and a `Lots` section that is missing (a misspelled heading, or a deleted empty
+     section) do not stop the run: the lots count as empty for that run and the warning names
+     `portfolio.md` and the expected section. Only the `Lots` reading is tolerant: a missing `Cash`
+     or `Positions` section, or a table of them that does not read, still stops the run.
+     The same tolerance applies to `pending:resolve`, the Monday briefing and the weekly screening,
+     which do not use the lots; only `decision:record` and `decisions:evaluate` refuse a broken `Lots`.
+     A ticker that does not parse (`M&M.NS`, a typo) is handled the same way: the `Positions` row or
+     watchlist entry is skipped, the other positions are still priced and their stops detected, and the
+     digest carries a warning naming the row in every run while it lasts. `pending:resolve`, the Monday
+     briefing and the weekly screening skip such a row, entry or screening-log row with a warning and
+     carry on, each also logging the warning through `warnSkipped`; only `decision:record` and `decisions:evaluate` refuse.
+     A `Positions` `P/L`, `Available cash` or `Total cash` cell holding a number too large to count in cents
+     (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
+     cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
+     briefing and the screening log the same warning.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
+     4a. Check the [lots](glossary.md#lot), from `portfolio.md` alone (it does not read the decision
+     log), after the stops are detected: a `Lots` row the reader skipped (named with the reason), a
+     `Lots` table that does not read or is missing, and each `Volume` that is not the sum of its
+     lots' units are warnings. The run does not refuse the file: it keeps watching and puts the
+     warning in the digest (see [Lots](input-format.md#portfoliomd)). The warning is loud: unlike
+     tight stops it is not deduplicated, so it is in every digest while it lasts, and a lots warning
+     alone still produces a digest. The check has no catch of its own: if it throws, the crossed
+     stops are already in the digest, which is sent before the run fails visibly, so a defect in
+     the lots check cannot switch off the stop alerts.
   5. Market-session guard: if the last tick is older than the allowed age, the market was closed
      (holiday) and the run ends here.
   6. Stop hygiene: a position whose stop is closer than `STOP_MIN_ATR` goes into the digest
@@ -60,8 +74,8 @@ parentheses so a code comment that cites it can be found here.
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
-  12. Send the digest (crossed stops, lots that do not match, tight stops, armed setups, escalations) with only what is new
-      since the last send today (crossed stops and lots warnings are always included), and mark it as sent only if the email went out.
+  12. Send the digest (crossed stops, a problem with the lots, a ticker or a money cell that cannot be read, tight stops, armed setups, escalations) with only what is new
+      since the last send today (crossed stops and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads `portfolio.md`, `watchlist.md`, `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md` and the last log of each ticker. Writes `portfolio.md` (prices),
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
@@ -175,8 +189,9 @@ them. It needs one history request per position with a stop; without ATR the pos
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
 - **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match the
-  decision history (a `Volume` that is not the sum of its lots' units, a lot that disagrees with its
-  entry, or an entry still open in the log with no lot), then fill what the owner need not know: id,
+  decision history (a `Lots` row the reader skipped, a ticker on several `Positions` rows, a `Volume` that is not the
+  sum of its lots' units, a lot that disagrees with its entry, entry costs included, or an entry
+  still open in the log with no lot), reporting everything in one round, then fill what the owner need not know: id,
   rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
   `overrode_block`. The engine also keeps the [lots](glossary.md#lot):
@@ -193,21 +208,33 @@ them. It needs one history request per position with a stop; without ATR the pos
     (entry price, units, date, origin, rules version, initial stop, rules broken, its share of the
     entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). A
     sale narrated by amount alone has units known only to half a cent of price, so a lot it leaves
-    with less than that is used up; units the owner gave are exact and nothing is snapped. Its
+    with less than that is used up; units the owner gave are exact and nothing is snapped.
     The costs of the sale are shared across the exits in whole cents (largest remainder: no share
     is negative, they add up to the total). An exit's `amount` is its exact share of the sale amount
     and can have sub-cent decimals (owner decision of 2026-10-22 in #27); when only units are given,
     the sale amount derived is to the cent unless that rounds to 0.00, then exact. Its
-    `pnl` comes from the lot's entry price, costs not included. The lots a sale uses up are removed
+    `pnl` comes from the lot's entry price, costs not included. When the owner gives the `pnl` of
+    the whole sale, each exit still keeps its own lot's result and only the difference between the
+    owner's total and the computed sum (costs, FX) is shared by units, in whole cents (largest
+    remainder), so the exits add up to the owner's total and a losing lot stays a loss (lots bought
+    at 100 and 130, sold together at 120 with +50 given: the exits get +100 and −50, and the
+    two-month warning cites the −50). The lots a sale uses up are removed
     from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
-  - A sale of a ticker with no lots, of more units than are open, or with no `portfolio.md` is an
-    error.
+  - A sale of a ticker with no lots, of more units than are open, with no `portfolio.md`, or dated
+    before the entry of a lot it would consume (a lot cannot be sold before it was bought; the same
+    day is allowed), a lot whose Entry price or entry costs (or the sums made from them) are too
+    large to count in cents, or a partial sale of a lot with entry costs and Entry units 0, is an
+    error. All of them are refused before any call to the market data
+    provider ("no open lots" and "more units than open" included), and nothing is recorded; the last
+    one names both dates.
 - **Reads / writes**: reads `logs/decisions.jsonl` (and the archive), `portfolio.md`, `watchlist.md`,
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
-  it), so a stop never leaves `portfolio.md` cut short.
+  it), so a stop never leaves `portfolio.md` cut short. The portfolio is read again after the
+  market-data calls, right before it is written, and the lot change is applied to that text; if the
+  lots moved meanwhile the record is refused with nothing written.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the
   record, because a Markdown log without its decision line would mean measuring halfway. If the
   process stops between the log and the portfolio, an exit exists whose lot did not shrink; the
@@ -313,7 +340,11 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      a lot sold in part included), never from the decision log; an entry with no lot is not an open
      trade (entries recorded before the lots carry no `units` and have none until the owner re-records
      the open positions). The counter starts at the earliest entry date among the entry lines still
-     read, the exits' snapshots and the lots, so archiving a quarter does not move it. Then
+     read, the exits' snapshots and the lots, only those of a system entry (origin `sistema`) under
+     C v1, so archiving a quarter does not move it. If that date is before the earliest decision
+     loaded, part of the log was not read: the board warns "decisions are missing before
+     \<date\>: is `DECISIONS_ARCHIVE_DIR` set?" (and prints it on the console) and goes on; the
+     market data is downloaded back to the counter start. Then
      simulate each proposal's plan and compare it with the silo [benchmark](glossary.md#benchmark)
      and the [shadow portfolio](glossary.md#shadow-portfolio).
   3. `decisions:evaluate` writes `logs/decisions-evaluation.md` (the cutoff board, expectancy,

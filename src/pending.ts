@@ -7,7 +7,13 @@
 import { validateRecommendation } from "./claude-analyst.js";
 import { siloValue } from "./utils/sizing.js";
 import { recordDecision } from "./decision.js";
-import { listPendingFiles, readPendingSignal, deletePendingFile, readWatchlist, readPortfolio } from "./vault-io.js";
+import {
+  listPendingFiles,
+  readPendingSignal,
+  deletePendingFile,
+  readWatchlistSkippingBadTickers,
+  readPortfolioIgnoringLots,
+} from "./vault-io.js";
 import type { Signal } from "./types.js";
 
 export async function listPending(): Promise<void> {
@@ -38,7 +44,10 @@ export async function showPending(filename: string): Promise<void> {
  */
 async function buildSignal(filename: string): Promise<Signal> {
   const { meta } = await readPendingSignal(filename);
-  const [watchlist, portfolio] = await Promise.all([readWatchlist(meta.currency), readPortfolio(meta.currency)]);
+  const [watchlist, portfolio] = await Promise.all([
+    readWatchlistSkippingBadTickers(meta.currency),
+    readPortfolioIgnoringLots(meta.currency),
+  ]);
 
   const entry = watchlist.find((e) => e.ticker === meta.ticker);
   const position = portfolio.positions.find((p) => p.ticker === meta.ticker);
