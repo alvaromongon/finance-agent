@@ -129,7 +129,9 @@ function cashRow(
   const row = rows.find((cells) => label.test(cells[0] ?? ""));
   if (!row) return null;
   const value = parseMarkdownMoney(row[1]);
-  if (value === null) reportTooLarge(row[1], `## ${currency} — Cash: ${name}`, onUnreadable);
+  if (value === null) {
+    reportTooLarge(row[1], `## ${currency} — Cash: ${name}`, name === "Total cash" ? "absent" : "0", onUnreadable);
+  }
   return value;
 }
 
@@ -137,9 +139,14 @@ function cashRow(
  * A number the owner wrote that cannot be counted in cents (`1e307`) reads as no value, like "TBD", but is
  * not a silent one: `onUnreadable` is told which cell it was (#86). A cell that was never a number is not.
  */
-function reportTooLarge(cell: string | undefined, where: string, onUnreadable?: (message: string) => void): void {
+function reportTooLarge(
+  cell: string | undefined,
+  where: string,
+  used: "0" | "absent",
+  onUnreadable?: (message: string) => void,
+): void {
   if (!onUnreadable || parseMarkdownNumber(cell) === null) return;
-  onUnreadable(`${where} ${JSON.stringify((cell ?? "").trim())} is too large to count in cents (read as unreadable)`);
+  onUnreadable(`${where} ${JSON.stringify((cell ?? "").trim())} is too large to count in cents (read as ${used})`);
 }
 
 // ─── Decision logs ────────────────────────────────────────────────────────────
@@ -395,7 +402,7 @@ export function parsePositions(
 /** The row's P/L, display-only: 0 when it does not read; a number too large to count in cents is named (#86). */
 function positionPl(cell: string | undefined, where: string, onUnreadable?: (message: string) => void): Money {
   const pl = parseMarkdownMoney(cell);
-  if (pl === null) reportTooLarge(cell, where, onUnreadable);
+  if (pl === null) reportTooLarge(cell, where, "0", onUnreadable);
   return pl ?? ZERO;
 }
 

@@ -268,7 +268,7 @@ describe("runHeartbeat", () => {
       });
 
       for (const row of ["Total cash", "Available cash"]) {
-        it(`a Cash row ${row} of ${huge}: read as a cell that is not a number`, async () => {
+        it(`a Cash row ${row} of ${huge}: read as unreadable and named`, async () => {
           await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
           await edit((text) =>
             row === "Total cash"

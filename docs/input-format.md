@@ -187,6 +187,7 @@ The reasons:
 - `Origin` is not `sistema` or `propietario`. It matches exactly, in lower case,
   because it is compared with the entry's in the decision log, which writes it so;
   the message says which case to write. (Column headers, which you type, match any case);
+- `Entry costs` is a number too large to count in cents (`1e307`);
 - `Date` is not `YYYY-MM-DD`;
 - `Rules version` is empty or `—`.
 

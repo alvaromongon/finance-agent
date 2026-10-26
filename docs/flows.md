@@ -38,7 +38,11 @@ parentheses so a code comment that cites it can be found here.
      watchlist entry is skipped, the other positions are still priced and their stops detected, and the
      digest carries a warning naming the row in every run while it lasts. `pending:resolve`, the Monday
      briefing and the weekly screening skip such a row, entry or screening-log row with a warning and
-     carry on; only `decision:record` and `decisions:evaluate` refuse.
+     carry on, each also logging the warning through `warnSkipped`; only `decision:record` and `decisions:evaluate` refuse.
+     A `Positions` `P/L`, `Available cash` or `Total cash` cell holding a number too large to count in cents
+     (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
+     cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
+     briefing and the screening log the same warning.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
@@ -70,8 +74,8 @@ parentheses so a code comment that cites it can be found here.
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
-  12. Send the digest (crossed stops, a problem with the lots, tight stops, armed setups, escalations) with only what is new
-      since the last send today (crossed stops and lots warnings are always included), and mark it as sent only if the email went out.
+  12. Send the digest (crossed stops, a problem with the lots, a ticker or a money cell that cannot be read, tight stops, armed setups, escalations) with only what is new
+      since the last send today (crossed stops and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads `portfolio.md`, `watchlist.md`, `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md` and the last log of each ticker. Writes `portfolio.md` (prices),
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
