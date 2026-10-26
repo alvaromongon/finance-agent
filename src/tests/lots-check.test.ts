@@ -208,9 +208,9 @@ describe("lotsMismatches: the lots against their entries in the log (C3 of PR #5
     }
 
     it("two costs that are the same at the cent pass, whatever the float noise between them", () => {
-      // 0.02 - 0.015 is 0.005000000000000004 in floats: a half-cent tolerance written inline refuses it.
+      // 0.02 - 0.015 is 0.005000000000000004 in floats; as `Money` both sides are the same whole cents.
       const log2 = [{ ...entry("a", "TCK"), costs: money(0.02) }];
-      assert.deepEqual(lotsMismatches(held({ entryCosts: 0.015 as never }), log2), []);
+      assert.deepEqual(lotsMismatches(held({ entryCosts: money(0.015) }), log2), []);
     });
 
     it("a value against an entry with no costs is a difference too", () => {

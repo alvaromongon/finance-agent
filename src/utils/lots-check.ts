@@ -8,7 +8,7 @@
 import type { Decision } from "../decisions.js";
 import type { Lot, PortfolioSnapshot, Position } from "../types.js";
 import type { Ticker } from "../ticker.js";
-import { sameCents, unitsWorthHalfACent } from "../money.js";
+import { unitsWorthHalfACent } from "../money.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import { portfolioWhere } from "./vault-parser.js";
 
@@ -173,10 +173,10 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
     num("Entry units", lot.entryUnits, logUnits, unitsTolerance);
     num("Initial stop", lot.initialStop, entry.stop_initial, PRICE_TOLERANCE);
   }
-  // A split does not touch the costs paid; they are written to the cent, so half a cent is the same value.
+  // A split does not touch the costs paid; both sides are `Money`, whole cents, so `===` is the comparison.
   const lotCosts = lot.entryCosts ?? null;
   const logCosts = entry.costs ?? null;
-  if (lotCosts === null || logCosts === null ? lotCosts !== logCosts : !sameCents(lotCosts, logCosts)) {
+  if (lotCosts !== logCosts) {
     differences.push(`Entry costs ${lotCosts ?? "—"} differs from ${logCosts ?? "—"}`);
   }
   text("Date", lot.date, entry.date);

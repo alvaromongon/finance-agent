@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { money } from "../money.js";
 import { parseMarkdownMoney, parseMarkdownNumber } from "../utils/parse.js";
 
 describe("parseMarkdownNumber", () => {
@@ -76,6 +77,8 @@ describe("parseMarkdownMoney", () => {
     }
   });
   it("still reads the largest amount that can be counted in cents", () => {
-    assert.equal(parseMarkdownMoney("1e300"), 1e300);
+    const largest = Number.MAX_VALUE / 100;
+    assert.equal(parseMarkdownMoney(String(largest)), money(largest));
+    assert.notEqual(parseMarkdownMoney(String(largest)), null);
   });
 });

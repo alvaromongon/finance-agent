@@ -20,8 +20,8 @@ export const canCountInCents = (n: number): boolean => Number.isFinite(n) && Num
 /** The only way to make a `Money`: rounds to whole cents (half away from zero on the positive side, as `Math.round`). Throws on a value that is not finite. */
 export function money(n: number): Money {
   if (typeof n !== "number" || !Number.isFinite(n)) throw new RangeError(`money must be a finite number; got: ${n}`);
+  if (!canCountInCents(n)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
   const cents = Math.round(n * CENTS);
-  if (!Number.isFinite(cents)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
   return (cents === 0 ? 0 : cents / CENTS) as Money;
 }
 
