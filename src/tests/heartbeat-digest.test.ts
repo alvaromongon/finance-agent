@@ -75,6 +75,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   breaches: [],
   lotsWarnings: [],
   tickerWarnings: [],
+  unreadableCells: [],
   tightStops: [],
   armed: [],
   escalated: [],
@@ -190,6 +191,18 @@ describe("onlyNew / digestKeys", () => {
       text,
       /Corrige `Lots` a mano: que exista y se lea, que cada `Volume` sea la suma de las `Units` de sus lotes y cada `Entry id` sea una entrada del registro/,
     );
+  });
+
+  it("an unreadable money cell has its own section and is never marked as sent (#86)", () => {
+    const unreadableCells = ['## USD — Cash: "Available cash" "1e307" is too large to count in cents (read as 0)'];
+    const withCells = digest({ unreadableCells });
+    const email = renderHeartbeatDigest(withCells)!;
+
+    assert.match(email.subject, /celda que no se puede contar/);
+    assert.match(email.body, /## `portfolio\.md`: celda que no se puede contar/);
+    assert.ok(email.body.includes(`- ${unreadableCells[0]}`));
+    assert.deepEqual(digestKeys(withCells), []);
+    assert.deepEqual(onlyNew(withCells, new Set()).unreadableCells, unreadableCells);
   });
 
   it("the crossed stop leaves no key: there is nothing to remember", () => {

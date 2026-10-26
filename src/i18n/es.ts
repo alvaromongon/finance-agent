@@ -87,6 +87,7 @@ export const es: Messages = {
       breaches: "stop cruzado",
       lots: "problema con los lotes",
       tickers: "ticker que no se lee",
+      unreadableCells: "celda que no se puede contar",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -131,6 +132,15 @@ export const es: Messages = {
       ``,
     ],
     tickersOutro: [``, `Corrige el ticker a mano (ver \`docs/input-format.md\`).`],
+    unreadableCellsIntro: [
+      `## \`portfolio.md\`: celda que no se puede contar`,
+      ``,
+      `Estas celdas tienen un importe demasiado grande para contarlo en céntimos. Se leen como no legibles (un P/L`,
+      `como 0, el efectivo disponible como 0, el efectivo total como ausente) y la fila se sigue vigilando. Leer el`,
+      `efectivo disponible o total como 0 o ausente solo puede recortar o bloquear una compra, nunca agrandarla; el P/L es solo informativo:`,
+      ``,
+    ],
+    unreadableCellsOutro: [``, `Corrige la celda a mano (ver \`docs/input-format.md\`).`],
     tightIntro: (minAtr) => [
       `## Stops demasiado ceñidos`,
       ``,

@@ -188,6 +188,7 @@ describe("English renders", () => {
       minAtr: 2,
       lotsWarnings: [],
       tickerWarnings: [],
+      unreadableCells: [],
       breaches: detectStopBreaches(
         [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
         new Map([["CAT", 210.77]]),
@@ -238,6 +239,7 @@ describe("English heartbeat digest, lots section", () => {
         minAtr: 2,
         lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"],
         tickerWarnings: [],
+        unreadableCells: [],
         breaches: [],
         tightStops: [],
         armed: [],

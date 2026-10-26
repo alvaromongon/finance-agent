@@ -222,6 +222,84 @@ describe("parseTotalCash", () => {
   });
 });
 
+// ─── Money cells too large to count in cents (#86) ───────────────────────────
+
+describe("a money cell that cannot be counted in cents (#86): read as unreadable and named", () => {
+  for (const huge of ["1e307", "-1e307"]) {
+    const cash = (rows: string) => `## USD — Cash\n\n| Item | Value |\n|---|---|\n${rows}\n`;
+    const positions = `## USD — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n| CAT | 1 | 218 | 210 | ${huge} | 213 |\n`;
+
+    it(`Available cash of ${huge}: read as 0, named`, () => {
+      const unreadable: string[] = [];
+      assert.equal(
+        parseCash(cash(`| Available cash | ${huge} |`), "USD", (m) => unreadable.push(m)),
+        0,
+      );
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], /USD — Cash.*Available cash.*too large to count in cents/);
+    });
+
+    it(`Total cash of ${huge}: read as absent, named`, () => {
+      const unreadable: string[] = [];
+      const md = cash(`| Available cash | 10 |\n| Total cash | ${huge} |`);
+      assert.equal(
+        parseTotalCash(md, "USD", (m) => unreadable.push(m)),
+        null,
+      );
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], /USD — Cash.*Total cash.*too large to count in cents/);
+    });
+
+    it(`a Positions P/L of ${huge}: the row is kept with P/L 0, named`, () => {
+      const unreadable: string[] = [];
+      const skipped: string[] = [];
+      const [cat, ...rest] = parsePositions(
+        positions,
+        "USD",
+        (m) => skipped.push(m),
+        (m) => unreadable.push(m),
+      );
+      assert.equal(rest.length, 0);
+      assert.equal(cat.ticker, "CAT");
+      assert.equal(cat.pl, 0);
+      assert.deepEqual(skipped, []);
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], /USD — Positions.*CAT.*P\/L.*too large to count in cents/);
+    });
+  }
+
+  for (const [row, cash, total] of [
+    ["Available cash", 0, 10],
+    ["Total cash", 5, null],
+  ] as const) {
+    it(`parsePortfolioText with a ${row} of 1e307: Available cash ${cash}, Total cash ${total ?? "absent"}, named`, async () => {
+      const { parsePortfolioText } = await import("../vault-io.js");
+      const other = row === "Available cash" ? "| Total cash | 10 |" : "| Available cash | 5 |";
+      const md = `---\nschema_version: 2\nlast_manual_sync: 2099-01-01\n---\n\n## USD — Cash\n\n| Item | Value |\n|---|---|\n| ${row} | 1e307 |\n${other}\n\n## USD — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n\n## USD — Lots\n\n${LOTS_HEADER}\n`;
+      const unreadable: string[] = [];
+      const portfolio = parsePortfolioText(md, "USD", { onUnreadableCell: (m) => unreadable.push(m) });
+      assert.equal(portfolio.cash, cash);
+      assert.equal(portfolio.totalCash, total ?? undefined);
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], new RegExp(`Cash: ${row}.*too large to count in cents`));
+    });
+  }
+
+  it("a cell that is not a number (TBD) or that reads is not reported", () => {
+    const unreadable: string[] = [];
+    const md = `## USD — Cash\n\n| Item | Value |\n|---|---|\n| Available cash | TBD |\n| Total cash | 12.50 |\n`;
+    assert.equal(
+      parseCash(md, "USD", (m) => unreadable.push(m)),
+      0,
+    );
+    assert.equal(
+      parseTotalCash(md, "USD", (m) => unreadable.push(m)),
+      12.5,
+    );
+    assert.deepEqual(unreadable, []);
+  });
+});
+
 // ─── isBlockedLog ─────────────────────────────────────────────────────────────
 
 describe("isBlockedLog", () => {

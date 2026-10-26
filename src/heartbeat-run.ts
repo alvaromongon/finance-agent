@@ -60,6 +60,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     breaches: [],
     lotsWarnings: [],
     tickerWarnings: [],
+    unreadableCells: [],
     tightStops: [],
     armed: [],
     escalated: [],
@@ -102,7 +103,7 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem, skippedRows } = await readPortfolioTolerantOfLots(currency);
+  const { portfolio, lotsProblem, skippedRows, unreadableCells } = await readPortfolioTolerantOfLots(currency);
   digest.syncedAt = portfolio.syncedAt;
   // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
   // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
@@ -111,6 +112,12 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     console.warn(`[finance-agent] WARNING, ticker: ${message}`);
   };
   skippedRows.forEach(tickerWarning);
+  // A Positions P/L or Cash cell too large to count in cents reads as unreadable (P/L 0, cash 0): the run
+  // goes on and the digest names the cell (#86).
+  for (const message of unreadableCells) {
+    digest.unreadableCells.push(message);
+    console.warn(`[finance-agent] WARNING, unreadable cell: ${message}`);
+  }
 
   const checkLots = (): void => {
     digest.lotsWarnings = lotsProblem ? [lotsProblem] : lotsCheck(portfolio);

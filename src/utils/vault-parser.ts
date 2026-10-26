@@ -104,8 +104,8 @@ export const portfolioWhere = (currency: Currency): string => `portfolio.md (${c
  */
 const AVAILABLE_CASH_RE = /^available\s+cash$/i;
 
-export function parseCash(md: string, currency: Currency): Money {
-  return cashRow(md, currency, AVAILABLE_CASH_RE) ?? ZERO;
+export function parseCash(md: string, currency: Currency, onUnreadable?: (message: string) => void): Money {
+  return cashRow(md, currency, AVAILABLE_CASH_RE, "Available cash", onUnreadable) ?? ZERO;
 }
 
 /**
@@ -114,14 +114,39 @@ export function parseCash(md: string, currency: Currency): Money {
  * only differs from the available balance while there are pending orders;
  * `null` if missing or not a number.
  */
-export function parseTotalCash(md: string, currency: Currency): Money | null {
-  return cashRow(md, currency, /^total\s+cash$/i);
+export function parseTotalCash(md: string, currency: Currency, onUnreadable?: (message: string) => void): Money | null {
+  return cashRow(md, currency, /^total\s+cash$/i, "Total cash", onUnreadable);
 }
 
-function cashRow(md: string, currency: Currency, label: RegExp): Money | null {
+function cashRow(
+  md: string,
+  currency: Currency,
+  label: RegExp,
+  name: string,
+  onUnreadable?: (message: string) => void,
+): Money | null {
   const rows = tableRows(md, currency, "Cash");
   const row = rows.find((cells) => label.test(cells[0] ?? ""));
-  return row ? parseMarkdownMoney(row[1]) : null;
+  if (!row) return null;
+  const value = parseMarkdownMoney(row[1]);
+  if (value === null) {
+    reportTooLarge(row[1], `## ${currency} — Cash: ${name}`, name === "Total cash" ? "absent" : "0", onUnreadable);
+  }
+  return value;
+}
+
+/**
+ * A number the owner wrote that cannot be counted in cents (`1e307`) reads as no value, like "TBD", but is
+ * not a silent one: `onUnreadable` is told which cell it was (#86). A cell that was never a number is not.
+ */
+function reportTooLarge(
+  cell: string | undefined,
+  where: string,
+  used: "0" | "absent",
+  onUnreadable?: (message: string) => void,
+): void {
+  if (!onUnreadable || parseMarkdownNumber(cell) === null) return;
+  onUnreadable(`${where} ${JSON.stringify((cell ?? "").trim())} is too large to count in cents (read as ${used})`);
 }
 
 // ─── Decision logs ────────────────────────────────────────────────────────────
@@ -330,9 +355,15 @@ export function isPositionPlaceholder(ticker: string): boolean {
  * Parses the rows of the `## <CURRENCY> — Positions` table (columns in
  * POSITION_COLUMNS, in any order). Skips placeholder rows ("—") and ignores
  * rows without a numeric volume/average price. A row whose ticker does not parse throws, naming it (the
- * readers that refuse), or, given `onSkip`, is skipped and reported to it (ADR-0016).
+ * readers that refuse), or, given `onSkip`, is skipped and reported to it (ADR-0016). A P/L too large to
+ * count in cents reads as 0 and, given `onUnreadable`, is reported to it; the row is kept (#86).
  */
-export function parsePositions(md: string, currency: Currency, onSkip?: (message: string) => void): Position[] {
+export function parsePositions(
+  md: string,
+  currency: Currency,
+  onSkip?: (message: string) => void,
+  onUnreadable?: (message: string) => void,
+): Position[] {
   const [header, ...rows] = tableRows(md, currency, "Positions");
   if (!header) return [];
   const col = positionColumns(header, currency);
@@ -360,12 +391,19 @@ export function parsePositions(md: string, currency: Currency, onSkip?: (message
       volume,
       avgPrice,
       currentPrice: parseMarkdownNumber(cells[col.currentPrice]) ?? 0,
-      pl: parseMarkdownMoney(cells[col.pl]) ?? ZERO,
+      pl: positionPl(cells[col.pl], `## ${currency} — Positions: ${checked.ticker} P/L`, onUnreadable),
       stopLoss: parseMarkdownNumber(cells[col.stopLoss]),
     });
   }
 
   return positions;
+}
+
+/** The row's P/L, display-only: 0 when it does not read; a number too large to count in cents is named (#86). */
+function positionPl(cell: string | undefined, where: string, onUnreadable?: (message: string) => void): Money {
+  const pl = parseMarkdownMoney(cell);
+  if (pl === null) reportTooLarge(cell, where, "0", onUnreadable);
+  return pl ?? ZERO;
 }
 
 // ─── Lots (ADR-0015) ──────────────────────────────────────────────────────────

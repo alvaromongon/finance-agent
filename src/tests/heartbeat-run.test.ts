@@ -257,20 +257,32 @@ describe("runHeartbeat", () => {
 
       it(`a Positions P/L of ${huge}: the position is still watched, its P/L reads as unreadable`, async () => {
         await setPortfolio(`${MSFT_ROW}\n${CAT_ROW.replace("-1.10", huge)}`, [MSFT_LOT, CAT_LOT]);
-        await heartbeat();
-        await crossedStopGoesOut();
+        const warnings = await heartbeat();
+        const email = await crossedStopGoesOut();
+        assert.ok(
+          warnings.some((w) => /Positions.*CAT.*P\/L.*too large to count in cents/.test(w)),
+          `warnings: ${JSON.stringify(warnings)}`,
+        );
+        assert.match(email.subject, /celda que no se puede contar/);
+        assert.match(email.body, /Positions.*CAT.*P\/L.*too large to count in cents/);
       });
 
       for (const row of ["Total cash", "Available cash"]) {
-        it(`a Cash row ${row} of ${huge}: read as a cell that is not a number`, async () => {
+        it(`a Cash row ${row} of ${huge}: read as unreadable and named`, async () => {
           await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
           await edit((text) =>
             row === "Total cash"
               ? text.replace("| Available cash | $1000.00 |", `| Available cash | $1000.00 |\n| Total cash | ${huge} |`)
               : text.replace("$1000.00", huge),
           );
-          await heartbeat();
-          await crossedStopGoesOut();
+          const warnings = await heartbeat();
+          const email = await crossedStopGoesOut();
+          assert.ok(
+            warnings.some((w) => new RegExp(`Cash.*${row}.*too large to count in cents`).test(w)),
+            `warnings: ${JSON.stringify(warnings)}`,
+          );
+          assert.match(email.subject, /celda que no se puede contar/);
+          assert.match(email.body, new RegExp(`Cash.*${row}.*too large to count in cents`));
         });
       }
     }

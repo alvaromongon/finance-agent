@@ -40,6 +40,11 @@ export interface HeartbeatDigest {
    * keeps watching the rest; reported in every digest while they last (not deduplicated).
    */
   tickerWarnings: string[];
+  /**
+   * Cells of `Positions` (P/L) and `Cash` too large to count in cents (#86): read as unreadable (P/L 0, cash
+   * 0 or absent) and named here, in every digest while they last (not deduplicated).
+   */
+  unreadableCells: string[];
   tightStops: TightStop[];
   /** The day's armed breakouts (ADR-0013): the only thing actionable without the reasoner. */
   armed: SetupEvaluation[];
@@ -47,12 +52,12 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops and the lots and ticker warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops and the lots, ticker and unreadable-cell warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
   return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
 }
 
-/** The digest without what was already sent today. Crossed stops and the lots and ticker warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
@@ -86,6 +91,9 @@ export function renderHeartbeatDigest(
   }
   if (d.tickerWarnings.length > 0) {
     sections.push({ label: t.labels.tickers, tickers: [], lines: tickersSection(d, m) });
+  }
+  if (d.unreadableCells.length > 0) {
+    sections.push({ label: t.labels.unreadableCells, tickers: [], lines: unreadableCellsSection(d, m) });
   }
   if (d.tightStops.length > 0) {
     sections.push({
@@ -132,6 +140,11 @@ function breachSection(d: HeartbeatDigest, m: Messages): string[] {
 function lotsSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [...t.lotsIntro, ...d.lotsWarnings.map((w) => `- ${w}`), ...t.lotsOutro];
+}
+
+function unreadableCellsSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [...t.unreadableCellsIntro, ...d.unreadableCells.map((w) => `- ${w}`), ...t.unreadableCellsOutro];
 }
 
 function tickersSection(d: HeartbeatDigest, m: Messages): string[] {
