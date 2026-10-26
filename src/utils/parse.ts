@@ -1,4 +1,4 @@
-import { money, type Money } from "../money.js";
+import { canCountInCents, money, type Money } from "../money.js";
 
 /**
  * Converts a Markdown table cell to a number.
@@ -30,10 +30,13 @@ export function parseMarkdownNumber(raw: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** `parseMarkdownNumber` for an amount of the silo currency: made `Money`, so rounded to the cent. */
+/**
+ * `parseMarkdownNumber` for an amount of the silo currency: made `Money`, so rounded to the cent. A number
+ * too large to count in cents (`1e307`) is as unreadable as "TBD": `null`, never a throw out of the reader (#83).
+ */
 export function parseMarkdownMoney(raw: string | undefined): Money | null {
   const n = parseMarkdownNumber(raw);
-  return n === null ? null : money(n);
+  return n === null || !canCountInCents(n) ? null : money(n);
 }
 
 /**
