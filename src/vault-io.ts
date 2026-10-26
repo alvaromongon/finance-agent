@@ -1,7 +1,7 @@
 // Reading/writing of the vault Markdown "brain".
 import { messages } from "./i18n/index.js";
-import { readFile, writeFile, readdir, mkdir, unlink, appendFile, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile, readdir, mkdir, unlink, appendFile, rename, stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { config } from "./config.js";
 import { validateDecision, type Decision, type ScreeningSelection } from "./decisions.js";
 import { describeTicket } from "./utils/sizing.js";
@@ -728,7 +728,8 @@ const decisionArchiveDir = () => config.paths.decisionsArchiveDir();
  */
 export async function readDecisionHistory(archiveDir: string | undefined = decisionArchiveDir()): Promise<Decision[]> {
   const archived: Decision[] = [];
-  if (archiveDir) {
+  if (!archiveDir) noteArchiveDirUnset();
+  else if (await archiveDirReadable(archiveDir)) {
     const files = (await readdir(archiveDir).catch(() => [] as string[]))
       .filter((f) => /^decisions-.+\.jsonl$/.test(f))
       .sort();
@@ -744,6 +745,56 @@ export async function readDecisionHistory(archiveDir: string | undefined = decis
       return true;
     })
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+let archiveDirUnsetNoted = false;
+
+/** Forgets that the unset-variable note was printed: the note is once per run, a test is several. */
+export function resetArchiveDirNotes(): void {
+  archiveDirUnsetNoted = false;
+}
+
+/**
+ * One line per run, however many times the history is read: an owner who has never archived sees it
+ * on every run of `decision:record`, `decisions:evaluate` and `decisions:chart`, and on no other.
+ */
+function noteArchiveDirUnset(): void {
+  if (archiveDirUnsetNoted) return;
+  archiveDirUnsetNoted = true;
+  console.warn(
+    "[vault-io] NOTE: DECISIONS_ARCHIVE_DIR is not set, so only logs/decisions.jsonl is read; " +
+      "quarters archived out of it are not (see docs/log-retention.md). Ignore this if you have never archived.",
+  );
+}
+
+/**
+ * Whether the archive directory can be read, warning on stderr when it cannot (a path that is not
+ * absolute is still read, against the working directory, as before). Nothing else changes: the caller
+ * carries on with the live log, and no exit code or output file depends on it.
+ */
+async function archiveDirReadable(dir: string): Promise<boolean> {
+  const warn = (problem: string) =>
+    console.warn(
+      `[vault-io] WARNING: DECISIONS_ARCHIVE_DIR ${JSON.stringify(dir)} ${problem}; the archived quarters are not read, ` +
+        "so the history is only the live log (see docs/log-retention.md)",
+    );
+  if (!isAbsolute(dir)) {
+    console.warn(
+      `[vault-io] WARNING: DECISIONS_ARCHIVE_DIR ${JSON.stringify(dir)} is not an absolute path: it is read against ` +
+        `the working directory (${process.cwd()}), which differs between runs; set an absolute path (see docs/log-retention.md)`,
+    );
+  }
+  try {
+    if ((await stat(dir)).isDirectory()) return true;
+    warn("is not a directory");
+  } catch (err) {
+    warn(
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+        ? "does not exist"
+        : `cannot be read (${(err as Error).message})`,
+    );
+  }
+  return false;
 }
 
 function parseDecisionLines(raw: string, source: string): Decision[] {
