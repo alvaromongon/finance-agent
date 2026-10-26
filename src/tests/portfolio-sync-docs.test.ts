@@ -17,8 +17,10 @@ const RETENTION = "docs/log-retention.md";
 
 const read = (path: string) => readFile(join(ROOT, path), "utf8");
 
-/** The JSON objects in the ```json fences of a Markdown document. */
-const jsonBlocks = (md: string): unknown[] => [...md.matchAll(/```json\n([\s\S]*?)```/g)].map((m) => JSON.parse(m[1]));
+/** The ```json fences of a Markdown document: the parsed object and the text that precedes the fence. */
+const JSON_FENCE = /```json\n([\s\S]*?)```/g;
+const jsonBlocks = (md: string): { json: unknown; before: string }[] =>
+  [...md.matchAll(JSON_FENCE)].map((m) => ({ json: JSON.parse(m[1]), before: md.slice(0, m.index) }));
 
 describe("portfolio-sync guide", () => {
   it("ships with the example brain, where the stale-portfolio warning points", async () => {
@@ -27,25 +29,44 @@ describe("portfolio-sync guide", () => {
     assert.match(guide, /PORTFOLIO_STALE_DAYS/);
   });
 
-  it("names each event type in the JSON block that shows it", async () => {
-    const guide = await read(GUIDE);
-    for (const match of guide.matchAll(/```json\n([\s\S]*?)```/g)) {
-      const { type } = JSON.parse(match[1]) as { type: string };
-      assert.ok(OWNER_TYPES.includes(type as never), `unknown type ${type}`);
-      const before = guide.slice(0, match.index);
-      const heading = before.slice(before.lastIndexOf("\n### "));
-      assert.ok(heading.length > 0 && !heading.includes("\n## "), `no event section above the ${type} block`);
+  it("shows every JSON block under the ### heading of its own event", async () => {
+    const blocks = jsonBlocks(await read(GUIDE));
+    assert.ok(blocks.length >= OWNER_TYPES.length, "fewer JSON examples than event types");
+    for (const { json, before } of blocks) {
+      const { type } = json as { type: string };
+      const at = before.lastIndexOf("\n### ");
+      assert.ok(at >= 0, `no ### heading above the ${type} block`);
+      assert.ok(!before.slice(at + 1).includes("\n## "), `a ## section sits between the heading and the ${type} block`);
     }
   });
 
-  it("gives a valid decision:record JSON for every event type the owner can narrate", async () => {
-    const examples = jsonBlocks(await read(GUIDE)).map((raw) => validateOwnerInput(raw));
+  it("fails the heading guard for a block with no event heading", () => {
+    const [orphan] = jsonBlocks('## Events\n\n```json\n{ "type": "deposit" }\n```\n');
+    assert.equal(orphan.before.lastIndexOf("\n### "), -1);
+  });
+
+  it("gives a JSON accepted by decision:record for every example, covering every event type", async () => {
+    const examples = jsonBlocks(await read(GUIDE)).map(({ json }) => validateOwnerInput(json));
     const covered = new Set(examples.map((e) => e.type));
     for (const type of OWNER_TYPES) assert.ok(covered.has(type), `no example for ${type}`);
   });
 
-  it("says to record an exit before deleting the position row, which sets its P&L", async () => {
-    assert.match(await read(GUIDE), /before (you )?(delete|remov)/i);
+  it("follows the lot model: decision:record keeps Lots, Volume and Avg price", async () => {
+    const guide = await read(GUIDE);
+    assert.match(guide, /`Lots`/);
+    assert.match(guide, /`Volume`/);
+    assert.match(guide, /`Avg price`/);
+    assert.match(guide, /new lot/i);
+    assert.match(guide, /correction commit/i);
+    assert.doesNotMatch(guide, /before (you )?(delete|remov|touch|edit)/i, "the sale-before-its-row rule is gone");
+    assert.doesNotMatch(guide, /then add the row/i);
+  });
+
+  it("links the glossary on first use of the decision log and of a setup, and no ADR for the log", async () => {
+    const guide = await read(GUIDE);
+    assert.match(guide, /\[decision log\]\([^)]*docs\/glossary\.md#decision-log\)/);
+    assert.match(guide, /\[setup\]\([^)]*docs\/glossary\.md#setup\)/);
+    assert.doesNotMatch(guide, /\[decision log\]\([^)]*0006/i);
   });
 });
 
@@ -58,6 +79,62 @@ describe("log retention doc", () => {
     assert.match(doc, /decisions-YYYY-QN\.jsonl/);
     assert.match(doc, /must be an \*\*absolute\*\* path/);
     assert.match(doc, /decisions:chart/);
+  });
+
+  it("links the glossary for the decision log, not ADR-0006", async () => {
+    assert.match(await read(RETENTION), /\[decision log\]\(glossary\.md#decision-log\)/);
+    assert.doesNotMatch(await read(RETENTION), /\[decision log\]\([^)]*0006/i);
+  });
+
+  it("covers the report files written when email is off (#33) and says they archive like the Markdown logs", async () => {
+    const doc = await read(RETENTION);
+    assert.match(doc, /MAIL_TRANSPORT=none/);
+    assert.match(doc, /#33/);
+    assert.match(doc, /report files?/i);
+  });
+
+  it("says in .env.example that DECISIONS_ARCHIVE_DIR must be an absolute path", async () => {
+    const env = await read(".env.example");
+    const at = env.indexOf("DECISIONS_ARCHIVE_DIR=");
+    assert.match(env.slice(env.lastIndexOf("\n\n", at), at), /absolute/i);
+  });
+});
+
+/** The ```bash block of the "Archiving old logs" section. */
+const markdownArchiveBlock = (md: string): string => {
+  const section = md.slice(md.indexOf("## Archiving old logs"), md.indexOf("## Archiving decision-log quarters"));
+  return /```bash\n([\s\S]*?)```/.exec(section)![1];
+};
+
+describe("log retention: archiving Markdown logs", () => {
+  it("moves only the reviewed list, with quoted paths, never the whole glob", async () => {
+    const block = markdownArchiveBlock(await read(RETENTION));
+    assert.match(block, /FILES=\(/);
+    assert.match(block, /mv [^\n]*"\$\{FILES\[@\]\}"/);
+    assert.match(block, /git rm --cached [^\n]*"\$\{FILES\[@\]\}"/);
+    assert.doesNotMatch(block.replace(/^ls .*$/m, ""), /\*\.md/, "a glob would move what was not reviewed");
+  });
+
+  it("moves exactly the listed files out of the repository and out of the index", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "retention-md-"));
+    try {
+      const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      git("init", "-q");
+      await mkdir(join(dir, "logs"));
+      for (const name of ["2026-07-01-ko", "2026-08-01-ko", "2026-09-01-ko"]) {
+        await writeFile(join(dir, "logs", `${name}.md`), name);
+      }
+      git("add", ".");
+      const block = markdownArchiveBlock(await read(RETENTION))
+        .replace(/^FILES=\(.*$/m, "FILES=(logs/2026-07-01-ko.md logs/2026-08-01-ko.md)")
+        .replace("../archive/logs/2026-Q3", join(dir, "archive"));
+      const out = spawnSync("bash", ["-c", block], { cwd: dir, encoding: "utf8" });
+      assert.equal(out.status, 0, out.stderr);
+      assert.equal(await readFile(join(dir, "archive", "2026-07-01-ko.md"), "utf8"), "2026-07-01-ko");
+      assert.equal(git("ls-files").stdout.trim(), "logs/2026-09-01-ko.md", "only the unreviewed log stays");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -72,7 +149,9 @@ describe("log retention: the documented archive commands", () => {
   const LIVE = [
     line({ id: "e1", type: "entry", ticker: "KO", date: "2026-04-10" }), // still held
     line({ id: "e2", type: "entry", ticker: "SAP.DE", date: "2026-04-12" }),
-    line({ id: "x2", type: "exit", ticker: "SAP.DE", date: "2026-05-02", related_id: "e2" }),
+    line({ id: "x2", type: "exit", ticker: "SAP.DE", date: "2026-05-02", related_id: "e2", lot_units_left: 0 }),
+    line({ id: "e3", type: "entry", ticker: "XOM", date: "2026-04-20" }), // sold in part: the lot is open
+    line({ id: "x3", type: "exit", ticker: "XOM", date: "2026-05-03", related_id: "e3", lot_units_left: 2 }),
     line({ id: "d1", type: "deposit", date: "2026-05-05" }),
     line({ id: "d2", type: "deposit", date: "2026-09-01" }),
   ];
@@ -98,10 +177,10 @@ describe("log retention: the documented archive commands", () => {
     const [vars, copy, prune] = archiveBlocks(await read(RETENTION));
     const first = run([vars, copy]);
     assert.equal(first.status, 0, first.stderr);
-    assert.deepEqual(await ids(join(archive, "decisions-2026-Q2.jsonl")), ["e2", "x2", "d1"]);
+    assert.deepEqual(await ids(join(archive, "decisions-2026-Q2.jsonl")), ["e2", "x2", "x3", "d1"]);
     assert.notEqual(run([vars, copy]).status, 0, "step 2 repeated must refuse, not overwrite");
     assert.equal(run([vars, prune]).status, 0);
-    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), ["e1", "d2"]);
+    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), ["e1", "e3", "d2"]);
   });
 
   it("is safe to repeat: step 2 refuses an existing archive and step 3 does not touch the log", async () => {
@@ -113,7 +192,7 @@ describe("log retention: the documented archive commands", () => {
     assert.notEqual(run([vars, copy]).status, 0);
     assert.equal(await readFile(target, "utf8"), archived, "the archive was overwritten");
     assert.notEqual(run([vars, prune]).status, 0, "line counts no longer add up");
-    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), ["e1", "d2"]);
+    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), ["e1", "e3", "d2"]);
   });
 
   it("fails on an empty or relative archive directory", async () => {

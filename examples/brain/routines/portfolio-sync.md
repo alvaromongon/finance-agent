@@ -4,20 +4,40 @@ How you keep `portfolio.md` in step with your broker and tell the engine what yo
 integrates with no broker: it cannot know that an order filled or a stop was hit, so it warns
 ("portfolio.md has not been updated for N days") when `last_manual_sync` is older than
 `PORTFOLIO_STALE_DAYS`. This guide is what that warning points to. You can follow it by hand, or
-hand it to a Claude Code session as its instructions.
+hand it to a Claude Code session as its instructions. The file format is
+[`docs/input-format.md`](https://github.com/alvaromongon/finance-agent/blob/main/docs/input-format.md#portfoliomd).
 
 ## The rule
 
-Every event at the broker gets two changes, made together and committed together:
+Every event at the broker is told to the engine through `npm run decision:record`, with the event
+as JSON on stdin. That command appends to the
+[decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log)
+(`logs/decisions.jsonl`; never edit it by hand) and, for a buy or a sale, keeps the
+[lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot) in
+`portfolio.md` for you:
 
-1. **`portfolio.md`**: the cash, the position row, the stop (format: `docs/input-format.md`).
-2. **`logs/decisions.jsonl`**, through `npm run decision:record`, with the event as JSON on stdin.
-   Never edit the log by hand.
+| Event               | `decision:record` writes                                                                                                             | You edit by hand               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
+| Deposit, withdrawal | the log                                                                                                                              | `Available cash`               |
+| Currency conversion | the log                                                                                                                              | `Available cash` of both silos |
+| Buy                 | the log, a new row in `Lots`, and `Volume`, `Avg price` and `Stop loss` of the position                                              | `Available cash`               |
+| Sale                | the log, shrinks or removes the `Lots` rows it consumes, recomputes `Volume` and `Avg price`, deletes the position with its last lot | `Available cash`               |
+| Stop change         | the log                                                                                                                              | the `Stop loss` cell           |
+| Any sync            | -                                                                                                                                    | `last_manual_sync`             |
 
-The engine rebuilds each [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo)'s value backwards from today's `portfolio.md` through the logged
-events, to compare you with the [shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio). If the two disagree (a trade in the log that
-`portfolio.md` does not show, or the other way round), the evaluation warns about negative cash or
-oversold units instead of reporting a wrong number.
+So you no longer edit position rows. What you do is **reconcile**: after the events, compare each
+position's `Volume` with your broker. If they differ (a split, a partial fill, a trade you never
+recorded), correct `Lots` by hand so that the `Units` of a ticker's lots add up to the broker's
+figure, and commit that on its own, as a correction commit. Editing `Volume` alone does not work:
+`decision:record` refuses a portfolio whose `Volume` is not the sum of its lots' `Units`, or whose
+lots disagree with the log, and reports everything it found in one round.
+
+The engine rebuilds each [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo)'s
+value backwards from today's `portfolio.md` through the logged events, to compare you with the
+[shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio).
+If the two disagree (a trade in the log that `portfolio.md` does not show, or the other way
+round), the evaluation warns about negative cash or oversold units instead of reporting a wrong
+number.
 
 The engine fills in the rest: id, rules version, benchmark price, rules broken, and the system
 proposal the trade follows (that sets its `origin`). Omit `date` for today; give it (`YYYY-MM-DD`)
@@ -25,20 +45,22 @@ when you record something that happened earlier.
 
 ## Order that keeps the P&L right
 
-Process the events in the order they happened at the broker, and inside each event follow the
-order below. Update the cash and `last_manual_sync` last.
+Process the events in the order they happened at the broker, and commit the log and
+`portfolio.md` together.
 
 1. **Money in or out, and currency conversions, first.** Later buys are funded by them, and the
    shadow portfolio buys its benchmark with every flow on its own date, so a wrong or missing date
    shifts the comparison.
-2. **A buy:** record it, then add the row.
-3. **A sale:** record it **before you delete or reduce the row**. The engine computes the realized
-   result from the average price still in `portfolio.md`; without the row it records the exit with
-   no P&L (and the two-month rule and the evaluation lose the number).
+2. **A buy:** record it. The engine adds the lot and the position.
+3. **A sale:** record it. The engine takes the result from the lots' own entry prices, so the
+   order against your own edits does not matter, but a sale dated before a lot it would consume
+   is refused. Record sales and buys of the same ticker in the order they happened: a sale
+   consumes the oldest lot first.
 4. **A stop change:** record it, then edit the `Stop loss` cell.
 5. **Cash and timestamp:** set `Available cash` (and `Total cash`, if you keep it) to the
    broker's figures and `last_manual_sync` to now (ISO, UTC). This is the step that silences the
    stale warning.
+6. **Reconcile** each position's `Volume` against the broker (see above).
 
 Each command prints what it recorded and the rules it found broken; read that line, it is the
 engine's feedback on your trade.
@@ -73,37 +95,52 @@ arrived (`received`, in the target currency). Without `costs`, the fee defaults 
 
 ### Buy
 
-Give `price` and either `amount` or `units`, plus the initial `stop` (the base every [R](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#r) is
-measured against). Then add the row to `Positions`: `Volume`, `Avg price` (as your broker reports it) and `Stop loss`. If you already hold the ticker, update the
-volume and the weighted average price instead of adding a row.
+Give `price` and either `amount` or `units` (if you give both they must agree to the cent), plus
+the initial `stop`: the base every [R](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#r)
+is measured against.
 
 ```json
 { "type": "entry", "ticker": "KO", "currency": "USD", "price": 62, "units": 5, "stop": 58 }
 ```
 
-Every buy is checked against the watchlist and the stop distance; one without a setup is
+`decision:record` adds the buy as a new row in `Lots` and creates the ticker's row in
+`Positions` (with the stop as `Stop loss`), or, if you already hold the ticker, updates its
+`Volume` and its weighted `Avg price`. **A second buy of a held ticker is a new lot**, a trade of
+its own: its R is measured from its own price and stop, and the first lot is not touched. The
+engine does not touch cash: lower `Available cash` by what the buy cost.
+
+Every buy is checked against the watchlist and the stop distance; one without a
+[setup](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#setup) is
 recorded with the broken rule `entry_without_setup`. A buy that follows a system proposal or an
 armed breakout within 10 days is attributed to the system (`origin` `sistema`). Any other buy is
 yours (`propietario`), and so is one that follows a `buy_blocked` proposal: it is recorded with
-`overrode_block`.
+`overrode_block`. The buy needs `portfolio.md` to exist: without it the lot would be lost, so it
+is refused.
 
 ### Sell
 
-Give `price` and `amount` or `units`. Record it first (see the order above), then delete the row,
-or lower `Volume` if you sold part of it (the average price of the rest does not change). Set
-`origin` to `sistema` only when the engine cannot infer that you followed its sell proposal. Add
-`pnl` only if you want to override the one computed from `portfolio.md`. That computed figure is
-`(price - avg price) * units` and ignores `costs`: pass `pnl` explicitly if you want it net of
-fees (the two-month rule triggers on `pnl < 0`).
+Give `price` and `amount` or `units`. `decision:record` sells the ticker's lots first in, first
+out (the oldest entry first) and writes one `exit` per lot it consumes, each with its own result
+from that lot's entry price. It removes a lot it uses up, shrinks the one it only partly sells,
+recomputes `Volume` and `Avg price`, and deletes the position's row with its last lot. A sale of a
+ticker with no lots, or of more units than are open, is refused and nothing is recorded: first
+reconcile `Lots` with the broker.
 
 ```json
 { "type": "exit", "ticker": "SAP.DE", "currency": "EUR", "price": 195, "units": 2, "costs": 1.5 }
 ```
 
+Do not pass `related_id` on a sale: the lots decide which entries it closes, and the command
+refuses it. Set `origin` to `sistema` only when the engine cannot infer that you followed its sell
+proposal. Add `pnl` only if you want to override the computed result: that figure is
+`(price - entry price) * units` per lot and ignores `costs`, so pass `pnl` explicitly if you want
+it net of fees (the two-month rule triggers on `pnl < 0`).
+
 ### Stop change
 
-`stop` is the new level. Record it, then edit the `Stop loss` cell. A stop that your broker
-executed is a sale: record an `exit` at the fill price instead.
+`stop` is the new level. Record it, then edit the `Stop loss` cell of the position: this event
+changes no table. A stop that your broker executed is a sale: record an `exit` at the fill price
+instead.
 
 ```json
 { "type": "adjust_stop", "ticker": "KO", "currency": "USD", "stop": 60 }
@@ -114,6 +151,7 @@ executed is a sale: record an `exit` at the fill price instead.
 - `npm run decisions:evaluate` rewrites `logs/decisions-evaluation.md`; a silo that does not
   reconcile shows a warning there.
 - A mistake in the log is fixed in a dedicated commit that edits that one line, when no automated
-  run is in flight ([ADR-0006](https://github.com/alvaromongon/finance-agent/blob/main/docs/decisions/0006-single-append-only-decision-log.md)).
+  run is in flight. The same goes for `Lots`: a hand correction is a commit of its own, so the
+  history shows what you changed and why.
 
 Old logs and queue files are covered in [Log retention](https://github.com/alvaromongon/finance-agent/blob/main/docs/log-retention.md).

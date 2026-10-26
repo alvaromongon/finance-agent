@@ -22,12 +22,24 @@ the signal is stale (it is not in the decision log until resolved).
 
 ## Files that grow
 
-| Path                                                                 | What it is                                                            | Read back by                                                                                               |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `logs/decisions.jsonl`                                               | The [decision log](decisions/0006-single-append-only-decision-log.md) | Everything: recording, the two-month rule, attribution, the heartbeat, the Monday briefing, the evaluation |
-| `logs/<date>-<ticker>.md`                                            | One Markdown log per analysed signal                                  | The re-analysis cooldown (latest of the ticker); the Monday briefing (last 30 days)                        |
-| `logs/<date>-monday-briefing.md`                                     | Weekly report                                                         | Nobody; the decision log holds its decisions                                                               |
-| `logs/decisions-evaluation.md`, `.svg`, `logs/screening-outcomes.md` | Reports, regenerated on each run: never archive them                  | The Monday briefing reads `decisions-evaluation.md`                                                        |
+| Path                                                                 | What it is                                           | Read back by                                                                                               |
+| -------------------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `logs/decisions.jsonl`                                               | The [decision log](glossary.md#decision-log)         | Everything: recording, the two-month rule, attribution, the heartbeat, the Monday briefing, the evaluation |
+| `logs/<date>-<ticker>.md`                                            | One Markdown log per analysed signal                 | The re-analysis cooldown (latest of the ticker); the Monday briefing (last 30 days)                        |
+| `logs/<date>-monday-briefing.md`                                     | Weekly report                                        | Nobody; the decision log holds its decisions                                                               |
+| Report files of the emails not sent (see below)                      | With email off, each message as a Markdown file      | Nobody: you read them                                                                                      |
+| `logs/decisions-evaluation.md`, `.svg`, `logs/screening-outcomes.md` | Reports, regenerated on each run: never archive them | The Monday briefing reads `decisions-evaluation.md`                                                        |
+
+## Report files written when email is off
+
+With `MAIL_TRANSPORT=none` (`email: false` in the reusable workflows) nothing is sent. From
+[#33](https://github.com/alvaromongon/finance-agent/issues/33) on, each message the engine would
+have emailed (heartbeat digest, screening summary, Monday briefing summary, alerts) is written
+instead as one Markdown file under `logs/`, with its subject, body and source, named so that it
+sorts by date. They are for you to read in the data repository; nothing reads them back and
+nothing deletes them, so they grow like the other Markdown logs and are archived the same way
+(next section). Until #33
+lands, the engine writes no such file and an email that is off is only logged.
 
 ## Archiving old logs
 
@@ -35,13 +47,18 @@ Markdown logs older than 30 days are not read by the briefing. Keep the latest l
 ticker you still follow: the cooldown reads it (without it the only effect is one earlier
 re-analysis, not an error). Move the rest to wherever you keep history (another folder or
 repository), by year or quarter. The destination is outside the repository, so use `mv` and tell
-git the files are gone (`git mv` cannot cross the repository boundary):
+git the files are gone (`git mv` cannot cross the repository boundary).
+
+Move only what you reviewed, never a whole glob: list the candidates, drop from the list the latest
+log of every ticker you still follow, and put what is left in `FILES`. The expansions are quoted,
+so the same lines work in bash and in zsh (an unquoted glob in `git rm --cached` makes zsh stop
+with "no matches found" once the files have moved):
 
 ```bash
-mkdir -p ../archive/logs/2026-Q3
-# Review the list first and drop from it the latest log of every ticker you still follow.
-ls logs/2026-0[7-9]-*.md
-mv logs/2026-0[7-9]-*.md ../archive/logs/2026-Q3/ && git rm --cached --quiet logs/2026-0[7-9]-*.md
+ls logs/2026-0[7-9]-*.md # review this list first
+FILES=(logs/2026-07-14-ko.md logs/2026-08-03-sap-de.md) # only the files you reviewed
+DEST=../archive/logs/2026-Q3
+mkdir -p "$DEST" && mv -- "${FILES[@]}" "$DEST/" && git rm --cached --quiet -- "${FILES[@]}"
 ```
 
 ## Archiving decision-log quarters
@@ -53,10 +70,13 @@ P&L: keep it, and the archive, private.
 
 What stays in the live file, whatever its date:
 
-- the `entry` of a position you still hold (an entry no `exit` points to through `related_id`):
-  `decision:record` looks it up in the live file to link the exit, and the evaluation pairs exits
-  with entries only through that link, so archiving it away loses that trade's R for good. The
-  commands below keep those entries and archive everything else in the quarter;
+- the `entry` of a lot you still hold, that is, one no `exit` has used up (no `exit` for it with
+  `lot_units_left` 0). A lot only partly sold is still open: its entry stays, whatever its date.
+  `decision:record` and the evaluation read the archive too (see below), so this is not needed to
+  keep them correct; it keeps the open lots where a reader of the live file only (the heartbeat,
+  the two-month rule) and you, comparing with `Lots` in `portfolio.md`, find them. The commands
+  below keep those entries and archive everything else in the quarter, including the exits of a
+  lot that is still open (they are read back from the archive);
 - anything from the last three months: the two-month rule and the attribution of trades to
   proposals (10-day window) read the live file only.
 
@@ -73,13 +93,10 @@ drop out of the evaluation without a warning.
    QUARTER=2026-Q2 FROM=2026-04-01 TO=2026-06-30
    DECISIONS_ARCHIVE_DIR=/absolute/path/to/archive # the value you set in .env
    ARCHIVE="$DECISIONS_ARCHIVE_DIR/decisions-$QUARTER.jsonl"
-   PROGRAM='. as $all
-     | [range(0; length) as $i | $all[$i] as $e
-       | select($e.date >= $from and $e.date <= $to)
-       | (($e.type == "entry")
-          and ([$all[] | select(.type == "exit" and .related_id == $e.id)] | length) == 0) as $open
-       | select($open | not) | $e] as $archivable
-     | .[] | . as $e | select(([$archivable[] | select(.id == $e.id)] | length > 0) == ($mode == "archive"))'
+   PROGRAM='(reduce (.[] | select(.type == "exit" and (.lot_units_left // 0) == 0 and .related_id != null) | .related_id)
+         as $id ({}; .[$id] = true)) as $used_up
+     | .[] | select(((.date >= $from and .date <= $to) and (.type != "entry" or $used_up[.id] == true))
+         == ($mode == "archive"))'
    ```
 
 2. Copy the quarter's lines to the archive. It refuses to run when the target already exists, so
@@ -119,8 +136,8 @@ line counts no longer add up and the live file is not replaced.
 Set `DECISIONS_ARCHIVE_DIR` to the absolute path of the directory holding the `decisions-*.jsonl`
 files (see [`.env.example`](../.env.example)). Unset or empty means no archive; a path that does
 not exist is ignored without a warning. `npm run decisions:evaluate` (the SLO report and the
-[silo](glossary.md#silo) reconstruction, which need the whole history) and
-`npm run decisions:chart` read it: they load the archived files in name order and then the live
+[silo](glossary.md#silo) reconstruction, which need the whole history), `npm run decisions:chart`
+and `npm run decision:record` (which looks up the entries of your lots) read it: they load the archived files in name order and then the live
 file. The variable must be set wherever those commands run, including your CI. A line that does
 not validate is skipped with a warning naming the file and line.
 
