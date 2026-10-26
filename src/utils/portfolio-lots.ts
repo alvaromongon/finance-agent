@@ -20,12 +20,12 @@ import {
 } from "./vault-parser.js";
 import { namesTicker, type Ticker } from "../ticker.js";
 import {
-  canCountInCents,
-  money,
+  addCounted,
+  countedInCents,
   shareExactAmount,
   shareMoney,
-  subtractMoney,
-  sumMoney,
+  subtractCounted,
+  sumCounted,
   unitsWorthHalfACent,
   ZERO,
   type Money,
@@ -144,14 +144,21 @@ export function planSale(
   const computed = taken.map((t) =>
     countedInCents((sale.price - t.lot.entryPrice) * t.unitsSold, `the result of ${lotName(t.lot)} (its Entry price)`),
   );
-  const difference = sale.pnl === undefined ? undefined : subtractMoney(sale.pnl, sumMoney(computed));
+  const difference =
+    sale.pnl === undefined
+      ? undefined
+      : subtractCounted(
+          sale.pnl,
+          sumCounted(computed, `the results of the lots of ${sale.ticker} sold together`),
+          `the difference between the pnl and the results of the lots of ${sale.ticker}`,
+        );
   const adjustments = shareOf(difference);
 
   return taken.map((t, i) => ({
     ...t,
     amount: amounts[i],
     costs: costs[i],
-    pnl: money(computed[i] + (adjustments[i] ?? 0)),
+    pnl: addCounted(computed[i], adjustments[i] ?? ZERO, `the result of ${lotName(t.lot)}`),
     entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? ZERO),
   }));
 }
@@ -159,7 +166,7 @@ export function planSale(
 function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, taken: Money): Money | undefined {
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
-  const remainder = subtractMoney(total, taken);
+  const remainder = subtractCounted(total, taken, `the entry costs of ${lotName(t.lot)} left`);
   const left = remainder > ZERO ? remainder : ZERO;
   if (t.unitsLeft === 0) return left;
   if (!(t.lot.entryUnits > 0)) {
@@ -176,14 +183,6 @@ function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, 
 
 /** How a lot is named in a refusal: its entry id and ticker. */
 const lotName = (lot: Lot): string => `lot ${lot.entryId} (${lot.ticker})`;
-
-/** `money(n)`, or a refusal in words, not a bare `RangeError`, when `n` is too large to count in cents (#87). */
-export function countedInCents(n: number, what: string): Money {
-  if (!canCountInCents(n)) {
-    throw new Error(`${what} is too large to count in cents; got: ${n} (nothing was recorded)`);
-  }
-  return money(n);
-}
 
 // ─── portfolio.md ─────────────────────────────────────────────────────────────
 

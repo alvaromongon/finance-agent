@@ -511,6 +511,20 @@ describe("decision:record (recordOwnerDecision)", () => {
   describe("an amount too large to count in cents is refused with a message (#87)", () => {
     const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 25, units: 3, stop: 20 };
     const sell = { type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, units: 1 };
+    /** Sets only the Entry price cell of the `Lots` table (the Avg price of `Positions` is also 25). */
+    const setEntryPriceCell = (portfolio: string, value: string): string => {
+      const lines = portfolio.split("\n");
+      const section = lines.findIndex((l) => l.startsWith("## USD") && l.includes("Lots"));
+      assert.ok(section >= 0, "portfolio.md has the USD Lots section");
+      const header = lines.findIndex((l, i) => i > section && l.startsWith("|"));
+      const column = lines[header].split("|").findIndex((c) => c.trim() === "Entry price");
+      assert.ok(column > 0, "the Lots table has an Entry price column");
+      const row = header + 2;
+      const cells = lines[row].split("|");
+      cells[column] = ` ${value} `;
+      lines[row] = cells.join("|");
+      return lines.join("\n");
+    };
     /** Rewrites the log and portfolio.md as the owner could have left them, then expects the refusal and no write. */
     const refused = async (edit: (log: string, portfolio: string) => [string, string], message: RegExp) => {
       const [log, portfolio] = edit(
@@ -532,10 +546,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     it("a lot whose Entry price is too large to count in cents refuses the sale, naming the lot", async () => {
       const entry = await record(entryOf);
       await refused(
-        (log, portfolio) => [
-          log.replace('"price":25,', '"price":5e306,'),
-          portfolio.replace(/\| 25(\.00)? \|/g, "| 5e306 |"),
-        ],
+        (log, portfolio) => [log.replace('"price":25,', '"price":5e306,'), setEntryPriceCell(portfolio, "5e306")],
         new RegExp(`lot ${entry.id} \\(ADBE\\).*Entry price.*too large to count in cents`),
       );
     });

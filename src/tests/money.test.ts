@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   DUST_LIMIT,
+  addCounted,
   addMoney,
+  countedInCents,
   exactAmount,
   formatMoney,
   money,
   sameCents,
   shareExactAmount,
   shareMoney,
+  subtractCounted,
   subtractMoney,
+  sumCounted,
   sumMoney,
   unitsWorthACent,
   unitsWorthHalfACent,
@@ -40,6 +44,52 @@ describe("money", () => {
     assert.equal(subtractMoney(money(0.3), money(0.1)), 0.2);
     assert.equal(sumMoney([money(0.1), money(0.2), money(0.3)]), 0.6);
     assert.equal(sumMoney([]), 0);
+  });
+});
+
+describe("countedInCents and the counted sums (#87)", () => {
+  it("is money(n) for a value that counts in cents", () => {
+    assert.equal(countedInCents(1.234, "the thing"), 1.23);
+  });
+
+  it("refuses a value too large to count in cents with an Error naming it, not a RangeError", () => {
+    for (const n of [5e306, Infinity, -Infinity]) {
+      assert.throws(
+        () => countedInCents(n, "the thing"),
+        (err: Error) => {
+          assert.equal(err.constructor, Error);
+          assert.match(err.message, /^the thing is too large to count in cents; got: .*\(nothing was recorded\)$/);
+          return true;
+        },
+      );
+    }
+  });
+
+  it("calls NaN not a number, not too large", () => {
+    assert.throws(
+      () => countedInCents(NaN, "the thing"),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /the thing is not a number; got: NaN/);
+        assert.doesNotMatch(err.message, /too large/);
+        return true;
+      },
+    );
+  });
+
+  it("adds, subtracts and sums like the plain helpers when the result counts", () => {
+    assert.equal(addCounted(money(0.1), money(0.2), "x"), 0.3);
+    assert.equal(subtractCounted(money(0.3), money(0.1), "x"), 0.2);
+    assert.equal(sumCounted([money(0.1), money(0.2), money(0.3)], "x"), 0.6);
+  });
+
+  it("refuses a total too large to count with the named message", () => {
+    const big = money(1e306);
+    const refusal = (err: Error) =>
+      err.constructor === Error && err.message.startsWith("x is too large to count in cents");
+    assert.throws(() => addCounted(big, money(1e306), "x"), refusal);
+    assert.throws(() => subtractCounted(big, money(-1e306), "x"), refusal);
+    assert.throws(() => sumCounted([big, big], "x"), refusal);
   });
 });
 

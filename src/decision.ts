@@ -43,8 +43,8 @@ import {
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { portfolioWhere } from "./utils/vault-parser.js";
-import { applyLotChange, countedInCents, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
-import { exactAmount, ZERO, type Money } from "./money.js";
+import { applyLotChange, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
+import { addCounted, exactAmount, ZERO, type Money } from "./money.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 import { tickerFileStem, type Ticker } from "./ticker.js";
@@ -393,10 +393,13 @@ function entryCostsTaken(history: readonly Decision[]): Map<string, Money> {
   const taken = new Map<string, Money>();
   for (const d of history) {
     if (d.type === "exit" && d.related_id && d.entry_costs != null) {
-      const total = (taken.get(d.related_id) ?? ZERO) + d.entry_costs;
       taken.set(
         d.related_id,
-        countedInCents(total, `The entry_costs the exits of entry ${d.related_id} took together`),
+        addCounted(
+          taken.get(d.related_id) ?? ZERO,
+          d.entry_costs,
+          `The entry_costs the exits of entry ${d.related_id} took together`,
+        ),
       );
     }
   }

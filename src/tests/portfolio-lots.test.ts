@@ -204,6 +204,18 @@ describe("planSale: an amount too large to count in cents, or entry units of 0, 
     );
   });
 
+  it("a sale over several lots whose results are too large together is refused with a message, even with pnl 0", () => {
+    const lots = [lot("big-a", 1, { entryPrice: 1.5e306 }), lot("big-b", 1, { entryPrice: 1.5e306 })];
+    assert.throws(
+      () => planSale(lots, sale(2, { price: 10, pnl: money(0) }), new Map()),
+      (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, /TCK.*too large to count in cents/);
+        return true;
+      },
+    );
+  });
+
   it("a partial sale of a lot whose Entry units are 0 is refused, naming the lot and its entry units", () => {
     assert.throws(
       () => planSale([lot("zero-1", 10, { entryUnits: 0, entryCosts: money(5) })], sale(4), new Map()),
