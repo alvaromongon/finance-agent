@@ -1,0 +1,4 @@
+{"id":"20260901-eur-deposit-example","date":"2026-09-01","ticker":null,"currency":"EUR","origin":"propietario","type":"deposit","amount":1560,"source":"portfolio-sync","rules_version":"1.0"}
+{"id":"20260901-usd-deposit-example","date":"2026-09-01","ticker":null,"currency":"USD","origin":"propietario","type":"deposit","amount":1210,"source":"portfolio-sync","rules_version":"1.0"}
+{"id":"20260915-sapde-entry-example","date":"2026-09-15","ticker":"SAP.DE","currency":"EUR","origin":"sistema","type":"entry","price":180,"amount":360,"stop_initial":168,"source":"portfolio-sync","rules_version":"1.0"}
+{"id":"20260916-ko-entry-example","date":"2026-09-16","ticker":"KO","currency":"USD","origin":"sistema","type":"entry","price":62,"amount":310,"stop_initial":58,"source":"portfolio-sync","rules_version":"1.0"}

@@ -27,7 +27,7 @@ ticket already computed. **It never places orders**: you decide and execute at y
 
 - **SLO**: the quality of its proposals against what actually happened, executed or not, with confidence bounds ([SLO](#slo)). Operational cost: at most one Claude call per escalated signal.
 - **Terms** such as R, plan R, silo or setup are defined in the [glossary](docs/glossary.md).
-- **Quality**: 783 tests, line coverage ≥ 80% enforced in CI (96.8% measured), type-checked lint, CodeQL, Dependabot, dependency audit, and a pre-push hook that runs the same checks ([Quality gates](#quality-gates)).
+- **Quality**: an offline unit and component test suite (`npm test`), line coverage ≥ 80% enforced in CI (97.4% measured), type-checked lint, CodeQL, Dependabot, dependency audit, and a pre-push hook that runs the same checks ([Quality gates](#quality-gates)).
 
 ## Requirements
 
@@ -269,13 +269,15 @@ flowchart LR
   L --> D["decisions:evaluate (SLO report)"]
 ```
 
+How each flow works, step by step, with the rules and parameters in force: [docs/flows.md](docs/flows.md).
+
 The main decisions, each in its ADR ([index](docs/decisions/README.md)):
 
 - **Escalate to Claude only after deterministic filters** ([0002](docs/decisions/0002-escalate-to-claude-only-after-deterministic-filters.md)). A quiet day costs no tokens. The model reads news and theses; the code does the arithmetic.
-- **Deterministic where money is involved** ([0009](docs/decisions/0009-swing-framework-risk-sizing-and-measurement.md), [0010](docs/decisions/0010-deterministic-entry-eligibility-filter.md), [0011](docs/decisions/0011-stops-sized-in-atr.md)). Stop, size and R:R come from the engine: 1% risk per trade, stops in ATR, 2:1 minimum.
+- **Deterministic where money is involved** ([0009](docs/decisions/0009-swing-framework-risk-sizing-and-measurement.md); [eligibility](docs/flows.md#entry-eligibility) and [stops](docs/flows.md#stops-in-atr) in the flows). Stop, size and R:R come from the engine: 1% risk per trade, stops in ATR, 2:1 minimum.
 - **State in Markdown, decisions in JSON Lines** ([0003](docs/decisions/0003-state-as-versioned-markdown.md), [0006](docs/decisions/0006-single-append-only-decision-log.md)). Readable and editable by a person, mergeable by git, and every decision measurable.
 - **Outbox pattern** ([0005](docs/decisions/0005-email-outbox-and-relay.md)). Email from environments that can't open SMTP, never lost.
-- **Setups as the single way in** ([0013](docs/decisions/0013-entry-setups.md)), fed by a ranked screening with a random exploration control ([0012](docs/decisions/0012-screening-funnel.md)).
+- **Setups as the single way in** ([entry setups](docs/flows.md#entry-setups)), fed by a ranked screening with a random exploration control ([screening funnel](docs/flows.md#the-screening-funnel)).
 
 ## SLO
 

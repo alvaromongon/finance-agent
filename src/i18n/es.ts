@@ -85,6 +85,9 @@ export const es: Messages = {
     subject: (currency, sections) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
       breaches: "stop cruzado",
+      lots: "problema con los lotes",
+      tickers: "ticker que no se lee",
+      unreadableCells: "celda que no se puede contar",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -107,6 +110,37 @@ export const es: Messages = {
       `(guía: \`routines/portfolio-sync.md\`) para que el resto del sistema deje`,
       `de razonar sobre una posición que ya no existe.`,
     ],
+    lotsIntro: [
+      `## \`portfolio.md\`: problema con los lotes`,
+      ``,
+      `La tabla \`Lots\` no se puede leer, falta, o no concuerda con \`Positions\` o con el registro de decisiones. El`,
+      `heartbeat sigue vigilando tus posiciones (stops, \`Volume\`, \`Avg price\`), pero \`decision:record\` y la`,
+      `evaluación rechazan el archivo hasta que se corrija:`,
+      ``,
+    ],
+    lotsOutro: [
+      ``,
+      `Corrige \`Lots\` a mano: que exista y se lea, que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
+      `\`Entry id\` sea una entrada del registro (\`logs/decisions.jsonl\`; ver \`docs/input-format.md\`).`,
+    ],
+    tickersIntro: [
+      `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
+      ``,
+      `Estas filas tienen un ticker fuera del patrón (letras, dígitos y \`. - ^ =\`) y se omiten. El heartbeat sigue`,
+      `vigilando todo lo demás, pero no vigila estas filas hasta que se corrijan; \`decision:record\` y la`,
+      `evaluación rechazan un ticker de \`Positions\` o de la watchlist que no se lee:`,
+      ``,
+    ],
+    tickersOutro: [``, `Corrige el ticker a mano (ver \`docs/input-format.md\`).`],
+    unreadableCellsIntro: [
+      `## \`portfolio.md\`: celda que no se puede contar`,
+      ``,
+      `Estas celdas tienen un importe demasiado grande para contarlo en céntimos. Se leen como no legibles (un P/L`,
+      `como 0, el efectivo disponible como 0, el efectivo total como ausente) y la fila se sigue vigilando. Leer el`,
+      `efectivo disponible o total como 0 o ausente solo puede recortar o bloquear una compra, nunca agrandarla; el P/L es solo informativo:`,
+      ``,
+    ],
+    unreadableCellsOutro: [``, `Corrige la celda a mano (ver \`docs/input-format.md\`).`],
     tightIntro: (minAtr) => [
       `## Stops demasiado ceñidos`,
       ``,
@@ -211,7 +245,26 @@ export const es: Messages = {
       "> [!warning] Muestra pequeña",
       `> Con menos de ${min} operaciones, la esperanza describe, no decide.`,
     ],
+    decisionsMissing: {
+      title: "> [!warning] Faltan decisiones del registro",
+      line: (before) => `faltan decisiones anteriores al ${before}: ¿está definido \`DECISIONS_ARCHIVE_DIR\`?`,
+    },
     reconstructionMismatch: "> [!warning] La reconstrucción de los silos no cuadra",
+    unmeasured: {
+      title: "> [!warning] Salidas y lotes sin medir",
+      exitsWithoutSnapshot: (n) =>
+        `${n} ${n === 1 ? "salida" : "salidas"} sin instantánea del lote, fuera de las operaciones cerradas.`,
+      oversoldLot: (ticker, lotId) =>
+        `${ticker}, lote ${lotId}: sus ventas suman más unidades que la compra (datos incoherentes); no se mide.`,
+      skippedExit: (ticker, date, lotId) => `${ticker}, ${date}${lotId ? `, lote ${lotId}` : ""}`,
+      moreSkippedExits: (n) => `… y ${n} más.`,
+      inconsistentLot: (ticker, lotId, reason) =>
+        `${ticker}, lote ${lotId}: ${
+          reason === "units_left"
+            ? "las unidades que quedan tras cada salida no siguen lo que vendieron las salidas"
+            : "sus salidas no coinciden en los datos de la compra"
+        } (datos incoherentes); no se mide.`,
+    },
     stopAt: (atr, horizon) => `${atr} ATR en ${horizon}`,
     howToRead: (o) => [
       "## Cómo leerlo",

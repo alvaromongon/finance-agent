@@ -2,11 +2,20 @@
 import "dotenv/config";
 import { DEFAULT_MAX_SESSION_AGE_HOURS } from "./utils/market-session.js";
 import { MIN_STOP_ATR } from "./utils/atr-stop.js";
+import { parseTicker, type Ticker } from "./ticker.js";
 
 function required(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required environment variable: ${name}`);
   return v;
+}
+
+function referenceTicker(name: string): Ticker {
+  try {
+    return parseTicker(required(name));
+  } catch (err) {
+    throw new Error(`${name}: ${(err as Error).message}`, { cause: err });
+  }
 }
 
 function optional(name: string, fallback: string): string {
@@ -235,11 +244,11 @@ export const config = {
   // environment and has no default. Read on use, so a command
   // that never touches a benchmark does not need it.
   reference: {
-    get EUR(): string {
-      return required("REFERENCE_TICKER_EUR");
+    get EUR(): Ticker {
+      return referenceTicker("REFERENCE_TICKER_EUR");
     },
-    get USD(): string {
-      return required("REFERENCE_TICKER_USD");
+    get USD(): Ticker {
+      return referenceTicker("REFERENCE_TICKER_USD");
     },
   },
   paths: {

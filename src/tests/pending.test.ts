@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -31,7 +32,7 @@ watchlist:
 `;
 
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-07-10"
 ---
 
@@ -46,7 +47,8 @@ last_manual_sync: "2026-07-10"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
-`;
+
+${lotsSection("USD")}`;
 
 const STRATEGY_MD = `---
 title: Estrategia Base
@@ -227,6 +229,29 @@ describe("pending.ts", () => {
       // The pending file is deleted whether the ticket is valid or blocked.
       await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
     });
+
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
+      it(`resolvePending resolves a signal with ${label}: recorded, alert sent, file deleted`, async () => {
+        const portfolioPath = join(vaultDir, "portfolio.md");
+        await writeFile(portfolioPath, broken, "utf8");
+        await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
+        const log = mock.method(console, "log", () => {});
+        const warn = mock.method(console, "warn", () => {});
+        try {
+          await resolvePending(PENDING_FILENAME, validRecommendation());
+        } finally {
+          log.mock.restore();
+          warn.mock.restore();
+          await writeFile(portfolioPath, PORTFOLIO_MD, "utf8");
+        }
+
+        const decision = await lastDecision();
+        assert.equal(decision.type, "buy_proposal");
+        const smtpWarned = warn.mock.calls.some((c) => String(c.arguments[0]).includes("SMTP_USER/SMTP_PASS"));
+        assert.ok(smtpWarned, "the alert was attempted");
+        await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
+      });
+    }
 
     it("resolvePending with R:R below the minimum records blocked:true and sends no alert", async () => {
       await writeFile(
@@ -554,7 +579,14 @@ describe("pending.ts", () => {
         "| — | — | — | — | — | — |",
         "| ORPHAN | 4 | 100.00 | 105.00 | 20.00 | 95.00 |",
       );
-      await writeFile(join(vaultDir, "portfolio.md"), orphanPortfolio, "utf8");
+      await writeFile(
+        join(vaultDir, "portfolio.md"),
+        orphanPortfolio.replace(
+          lotsSection("USD"),
+          lotsSection("USD", [{ ticker: "ORPHAN", units: 4, price: 100, stop: 95 }]),
+        ),
+        "utf8",
+      );
 
       const rec = { ...validRecommendation(), ticker: "ORPHAN", action: "HOLD" };
 

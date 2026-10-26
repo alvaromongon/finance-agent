@@ -6,6 +6,7 @@ import { config } from "../config.js";
 import { detectSetups } from "./setups/index.js";
 import type { ExclusionReason, RankableTicker, UniverseRanking } from "../screening-ranking.js";
 import type { Currency, WatchlistEntry } from "../types.js";
+import type { Ticker } from "../ticker.js";
 
 export type WatchlistExitReason = "out_of_universe" | "filter_zero" | "out_of_top" | "no_setup";
 
@@ -14,7 +15,7 @@ export type WatchlistExitReason = "out_of_universe" | "filter_zero" | "out_of_to
  * and summarize renders it, so the text is built in the language of the render
  *. `describeExit` in screening-helpers.ts turns it into a sentence.
  */
-export type WatchlistExit = { ticker: string } & (
+export type WatchlistExit = { ticker: Ticker } & (
   | { reason: "out_of_universe" }
   | { reason: "filter_zero"; exclusion: ExclusionReason }
   | { reason: "out_of_top"; rank: number; of: number; currency: Currency }

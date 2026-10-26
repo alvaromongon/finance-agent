@@ -12,7 +12,9 @@ import { describeRegime } from "./utils/market-regime.js";
 import { describeAdjustStopPreview, describeBuyPreview } from "./utils/sizing.js";
 import { readTextFile } from "./utils/fs-text.js";
 import { readRoutinePrompt } from "./vault-io.js";
+import { formatMoney } from "./money.js";
 import type { Recommendation, Signal, TriggerKind } from "./types.js";
+import { checkTicker, type Ticker } from "./ticker.js";
 
 export async function analyze(signal: Signal, newsHeadlines: string[] = []): Promise<Recommendation> {
   // maxRetries: the SDK retries transient network errors with backoff.
@@ -131,7 +133,7 @@ export function buildUserPrompt(signal: Signal, news: string[]): string {
       ? `Setup: ${en.setup.patterns[signal.setup.pattern]} confirmed at the close at ${signal.setup.level}.` +
         ` Pattern target: ${signal.setup.target} — it is the ticket.target of a BUY. The engine already checked eligibility and R:R.`
       : null,
-    `Available funds: ${signal.cash.toFixed(2)} ${cur} · silo value: ${signal.siloValue.toFixed(2)} ${cur}` +
+    `Available funds: ${formatMoney(signal.cash)} ${cur} · silo value: ${formatMoney(signal.siloValue)} ${cur}` +
       ` (risk per trade: ${config.framework.riskPerTradePct}%)`,
     ...engineLines,
     signal.position
@@ -207,6 +209,15 @@ export function validateRecommendation(raw: unknown): Recommendation {
     return val as string;
   };
 
+  const tickerOf = (val: unknown, field: string): Ticker => {
+    const checked = checkTicker(val);
+    if ("problem" in checked) {
+      errors.push(`${field}: ${checked.problem}`);
+      return val as Ticker;
+    }
+    return checked.ticker;
+  };
+
   let ticket: Record<string, unknown> = {};
   if (isObj(raw.ticket)) ticket = raw.ticket;
   else errors.push("ticket must be an object");
@@ -235,7 +246,7 @@ export function validateRecommendation(raw: unknown): Recommendation {
   if (raw.conviction !== undefined) errors.push("conviction does not go in the recommendation: the engine computes it");
 
   const rec: Recommendation = {
-    ticker: str(raw.ticker, "ticker"),
+    ticker: tickerOf(raw.ticker, "ticker"),
     action: oneOf(raw.action, ACTIONS, "action"),
     // The reasoner provides a BUY target and a SELL amount. The
     // engine computes stop and buy amount; if the JSON carries them (previous

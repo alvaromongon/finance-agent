@@ -14,9 +14,10 @@
 //   of waiting for the Monday Briefing. Without it, a position can trade below
 //   its stop for days without anyone looking.
 import type { Currency, Position } from "../types.js";
+import type { Ticker } from "../ticker.js";
 
 export interface StopBreach {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   /** Market price crossing the stop. */
   price: number;

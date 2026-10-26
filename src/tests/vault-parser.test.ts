@@ -11,12 +11,20 @@ import {
   isBlockedLog,
   assertSchemaVersion,
   assertPortfolioSections,
+  parseLots,
+  parseLotRows,
+  splitTableRow,
+  LotsTableError,
 } from "../utils/vault-parser.js";
 
 // ─── Test Markdown ────────────────────────────────────────────────────────────
 
+const LOTS_HEADER =
+  "| Ticker | Entry id | Date | Units | Entry units | Entry price | Initial stop | Entry costs | Origin | Rules version | Rules violations |\n" +
+  "|---|---|---|---|---|---|---|---|---|---|---|";
+
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: 2026-06-27
 ---
 
@@ -36,6 +44,13 @@ last_manual_sync: 2026-06-27
 | IBE.MC | 10 | 12,50 | 13,00 | 5,00 | — |
 | — | — | — | — | — | — |
 
+## EUR — Lots
+
+${LOTS_HEADER}
+| DEF.MI | def-1 | 2026-05-04 | 1 | 1 | 46,80 | 41,50 | 1,50 | sistema | 1.0 | — |
+| IBE.MC | ibe-1 | 2026-06-01 | 4 | 6 | 12,50 | — | — | propietario | 1.0 | no_stop, overrode_block |
+| IBE.MC | ibe-2 | 2026-06-15 | 6 | 6 | 12,50 | 11,00 | — | sistema | 1.1 | — |
+
 ## USD — Cash
 
 | Item | Value |
@@ -47,6 +62,11 @@ last_manual_sync: 2026-06-27
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | XOM | 5 | 130.00 | 138.00 | 40.00 | 120.00 |
+
+## USD — Lots
+
+${LOTS_HEADER}
+| XOM | xom-1 | 2026-04-01 | 5 | 5 | 130.00 | 120.00 | 2.00 | sistema | 1.0 | — |
 `;
 
 const WATCHLIST_MD = `# Watchlist
@@ -202,6 +222,84 @@ describe("parseTotalCash", () => {
   });
 });
 
+// ─── Money cells too large to count in cents (#86) ───────────────────────────
+
+describe("a money cell that cannot be counted in cents (#86): read as unreadable and named", () => {
+  for (const huge of ["1e307", "-1e307"]) {
+    const cash = (rows: string) => `## USD — Cash\n\n| Item | Value |\n|---|---|\n${rows}\n`;
+    const positions = `## USD — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n| CAT | 1 | 218 | 210 | ${huge} | 213 |\n`;
+
+    it(`Available cash of ${huge}: read as 0, named`, () => {
+      const unreadable: string[] = [];
+      assert.equal(
+        parseCash(cash(`| Available cash | ${huge} |`), "USD", (m) => unreadable.push(m)),
+        0,
+      );
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], /USD — Cash.*Available cash.*too large to count in cents/);
+    });
+
+    it(`Total cash of ${huge}: read as absent, named`, () => {
+      const unreadable: string[] = [];
+      const md = cash(`| Available cash | 10 |\n| Total cash | ${huge} |`);
+      assert.equal(
+        parseTotalCash(md, "USD", (m) => unreadable.push(m)),
+        null,
+      );
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], /USD — Cash.*Total cash.*too large to count in cents/);
+    });
+
+    it(`a Positions P/L of ${huge}: the row is kept with P/L 0, named`, () => {
+      const unreadable: string[] = [];
+      const skipped: string[] = [];
+      const [cat, ...rest] = parsePositions(
+        positions,
+        "USD",
+        (m) => skipped.push(m),
+        (m) => unreadable.push(m),
+      );
+      assert.equal(rest.length, 0);
+      assert.equal(cat.ticker, "CAT");
+      assert.equal(cat.pl, 0);
+      assert.deepEqual(skipped, []);
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], /USD — Positions.*CAT.*P\/L.*too large to count in cents/);
+    });
+  }
+
+  for (const [row, cash, total] of [
+    ["Available cash", 0, 10],
+    ["Total cash", 5, null],
+  ] as const) {
+    it(`parsePortfolioText with a ${row} of 1e307: Available cash ${cash}, Total cash ${total ?? "absent"}, named`, async () => {
+      const { parsePortfolioText } = await import("../vault-io.js");
+      const other = row === "Available cash" ? "| Total cash | 10 |" : "| Available cash | 5 |";
+      const md = `---\nschema_version: 2\nlast_manual_sync: 2099-01-01\n---\n\n## USD — Cash\n\n| Item | Value |\n|---|---|\n| ${row} | 1e307 |\n${other}\n\n## USD — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n\n## USD — Lots\n\n${LOTS_HEADER}\n`;
+      const unreadable: string[] = [];
+      const portfolio = parsePortfolioText(md, "USD", { onUnreadableCell: (m) => unreadable.push(m) });
+      assert.equal(portfolio.cash, cash);
+      assert.equal(portfolio.totalCash, total ?? undefined);
+      assert.equal(unreadable.length, 1);
+      assert.match(unreadable[0], new RegExp(`Cash: ${row}.*too large to count in cents`));
+    });
+  }
+
+  it("a cell that is not a number (TBD) or that reads is not reported", () => {
+    const unreadable: string[] = [];
+    const md = `## USD — Cash\n\n| Item | Value |\n|---|---|\n| Available cash | TBD |\n| Total cash | 12.50 |\n`;
+    assert.equal(
+      parseCash(md, "USD", (m) => unreadable.push(m)),
+      0,
+    );
+    assert.equal(
+      parseTotalCash(md, "USD", (m) => unreadable.push(m)),
+      12.5,
+    );
+    assert.deepEqual(unreadable, []);
+  });
+});
+
 // ─── isBlockedLog ─────────────────────────────────────────────────────────────
 
 describe("isBlockedLog", () => {
@@ -295,7 +393,7 @@ describe("assertPortfolioSections", () => {
   });
 
   it("accepts Available cash without a number (TBD): it is 0, but the row exists", () => {
-    const md = `## EUR — Cash\n\n| Item | Value |\n|---|---|\n| Available cash | TBD |\n\n## EUR — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n`;
+    const md = `## EUR — Cash\n\n| Item | Value |\n|---|---|\n| Available cash | TBD |\n\n## EUR — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n\n## EUR — Lots\n`;
     assert.doesNotThrow(() => {
       assertPortfolioSections(md, "EUR");
     });
@@ -315,6 +413,20 @@ describe("assertPortfolioSections", () => {
     }, /portfolio\.md.*## USD — Cash/);
   });
 
+  it("accepts a silo whose Lots section is empty", () => {
+    const md = PORTFOLIO_MD.replace(/^\| xom-1 .*\n/m, "");
+    assert.doesNotThrow(() => {
+      assertPortfolioSections(md, "USD");
+    });
+  });
+
+  it("leaves the Lots section to the Lots reader: a silo without it passes here", () => {
+    const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes");
+    assert.doesNotThrow(() => {
+      assertPortfolioSections(md, "USD");
+    });
+  });
+
   it("rejects a Cash section without the Available cash row", () => {
     const md = PORTFOLIO_MD.replace("| Available cash | 3,24 € |", "| Saldo disponible | 3,24 € |");
     assert.throws(() => {
@@ -326,10 +438,18 @@ describe("assertPortfolioSections", () => {
 // ─── assertSchemaVersion ──────────────────────────────────────────────────────
 
 describe("assertSchemaVersion", () => {
-  it("accepts schema_version: 1", () => {
+  it("accepts schema_version: 2 in portfolio.md", () => {
     assert.doesNotThrow(() => {
       assertSchemaVersion(PORTFOLIO_MD, "portfolio.md");
     });
+  });
+
+  it("accepts schema_version: 1 in every other vault file", () => {
+    for (const file of ["watchlist.md", "screening-log.md", "screening-universe.md", "tesis/tesis-x.md"]) {
+      assert.doesNotThrow(() => {
+        assertSchemaVersion("---\nschema_version: 1\n---\n", file);
+      }, file);
+    }
   });
 
   it("rejects a file without schema_version, naming the file", () => {
@@ -341,9 +461,234 @@ describe("assertSchemaVersion", () => {
     }, /watchlist\.md.*schema_version/);
   });
 
-  it("rejects an unknown version", () => {
+  it("rejects a v1 portfolio.md, naming the file and the version it expects", () => {
     assert.throws(() => {
-      assertSchemaVersion("---\nschema_version: 2\n---\n", "portfolio.md");
-    }, /portfolio\.md.*schema_version 2.*1/);
+      assertSchemaVersion("---\nschema_version: 1\n---\n", "portfolio.md");
+    }, /portfolio\.md.*schema_version 1.*version 2/);
+  });
+
+  it("rejects a v2 file other than portfolio.md: the version is per file", () => {
+    for (const file of ["watchlist.md", "screening-log.md", "tesis/tesis-x.md"]) {
+      assert.throws(() => {
+        assertSchemaVersion("---\nschema_version: 2\n---\n", file);
+      }, /schema_version 2.*version 1/);
+    }
+  });
+
+  it("a portfolio.md without schema_version says it expects version 2", () => {
+    assert.throws(() => {
+      assertSchemaVersion("---\nid: x\n---\n", "portfolio.md");
+    }, /portfolio\.md.*schema_version missing.*version 2/);
+  });
+});
+
+// ─── parseLots ────────────────────────────────────────────────────────────────
+
+describe("every message about one silo carries the same prefix (#68)", () => {
+  const messageOf = (run: () => unknown): string => {
+    try {
+      run();
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error("did not throw");
+  };
+
+  it("the missing Cash, Positions and Lots sections and the missing Available cash row share portfolioWhere", () => {
+    const messages = [
+      messageOf(() => assertPortfolioSections(PORTFOLIO_MD.replace("## USD — Cash", "## USD — Caja"), "USD")),
+      messageOf(() =>
+        assertPortfolioSections(PORTFOLIO_MD.replace("## USD — Positions", "## USD — Posiciones"), "USD"),
+      ),
+      messageOf(() => assertPortfolioSections(PORTFOLIO_MD.replaceAll("Available cash", "Cash libre"), "USD")),
+      messageOf(() => parseLots(PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes"), "USD")),
+    ];
+    for (const message of messages) assert.match(message, /^portfolio\.md \(USD\): /);
+  });
+});
+
+describe("parseLots", () => {
+  it("a silo without a Lots section throws a LotsTableError naming file, silo and section", () => {
+    const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes");
+    assert.throws(
+      () => parseLots(md, "USD"),
+      (err: unknown) => {
+        assert.ok(err instanceof LotsTableError);
+        assert.match(
+          err.message,
+          /^portfolio\.md \(USD\): missing section "## USD — Lots" \(see docs\/input-format\.md\)$/,
+        );
+        return true;
+      },
+    );
+  });
+
+  it("a header that does not read names file and silo, the same prefix as the lots check", () => {
+    const md = PORTFOLIO_MD.replace("| Entry units |", "| Entry unitz |");
+    assert.throws(
+      () => parseLots(md, "EUR"),
+      /^LotsTableError: portfolio\.md \(EUR\): ## EUR — Lots: columns Entry units missing/,
+    );
+  });
+
+  it("a v2 file written before the Ticker column existed says to add it, first", () => {
+    const md = PORTFOLIO_MD.replaceAll("| Ticker | Entry id |", "| Entry id |");
+    assert.throws(
+      () => parseLots(md, "USD"),
+      /columns Ticker missing.*add a "Ticker" column, first, to "## USD — Lots"/,
+    );
+  });
+
+  it("a header that does not read throws the parser's own LotsTableError", () => {
+    const md = PORTFOLIO_MD.replace("| Entry units |", "| Entry unitz |");
+    assert.throws(() => parseLots(md, "EUR"), LotsTableError);
+  });
+
+  it("parses the lots of a silo into typed fields", () => {
+    assert.deepEqual(parseLots(PORTFOLIO_MD, "EUR")[0], {
+      ticker: "DEF.MI",
+      entryId: "def-1",
+      date: "2026-05-04",
+      units: 1,
+      entryUnits: 1,
+      entryPrice: 46.8,
+      initialStop: 41.5,
+      entryCosts: 1.5,
+      origin: "sistema",
+      rulesVersion: "1.0",
+      rulesViolations: [],
+    });
+  });
+
+  it("reads — as no stop, no costs and no violations, and a comma list as several violations", () => {
+    const lot = parseLots(PORTFOLIO_MD, "EUR")[1];
+    assert.equal(lot.initialStop, null);
+    assert.equal(lot.entryCosts, null);
+    assert.deepEqual(lot.rulesViolations, ["no_stop", "overrode_block"]);
+  });
+
+  it("reads only the lots of the asked silo", () => {
+    assert.deepEqual(
+      parseLots(PORTFOLIO_MD, "EUR").map((l) => l.entryId),
+      ["def-1", "ibe-1", "ibe-2"],
+    );
+    assert.deepEqual(
+      parseLots(PORTFOLIO_MD, "USD").map((l) => l.entryId),
+      ["xom-1"],
+    );
+  });
+
+  it("reads the columns by their header, in any order", () => {
+    const swapped = PORTFOLIO_MD.replaceAll(
+      "| Ticker | Entry id | Date | Units | Entry units |",
+      "| Date | Entry units | Units | Entry id | Ticker |",
+    ).replace("| XOM | xom-1 | 2026-04-01 | 5 | 5 |", "| 2026-04-01 | 8 | 5 | xom-1 | XOM |");
+    const lot = parseLots(swapped, "USD").find((l) => l.entryId === "xom-1");
+    assert.deepEqual([lot?.units, lot?.entryUnits], [5, 8]);
+  });
+
+  it("skips placeholder rows and rows whose Units is not a number", () => {
+    const md = PORTFOLIO_MD.replace(
+      "| XOM | xom-1 |",
+      "| — | — | — | — | — | — | — | — | — | — | — |\n| XOM | xom-0 | 2026-03-01 | TBD | 5 | 1 | 1 | — | sistema | 1.0 | — |\n| XOM | xom-1 |",
+    );
+    assert.deepEqual(
+      parseLots(md, "USD").map((l) => l.entryId),
+      ["xom-1"],
+    );
+  });
+
+  it("reads en dash headings, CRLF and `:---:` separator rows as the rest of the vault does", () => {
+    const md = PORTFOLIO_MD.replace("## USD — Lots", "## USD – Lots").replace(
+      /\|---\|---\|---\|---\|---\|---\|---\|---\|---\|---\|---\|/g,
+      "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
+    );
+    assert.equal(parseLots(md.replace(/\n/g, "\r\n"), "USD").length, 1);
+  });
+
+  it("throws, naming the section and the column, if a required column is missing", () => {
+    const md = PORTFOLIO_MD.replaceAll("| Initial stop |", "| Stop |");
+    assert.throws(() => parseLots(md, "USD"), /## USD — Lots.*Initial stop/);
+  });
+
+  it("throws, naming the section and the column, if the Ticker column is missing (#52)", () => {
+    const md = PORTFOLIO_MD.replaceAll("| Ticker | Entry id |", "| Entry id |").replace("| XOM | xom-1 |", "| xom-1 |");
+    assert.throws(() => parseLots(md, "USD"), /## USD — Lots.*Ticker/);
+  });
+
+  it("skips a row with no ticker, so it does not count towards any Volume", () => {
+    const md = PORTFOLIO_MD.replace("| XOM | xom-1 |", "| — | xom-1 |");
+    assert.deepEqual(parseLots(md, "USD"), []);
+  });
+
+  it("returns an empty array when the section has no table", () => {
+    assert.deepEqual(parseLots("## USD — Lots\n\nnothing\n", "USD"), []);
+  });
+});
+
+// ─── parseLotRows: what the Lots reader skips, and why (#55) ───────────────────
+
+describe("parseLotRows", () => {
+  const LOT = ["XOM", "xom-1", "2026-04-01", "5", "5", "100", "90", "—", "sistema", "1.0", "—"];
+  const mdWith = (...rows: string[][]) =>
+    `## USD — Lots\n\n${LOTS_HEADER}\n${rows.map((r) => `| ${r.join(" | ")} |`).join("\n")}\n`;
+  const edited = (at: number, value: string) => LOT.map((c, i) => (i === at ? value : c));
+
+  it("reads the lots and reports nothing for a clean table, placeholder rows and a repeated header", () => {
+    const md = mdWith(
+      LOT,
+      LOT.map(() => "—"),
+      ["Ticker", "Entry id", ...LOT.slice(2).map(() => "")],
+    );
+    const { lots, skipped } = parseLotRows(md, "USD");
+    assert.equal(lots.length, 1);
+    assert.deepEqual(skipped, []);
+  });
+
+  for (const [name, at, value, reason] of [
+    ["no entry id", 1, "—", /no Entry id/],
+    ["no ticker", 0, "—", /no Ticker/],
+    ["non-numeric units", 3, "TBD", /Units "TBD" is not a number/],
+    ["non-numeric entry units", 4, "x", /Entry units "x" is not a number/],
+    ["non-numeric entry price", 5, "", /Entry price "" is not a number/],
+    ["an unknown origin", 8, "otro", /Origin "otro" is not sistema or propietario/],
+    ["a non-ISO date", 2, "01/04/2026", /Date "01\/04\/2026" is not YYYY-MM-DD/],
+    ["an empty rules version", 9, "—", /no Rules version/],
+  ] as const) {
+    it(`reports a row with ${name}, naming the row, its ticker and entry id, and the reason`, () => {
+      const { lots, skipped } = parseLotRows(mdWith(LOT, edited(at, value)), "USD");
+      assert.equal(lots.length, 1, "the other lot is still read");
+      assert.equal(skipped.length, 1);
+      assert.match(skipped[0].message, /^Lots row 2/);
+      assert.match(skipped[0].message, reason);
+    });
+  }
+
+  it("names the ticker and entry id of the skipped row when it has them", () => {
+    const { skipped } = parseLotRows(mdWith(edited(2, "01/04/2026")), "USD");
+    assert.match(skipped[0].message, /Lots row 1 \(XOM, xom-1\): .*skipped/);
+  });
+
+  it("Origin matches exactly, as the log stores it; the message points to the right case", () => {
+    const { lots, skipped } = parseLotRows(mdWith(edited(8, "Sistema")), "USD");
+    assert.deepEqual(lots, []);
+    assert.match(skipped[0].message, /Origin "Sistema" is not sistema or propietario \(write it "sistema"\)/);
+  });
+
+  it("the headers stay case-insensitive", () => {
+    const md = mdWith(LOT).replace("| Origin |", "| ORIGIN |");
+    assert.equal(parseLotRows(md, "USD").lots.length, 1);
+  });
+
+  it("parseLots reads the same lots", () => {
+    const md = mdWith(LOT, edited(8, "Sistema"));
+    assert.deepEqual(parseLots(md, "USD"), parseLotRows(md, "USD").lots);
+  });
+});
+
+describe("splitTableRow", () => {
+  it("splits a row into trimmed cells, with or without the closing bar", () => {
+    assert.deepEqual(splitTableRow("| a | b  |  c |"), ["a", "b", "c"]);
+    assert.deepEqual(splitTableRow("| a | b"), ["a", "b"]);
   });
 });

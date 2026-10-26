@@ -1,13 +1,15 @@
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { validateRecommendation, buildUserPrompt, shouldUseWebSearch } from "../claude-analyst.js";
 import type { Signal, WatchlistEntry } from "../types.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const baseEntry = (): WatchlistEntry => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   name: "Exxon",
   market: "NYSE",
   currency: "USD",
@@ -16,7 +18,7 @@ const baseEntry = (): WatchlistEntry => ({
 });
 
 const baseSignal = (overrides: Partial<Signal> = {}): Signal => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   currency: "USD",
   triggers: ["setup"],
   setup: { pattern: "pullback", state: "triggered", date: "2026-09-24", level: 136.9, target: 160.5 },
@@ -135,7 +137,7 @@ describe("validateRecommendation — errors", () => {
   });
 
   it("empty ticker throws", () => {
-    assert.throws(() => validateRecommendation({ ...validBuy(), ticker: "" }), /ticker must be a non-empty string/);
+    assert.throws(() => validateRecommendation({ ...validBuy(), ticker: "" }), /ticker: a ticker must not be empty/);
   });
 
   it("missing ticker throws", () => {
@@ -265,7 +267,7 @@ describe("buildUserPrompt", () => {
   // the call on a BUY the engine would block without even sending an email.
   it("with an adverse regime warns that a BUY would be blocked; with favorable it only reports it", () => {
     const withRegime = (regime: "adverso" | "favorable") =>
-      buildUserPrompt(baseSignal({ benchmark: { ticker: "VOO", price: 700, regime } }), []);
+      buildUserPrompt(baseSignal({ benchmark: { ticker: tk("VOO"), price: 700, regime } }), []);
 
     assert.match(withRegime("adverso"), /Silo market regime \(VOO\): ADVERSE/);
     assert.match(withRegime("adverso"), /Do not propose BUY: the engine would block it with regime_adverse/);
@@ -275,7 +277,10 @@ describe("buildUserPrompt", () => {
   });
 
   it("without a regime (benchmark without history) does not mention the regime", () => {
-    assert.doesNotMatch(buildUserPrompt(baseSignal({ benchmark: { ticker: "VOO", price: 700 } }), []), /market regime/);
+    assert.doesNotMatch(
+      buildUserPrompt(baseSignal({ benchmark: { ticker: tk("VOO"), price: 700 } }), []),
+      /market regime/,
+    );
     assert.doesNotMatch(buildUserPrompt(baseSignal(), []), /market regime/);
   });
 
@@ -283,12 +288,12 @@ describe("buildUserPrompt", () => {
     const prompt = buildUserPrompt(
       baseSignal({
         position: {
-          ticker: "XOM",
+          ticker: tk("XOM"),
           currency: "USD",
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),
@@ -322,12 +327,12 @@ describe("buildUserPrompt", () => {
       baseSignal({
         strength: { rangePosition: 0.7, bias: "ALCISTA", atr14: 4 },
         position: {
-          ticker: "XOM",
+          ticker: tk("XOM"),
           currency: "USD",
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),
@@ -355,12 +360,12 @@ describe("buildUserPrompt — owned/not-owned branching", () => {
     const prompt = buildUserPrompt(
       baseSignal({
         position: {
-          ticker: "XOM",
+          ticker: tk("XOM"),
           currency: "USD",
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),
@@ -400,12 +405,12 @@ describe("buildUserPrompt — owned/not-owned branching", () => {
         entry: undefined,
         triggers: ["approaching_stop"],
         position: {
-          ticker: "XOM",
+          ticker: tk("XOM"),
           currency: "USD",
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: 40,
+          pl: money(40),
           stopLoss: 120,
         },
       }),

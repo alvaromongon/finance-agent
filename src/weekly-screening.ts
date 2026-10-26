@@ -33,10 +33,10 @@ import { fetchHeadlines } from "./providers/news-provider.js";
 import { computeTechnicals } from "./utils/technicals.js";
 import {
   appendDecisions,
-  readPortfolio,
+  readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
-  readWatchlist,
+  readWatchlistSkippingBadTickers,
   readWatchlistAddedOn,
   retireWatchlistEntry,
   readAllWatchlistTickers,
@@ -91,11 +91,12 @@ import {
   type UniversePool,
 } from "./screening-ranking.js";
 import type { HistoricalBar } from "./providers/types.js";
+import { checkTicker, tickerSlug, type Ticker } from "./ticker.js";
 
 // ── Universe types ───────────────────────────────────────────────────────────
 
 interface UniverseTicker {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   market: string;
   currency: Currency;
@@ -106,7 +107,7 @@ type Universe = Record<UniversePool, UniverseTicker[]>;
 
 /** Asset identity the log, the thesis and the watchlist need. */
 interface CandidateInfo {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   market: string;
   currency: Currency;
@@ -179,7 +180,26 @@ export async function readUniverse(): Promise<Universe> {
   const parsed = yaml.load(match[1]) as { universe?: Universe };
   const u = parsed?.universe;
   if (!u?.eur || !u?.usd) throw new Error("Invalid universe structure: eur or usd missing");
-  return { ...u, commodities: u.commodities ?? [] };
+  // Tickers parsed: one written in lower case reads as its upper-case value; an entry that does not
+  // parse is skipped with a warning (ADR-0016). Only the known pools are read.
+  const rawPools: Record<UniversePool, unknown> = { ...u, commodities: u.commodities ?? [] };
+  const pools = {} as Universe;
+  for (const pool of UNIVERSE_POOLS) {
+    const entries = rawPools[pool];
+    pools[pool] = Array.isArray(entries)
+      ? entries.flatMap((item: UniverseTicker, i): UniverseTicker[] => {
+          const checked = checkTicker(item?.ticker);
+          if ("problem" in checked) {
+            console.warn(
+              `[screening] WARNING: screening-universe.md: ${pool} entry ${i + 1} skipped: ${checked.problem}`,
+            );
+            return [];
+          }
+          return [{ ...item, ticker: checked.ticker }];
+        })
+      : [];
+  }
+  return pools;
 }
 
 // ── Universe review check ────────────────────────────────────────────────────
@@ -197,7 +217,7 @@ async function checkUniverseReviewDate(): Promise<string | null> {
 // ── Technical analysis as text ────────────────────────────────────────────────
 
 function buildTechnicalsText(
-  ticker: string,
+  ticker: Ticker,
   bars: HistoricalBar[],
   currentPrice: number,
   currency: Currency,
@@ -288,7 +308,10 @@ async function applyMechanicalExits(
   portfolios: Record<Currency, PortfolioSnapshot>,
   today: string,
 ): Promise<WatchlistExit[]> {
-  const watchlist = [...(await readWatchlist("EUR")), ...(await readWatchlist("USD"))];
+  const watchlist = [
+    ...(await readWatchlistSkippingBadTickers("EUR")),
+    ...(await readWatchlistSkippingBadTickers("USD")),
+  ];
   const exits = mechanicalExits({
     watchlist,
     held: new Set(CURRENCIES.flatMap((c) => portfolios[c].positions.map((p) => p.ticker))),
@@ -339,8 +362,8 @@ export async function prepareScreening(
       readScreeningLog(),
       readRoutinePrompt("weekly-screening"),
       readTextFile(join(vaultDir, "watchlist.md")).catch(() => ""),
-      readPortfolio("EUR"),
-      readPortfolio("USD"),
+      readPortfolioIgnoringLots("EUR"),
+      readPortfolioIgnoringLots("USD"),
     ]);
   const portfolios: Record<Currency, PortfolioSnapshot> = { EUR: eurPortfolio, USD: usdPortfolio };
 
@@ -351,7 +374,7 @@ export async function prepareScreening(
   ]);
 
   const allTickers = UNIVERSE_POOLS.flatMap((pool) => universe[pool]);
-  const isExcluded = (ticker: string) => excluded.has(ticker);
+  const isExcluded = (ticker: Ticker) => excluded.has(ticker);
   const loadBars = historyLoader(provider);
   console.error(`[screening] Ranking ${allTickers.length} universe securities...`);
   const outcome = await rankUniverse(allTickers, loadBars, today);
@@ -447,7 +470,7 @@ async function recordScreeningResult(
   snapshot: DecisionSnapshot,
 ): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
-  const slug = info.ticker.toLowerCase().replace(/\./g, "");
+  const slug = tickerSlug(info.ticker);
   // The decision is built (and validated) before writing anything to the vault.
   const decision = buildDecision({
     date: today,
@@ -505,7 +528,7 @@ async function recordScreeningResult(
 async function createThesisNote(info: CandidateInfo, result: ScreeningResult, technicalsText: string): Promise<void> {
   const vaultDir = config.paths.vaultProjectDir;
   const today = new Date().toISOString().slice(0, 10);
-  const slug = info.ticker.toLowerCase().replace(/\./g, "");
+  const slug = tickerSlug(info.ticker);
   const filename = `tesis-${slug}.md`;
 
   const content = buildThesisNote({ ticker: info.ticker, name: info.name, slug, today, technicalsText, result });

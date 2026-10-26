@@ -35,14 +35,17 @@ import type {
   Signal,
   TriggerKind,
 } from "../types.js";
+import type { Ticker } from "../ticker.js";
 import type { TicketValidation } from "../risk.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { lotId, lotsSection } from "./fixtures/lots.js";
+import { parseTicker as tk } from "../ticker.js";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 /** portfolio.md with EUR balance, one EUR position and an empty USD balance. */
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-06-27"
 ---
 
@@ -59,6 +62,7 @@ last_manual_sync: "2026-06-27"
 | TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |
 | — | — | — | — | — | — |
 
+${lotsSection("EUR", [{ ticker: "TEST.EU", units: 10, price: 45, stop: 42 }])}
 ## USD — Cash
 
 | Item | Value |
@@ -70,7 +74,8 @@ last_manual_sync: "2026-06-27"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
-`;
+
+${lotsSection("USD")}`;
 
 /** watchlist.md with one EUR asset (in buy range) and one USD asset. */
 const WATCHLIST_MD = `---
@@ -97,7 +102,7 @@ watchlist:
 `;
 
 const MOCK_REC: Recommendation = {
-  ticker: "TEST.EU",
+  ticker: tk("TEST.EU"),
   action: "BUY",
   ticket: { direction: "BUY", currency: "EUR", target: 50 },
   thesis_summary: "Integration test BUY signal.",
@@ -112,10 +117,10 @@ describe("Integration — engine", () => {
   // References to dynamically imported functions
   let readWatchlist: (currency: Currency) => Promise<WatchlistEntry[]>;
   let readPortfolio: (currency: Currency) => Promise<PortfolioSnapshot>;
-  let updatePortfolioPrices: (currency: Currency, prices: Map<string, number>) => Promise<void>;
+  let updatePortfolioPrices: (currency: Currency, prices: Map<Ticker, number>) => Promise<void>;
   let writeDecisionLog: typeof import("../vault-io.js").writeDecisionLog;
   let getLastLogForTicker: (
-    ticker: string,
+    ticker: Ticker,
     files?: string[],
   ) => Promise<{ price: number; triggers: TriggerKind[] } | null>;
   let listLogFiles: () => Promise<string[]>;
@@ -225,12 +230,49 @@ describe("Integration — engine", () => {
 
   describe("vault-io — input format v1", () => {
     it("readPortfolio rejects a portfolio without schema_version", async () => {
-      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace("schema_version: 1\n", ""), "utf8");
+      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace("schema_version: 2\n", ""), "utf8");
       try {
         await assert.rejects(readPortfolio("EUR"), /portfolio\.md.*schema_version/);
       } finally {
         await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
       }
+    });
+
+    it("readPortfolio rejects a v1 portfolio, naming the file and the version it reads", async () => {
+      await writeFile(
+        join(tempDir, "portfolio.md"),
+        PORTFOLIO_MD.replace("schema_version: 2", "schema_version: 1"),
+        "utf8",
+      );
+      try {
+        await assert.rejects(readPortfolio("EUR"), /portfolio\.md.*schema_version 1.*version 2/);
+      } finally {
+        await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
+      }
+    });
+
+    it("readPortfolio rejects a v2 portfolio without the Lots section of the currency", async () => {
+      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace("## USD — Lots", "## USD — Lotes"), "utf8");
+      try {
+        await assert.rejects(readPortfolio("USD"), /portfolio\.md.*## USD — Lots/);
+        // Each currency is checked on its own, as Cash and Positions are.
+        assert.equal((await readPortfolio("EUR")).currency, "EUR");
+      } finally {
+        await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
+      }
+    });
+
+    it("readPortfolio returns the open lots of the silo next to its positions", async () => {
+      const eur = await readPortfolio("EUR");
+      assert.deepEqual(
+        eur.lots.map((l) => [l.entryId, l.units, l.entryPrice, l.initialStop]),
+        [[lotId("TEST.EU"), 10, 45, 42]],
+      );
+      assert.deepEqual((await readPortfolio("USD")).lots, []);
+    });
+
+    it("every other vault file stays at schema_version 1, including the ones the engine writes", async () => {
+      assert.equal((await readWatchlist("EUR")).length, 1, "watchlist.md v1 is read");
     });
 
     it("readPortfolio rejects a section with the previous heading instead of reading the silo as empty", async () => {
@@ -257,7 +299,7 @@ describe("Integration — engine", () => {
 
     it("appendScreeningLogEntries creates the screening-log with version and header, and reads it back", async () => {
       const log = {
-        ticker: "AAA",
+        ticker: tk("AAA"),
         name: "Aaa",
         index: "S&P 500",
         date: "2026-10-13",
@@ -287,7 +329,7 @@ describe("Integration — engine", () => {
       );
       assert.notEqual(reordered, PORTFOLIO_MD, "the fixture must end up reordered");
       await writeFile(join(tempDir, "portfolio.md"), reordered, "utf8");
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.match(updated, /\| 42,00 \| 30,00 \| 48,00 \| 45,00 \| 10 \| TEST\.EU \|/);
     });
@@ -298,12 +340,22 @@ describe("Integration — engine", () => {
         "| Ticker | Volume | Precio medio | Current price | P/L | Stop loss |",
       );
       await writeFile(join(tempDir, "portfolio.md"), broken, "utf8");
-      await assert.rejects(updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]])), /Avg price/);
+      await assert.rejects(updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]])), /Avg price/);
       assert.equal(await readFile(join(tempDir, "portfolio.md"), "utf8"), broken);
     });
 
+    it("keeps rewriting only Current price and P/L: the Lots table is left as it was", async () => {
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.equal(
+        updated.slice(updated.indexOf("## EUR — Lots")),
+        PORTFOLIO_MD.slice(PORTFOLIO_MD.indexOf("## EUR — Lots")),
+      );
+      assert.match(updated, /^schema_version: 2$/m);
+    });
+
     it("updates Current price and P/L in portfolio.md", async () => {
-      await updatePortfolioPrices("EUR", new Map([["TEST.EU", 48.0]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
       const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
 
       // P/L = (48 - 45) * 10 = 30 → "30,00" en formato europeo
@@ -314,16 +366,64 @@ describe("Integration — engine", () => {
       assert.ok(updated.includes("42,00"), "stop-loss unchanged");
     });
 
+    it("prices every Positions row of a ticker, the way the Volume check reads them (it sums all of them)", async () => {
+      const twice = PORTFOLIO_MD.replace(
+        "| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
+        "| TEST.EU | 4 | 45,00 | 45,00 | 0,00 | 42,00 |\n| TEST.EU | 6 | 40,00 | 40,00 | 0,00 | 42,00 |",
+      );
+      await writeFile(join(tempDir, "portfolio.md"), twice, "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.match(updated, /\| TEST\.EU \| 4 \| 45,00 \| 48,00 \| 12,00 \| 42,00 \|/);
+      assert.match(updated, /\| TEST\.EU \| 6 \| 40,00 \| 48,00 \| 48,00 \| 42,00 \|/);
+    });
+
+    it("a Positions table split by a blank line is one table: the rows under the split are priced too", async () => {
+      const split = PORTFOLIO_MD.replace(
+        "| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
+        "\n| TEST.EU | 10 | 45,00 | 45,00 | 0,00 | 42,00 |",
+      );
+      await writeFile(join(tempDir, "portfolio.md"), split, "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.equal(updated, split.replace("| 45,00 | 45,00 | 0,00 |", "| 45,00 | 48,00 | 30,00 |"));
+    });
+
+    it("keeps the line ends of the file: a CRLF file stays CRLF", async () => {
+      await writeFile(join(tempDir, "portfolio.md"), PORTFOLIO_MD.replace(/\n/g, "\r\n"), "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.ok(!/[^\r]\n/.test(updated), "no bare LF");
+      assert.ok(updated.includes("48,00"));
+    });
+
+    it("prices a lower-case Positions row by its parsed ticker and writes the upper-case ticker into the row", async () => {
+      const lower = PORTFOLIO_MD.replace("| TEST.EU | 10 |", "| test.eu | 10 |");
+      assert.notEqual(lower, PORTFOLIO_MD, "the fixture must end up lower case");
+      await writeFile(join(tempDir, "portfolio.md"), lower, "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      const updated = await readFile(join(tempDir, "portfolio.md"), "utf8");
+      assert.match(updated, /\| TEST\.EU \| 10 \| 45,00 \| 48,00 \| 30,00 \| 42,00 \|/);
+    });
+
+    it("leaves a Positions row whose ticker does not parse byte-identical", async () => {
+      const bad = PORTFOLIO_MD.replace("| TEST.EU | 10 |", "| TE ST | 10 |");
+      assert.notEqual(bad, PORTFOLIO_MD, "the fixture must end up with a bad ticker");
+      await writeFile(join(tempDir, "portfolio.md"), bad, "utf8");
+      await updatePortfolioPrices("EUR", new Map([[tk("TEST.EU"), 48.0]]));
+      assert.equal(await readFile(join(tempDir, "portfolio.md"), "utf8"), bad);
+    });
+
     it("does not modify the file if no ticker has a price", async () => {
       const before = await readFile(join(tempDir, "portfolio.md"), "utf8");
-      await updatePortfolioPrices("EUR", new Map()); // no prices
+      await updatePortfolioPrices("EUR", new Map<Ticker, number>()); // no prices
       const after = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.equal(before, after);
     });
 
     it("ignores map tickers that are not in the positions section", async () => {
       const before = await readFile(join(tempDir, "portfolio.md"), "utf8");
-      await updatePortfolioPrices("EUR", new Map([["UNKNOWN.XX", 999]]));
+      await updatePortfolioPrices("EUR", new Map([[tk("UNKNOWN.XX"), 999]]));
       const after = await readFile(join(tempDir, "portfolio.md"), "utf8");
       assert.equal(before, after);
     });
@@ -353,7 +453,7 @@ describe("Integration — engine", () => {
       assert.ok(content.includes("triggers: [setup]"), "triggers en frontmatter");
       assert.ok(content.includes("| Setup | breakout a 45.2, objetivo 52.1 |"), "setup in the log");
 
-      const lastLog = await getLastLogForTicker("TEST.EU");
+      const lastLog = await getLastLogForTicker(tk("TEST.EU"));
       assert.deepEqual(lastLog, { price: 45.2, triggers: ["setup"] });
     });
 
@@ -361,7 +461,7 @@ describe("Integration — engine", () => {
       process.env.OUTPUT_LANGUAGE = "en";
       try {
         await writeDecisionLog(
-          { ...MOCK_REC, ticker: "TEST.US", thesis_summary: "English thesis.", assumptions: ["Brent holds"] },
+          { ...MOCK_REC, ticker: tk("TEST.US"), thesis_summary: "English thesis.", assumptions: ["Brent holds"] },
           {
             price: 45.2,
             blocked: true,
@@ -388,7 +488,7 @@ describe("Integration — engine", () => {
     });
 
     it("getLastLogForTicker returns null for a ticker without a log", async () => {
-      const lastLog = await getLastLogForTicker("NEVER.ANALYZED");
+      const lastLog = await getLastLogForTicker(tk("NEVER.ANALYZED"));
       assert.equal(lastLog, null);
     });
 
@@ -396,14 +496,14 @@ describe("Integration — engine", () => {
       const files = await listLogFiles();
       assert.ok(files.length > 0, "it must list the files already written in this test");
 
-      const withFiles = await getLastLogForTicker("TEST.EU", files);
-      const withoutFiles = await getLastLogForTicker("TEST.EU");
+      const withFiles = await getLastLogForTicker(tk("TEST.EU"), files);
+      const withoutFiles = await getLastLogForTicker(tk("TEST.EU"));
       assert.deepEqual(withFiles, withoutFiles);
     });
 
     it("getLastLogForTicker ignora logs blocked: true", async () => {
-      await writeDecisionLog({ ...MOCK_REC, ticker: "BLOCKED.EU" }, { price: 99, blocked: true });
-      const lastLog = await getLastLogForTicker("BLOCKED.EU");
+      await writeDecisionLog({ ...MOCK_REC, ticker: tk("BLOCKED.EU") }, { price: 99, blocked: true });
+      const lastLog = await getLastLogForTicker(tk("BLOCKED.EU"));
       assert.equal(lastLog, null);
     });
   });
@@ -425,8 +525,11 @@ describe("Integration — engine", () => {
     });
 
     it("same trigger, no relevant price change: there IS a cooldown", async () => {
-      await writeDecisionLog({ ...MOCK_REC, ticker: "COOLDOWN.EU", triggers: ["setup", "big_move"] }, { price: 100 });
-      const lastLog = await getLastLogForTicker("COOLDOWN.EU");
+      await writeDecisionLog(
+        { ...MOCK_REC, ticker: tk("COOLDOWN.EU"), triggers: ["setup", "big_move"] },
+        { price: 100 },
+      );
+      const lastLog = await getLastLogForTicker(tk("COOLDOWN.EU"));
       const skip = shouldSkipReanalysis({
         currentTriggers: ["setup"],
         currentPrice: 101, // Δ 1% < REANALYSIS_PRICE_DELTA_PCT (3% by default)
@@ -437,8 +540,8 @@ describe("Integration — engine", () => {
     });
 
     it("new trigger (big_move after a setup): there is NO cooldown", async () => {
-      await writeDecisionLog({ ...MOCK_REC, ticker: "COOLDOWN2.EU", triggers: ["setup"] }, { price: 100 });
-      const lastLog = await getLastLogForTicker("COOLDOWN2.EU");
+      await writeDecisionLog({ ...MOCK_REC, ticker: tk("COOLDOWN2.EU"), triggers: ["setup"] }, { price: 100 });
+      const lastLog = await getLastLogForTicker(tk("COOLDOWN2.EU"));
       const skip = shouldSkipReanalysis({
         currentTriggers: ["big_move"], // same price, different and never seen trigger
         currentPrice: 100,

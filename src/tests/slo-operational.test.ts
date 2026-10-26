@@ -13,6 +13,7 @@ import { bar, uptrend } from "./fixtures/setup-bars.js";
 import type { IMarketDataProvider, HistoricalBar } from "../providers/types.js";
 import type { IAnalystProvider } from "../analyst/types.js";
 import type { HeartbeatDeps } from "../heartbeat-run.js";
+import { lotsSection } from "./fixtures/lots.js";
 
 /** Watchlist size of the SLO, as stated in the README. */
 const WATCHLIST_SIZE = 40;
@@ -44,7 +45,7 @@ ${tickers
 `;
 
 const portfolioMd = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-10-01"
 ---
 
@@ -58,7 +59,8 @@ last_manual_sync: "2026-10-01"
 
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
-`;
+
+${lotsSection("USD")}`;
 
 const flat: HistoricalBar[] = Array.from({ length: 250 }, (_, i) => bar(i, 100, { spread: 1 }));
 

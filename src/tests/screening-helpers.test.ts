@@ -18,6 +18,7 @@ import {
 } from "../utils/screening-helpers.js";
 import { en } from "../i18n/en.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { parseTicker as tk } from "../ticker.js";
 
 describe("selectionWarningLines", () => {
   it("in English", () => {
@@ -102,7 +103,7 @@ describe("classifyIndex", () => {
 
 describe("buildScreeningEmailLines", () => {
   const result = (over: Partial<ScreeningResult>): ScreeningResult => ({
-    ticker: "NVDA",
+    ticker: tk("NVDA"),
     name: "NVIDIA",
     index: "S&P 500",
     currency: "USD",
@@ -126,7 +127,7 @@ describe("buildScreeningEmailLines", () => {
       [
         result({ reason: "AI leader.", thesis: "AI capex thesis.", nextCatalyst: "Earnings 19 Nov 2026" }),
         result({
-          ticker: "KO",
+          ticker: tk("KO"),
           name: "Coca-Cola",
           interesting: false,
           reason: "No setup in sight.",
@@ -150,7 +151,7 @@ describe("buildScreeningEmailLines", () => {
     const text = buildScreeningEmailLines(
       [
         result({
-          ticker: "AMD",
+          ticker: tk("AMD"),
           name: "AMD",
           setups: ["AMD: ruptura ARMADA — Buy Stop en 180 USD, objetivo 210 — ELEGIBLE"],
         }),
@@ -178,7 +179,7 @@ describe("buildScreeningEmailLines", () => {
 
 describe("buildFriendlySummaryLines", () => {
   const base = {
-    ticker: "BAS.DE",
+    ticker: tk("BAS.DE"),
     name: "BASF",
     conviction: "medium" as const,
     convictionPoints: ["top_quintile", "regime_favorable"] as ConvictionPoint[],

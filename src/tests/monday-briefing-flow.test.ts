@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { TechnicalsProvider } from "../utils/monday-briefing-helpers.js";
 import type { HistoricalBar } from "../providers/types.js";
+import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -39,7 +40,7 @@ watchlist:
 `;
 
 const PORTFOLIO_MD = `---
-schema_version: 1
+schema_version: 2
 last_manual_sync: "2026-07-10"
 ---
 
@@ -55,6 +56,7 @@ last_manual_sync: "2026-07-10"
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
 
+${lotsSection("EUR")}
 ## USD — Cash
 
 | Item | Value |
@@ -66,7 +68,8 @@ last_manual_sync: "2026-07-10"
 | Ticker | Volume | Avg price | Current price | P/L | Stop loss |
 |---|---|---|---|---|---|
 | MSFT | 0.5 | 420.00 | 440.00 | +10.00 | 400.00 |
-`;
+
+${lotsSection("USD", [{ ticker: "MSFT", units: 0.5, price: 420, stop: 400 }])}`;
 
 const SYSTEM_PROMPT_MD = `# Rutina — Monday Briefing (stub de test)
 
@@ -201,6 +204,21 @@ describe("monday-briefing prepare/finalize", () => {
   }
 
   describe("prepareBriefing", () => {
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
+      it(`builds the prompt with ${label}: positions, cash and silo value are read as before`, async () => {
+        await writeFile(join(vaultDir, "portfolio.md"), broken, "utf8");
+        const error = mock.method(console, "error", () => {});
+        try {
+          const { userPrompt } = await prepareBriefing(fakeProvider);
+          assert.match(userPrompt, /USD: 32\.50 \$/);
+          assert.match(userPrompt, /USD cushion: covered/);
+          assert.match(userPrompt, /### MSFT/);
+        } finally {
+          error.mock.restore();
+        }
+      });
+    }
+
     it("refreshes Current price and P/L in portfolio.md before building the prompt", async () => {
       const error = mock.method(console, "error", () => {});
       try {
@@ -308,6 +326,20 @@ describe("monday-briefing prepare/finalize", () => {
 
   describe("finalizeBriefing", () => {
     const today = new Date().toISOString().slice(0, 10);
+
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
+      it(`finalizes with ${label}: the log is saved and a hold is recorded for the position`, async () => {
+        await writeFile(join(vaultDir, "portfolio.md"), broken, "utf8");
+        await quietly(() => finalizeBriefing(VALID_REPORT, fakeProvider));
+
+        await readFile(join(vaultDir, "logs", `${today}-monday-briefing.md`), "utf8");
+        const decisions = await readDecisionLines();
+        assert.ok(
+          decisions.some((d) => d.ticker === "MSFT"),
+          "the position's decision is recorded",
+        );
+      });
+    }
 
     it("saves the log with cash in the frontmatter, removes only tickers without a position and sends the email", async () => {
       const log = mock.method(console, "log", () => {});

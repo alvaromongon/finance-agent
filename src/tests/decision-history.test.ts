@@ -1,6 +1,6 @@
 /**
  * Tests of readDecisionHistory: the full log joins the archived
- * quarters, in order, with the live file (ADR-0006, "Retention").
+ * quarters with the live file, in chronological order (ADR-0006, "Retention").
  * Temporary vault with the same structure as the repo, no network. VAULT_PROJECT_DIR
  * is set before the first import of config.js.
  */
@@ -64,7 +64,44 @@ describe("readDecisionHistory", () => {
     );
   });
 
+  it("is chronological whichever quarter was archived: a later quarter in the archive does not jump ahead", async () => {
+    const q2 = deposit("2026-05-04");
+    const q3 = deposit("2026-08-03");
+    const live = deposit("2026-09-14");
+    // The middle quarter stays live and the last one is archived: write order is q2, q3, live.
+    await writeFile(join(archiveDir, "decisions-2026-T3.jsonl"), line(q3), "utf8");
+    await rm(join(archiveDir, "decisions-2026-T2.jsonl"), { force: true });
+    await writeFile(join(vaultDir, "logs", "decisions.jsonl"), line(q2) + line(live), "utf8");
+
+    const history = await readDecisionHistory();
+    assert.deepEqual(
+      history.map((d) => d.date),
+      ["2026-05-04", "2026-08-03", "2026-09-14"],
+    );
+  });
+
+  it("ties on a date keep a stated order: archive files in order, then the live file, each in write order", async () => {
+    const day = "2026-08-03";
+    // The amount tells them apart; the ids are unique from buildDecision.
+    const [a1, a2, b1, l1, l2] = [1, 2, 3, 4, 5].map((amount) => ({ ...deposit(day), amount }));
+    // File names sort T2 before T3 whatever the order they are written in.
+    await writeFile(join(archiveDir, "decisions-2026-T3.jsonl"), line(b1), "utf8");
+    await writeFile(join(archiveDir, "decisions-2026-T2.jsonl"), line(a1) + line(a2), "utf8");
+    await writeFile(join(vaultDir, "logs", "decisions.jsonl"), line(l1) + line(l2), "utf8");
+
+    const history = await readDecisionHistory();
+    assert.deepEqual(
+      history.map((d) => d.amount),
+      [1, 2, 3, 4, 5],
+    );
+  });
+
   it("without archives, it is the live log", async () => {
+    await writeFile(
+      join(vaultDir, "logs", "decisions.jsonl"),
+      line(deposit("2026-08-03")) + line(deposit("2026-09-14")),
+      "utf8",
+    );
     const history = await readDecisionHistory(join(root, "no-existe"));
     assert.deepEqual(
       history.map((d) => d.date),

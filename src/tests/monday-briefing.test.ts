@@ -1,5 +1,6 @@
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -16,6 +17,7 @@ import {
 import type { TechnicalsProvider } from "../utils/monday-briefing-helpers.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { PortfolioSnapshot, WatchlistEntry } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 // ── filterSafeRetireList ──────────────────────────────────────────────────────
 // Deterministic guardrail: the model may propose removing a ticker that
@@ -24,25 +26,25 @@ import type { PortfolioSnapshot, WatchlistEntry } from "../types.js";
 
 describe("filterSafeRetireList", () => {
   it("lets through tickers without an open position", () => {
-    const result = filterSafeRetireList(["AAA", "BBB"], new Set());
+    const result = filterSafeRetireList([tk("AAA"), tk("BBB")], new Set());
     assert.deepEqual(result.safe, ["AAA", "BBB"]);
     assert.deepEqual(result.blocked, []);
   });
 
   it("blocks tickers with an open position in either silo", () => {
-    const result = filterSafeRetireList(["AAA", "BBB"], new Set(["BBB"]));
+    const result = filterSafeRetireList([tk("AAA"), tk("BBB")], new Set([tk("BBB")]));
     assert.deepEqual(result.safe, ["AAA"]);
     assert.deepEqual(result.blocked, ["BBB"]);
   });
 
   it("an empty removal list yields neither safe nor blocked", () => {
-    const result = filterSafeRetireList([], new Set(["AAA"]));
+    const result = filterSafeRetireList([], new Set([tk("AAA")]));
     assert.deepEqual(result.safe, []);
     assert.deepEqual(result.blocked, []);
   });
 
   it("all blocked if all have an open position", () => {
-    const result = filterSafeRetireList(["AAA", "BBB"], new Set(["AAA", "BBB"]));
+    const result = filterSafeRetireList([tk("AAA"), tk("BBB")], new Set([tk("AAA"), tk("BBB")]));
     assert.deepEqual(result.safe, []);
     assert.deepEqual(result.blocked, ["AAA", "BBB"]);
   });
@@ -74,7 +76,7 @@ describe("buildTechnicalsSection", () => {
   });
 
   it("includes one block per ticker with the technical data", async () => {
-    const section = await buildTechnicalsSection(fakeProvider(), ["XOM"]);
+    const section = await buildTechnicalsSection(fakeProvider(), [tk("XOM")]);
     assert.match(section, /### XOM/);
     assert.match(section, /Current price: 159\.00/);
     assert.match(section, /52w High\/Low:/);
@@ -83,7 +85,7 @@ describe("buildTechnicalsSection", () => {
 
   it("handles tickers without historical data without throwing", async () => {
     const provider = fakeProvider({ getHistorical: async () => [] });
-    const section = await buildTechnicalsSection(provider, ["NODATA"]);
+    const section = await buildTechnicalsSection(provider, [tk("NODATA")]);
     assert.match(section, /### NODATA\n\(no technicals available\)/);
   });
 
@@ -94,7 +96,7 @@ describe("buildTechnicalsSection", () => {
         return bars(Array.from({ length: 60 }, (_, i) => 100 + i));
       },
     });
-    const section = await buildTechnicalsSection(provider, ["BROKEN", "XOM"]);
+    const section = await buildTechnicalsSection(provider, [tk("BROKEN"), tk("XOM")]);
     assert.match(section, /### BROKEN\n\(error fetching technicals: boom\)/);
     assert.match(section, /### XOM/);
   });
@@ -103,17 +105,17 @@ describe("buildTechnicalsSection", () => {
 // ── computeAssetClassWeights / formatPortfolioWeights ─────────────────
 
 function emptyPortfolio(currency: "EUR" | "USD"): PortfolioSnapshot {
-  return { currency, cash: 0, positions: [], syncedAt: "2026-07-10T00:00:00Z" };
+  return { currency, cash: money(0), positions: [], lots: [], syncedAt: "2026-07-10T00:00:00Z" };
 }
 
 function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {}) {
   return {
-    ticker: "TICK",
+    ticker: tk("TICK"),
     currency: "EUR" as const,
     volume: 1,
     avgPrice: 100,
     currentPrice: 100,
-    pl: 0,
+    pl: money(0),
     stopLoss: null,
     ...overrides,
   };
@@ -121,7 +123,7 @@ function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {
 
 function watchlistEntry(overrides: Partial<WatchlistEntry> = {}): WatchlistEntry {
   return {
-    ticker: "TICK",
+    ticker: tk("TICK"),
     name: "Test",
     market: "Test market",
     currency: "EUR",
@@ -146,9 +148,9 @@ describe("computeAssetClassWeights", () => {
   it("a single EUR position is 100% of its class", () => {
     const eurPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("EUR"),
-      positions: [position({ ticker: "DEF.MI", volume: 2, currentPrice: 50 })],
+      positions: [position({ ticker: tk("DEF.MI"), volume: 2, currentPrice: 50 })],
     };
-    const eurWatchlist = [watchlistEntry({ ticker: "DEF.MI", asset_class: "equity" })];
+    const eurWatchlist = [watchlistEntry({ ticker: tk("DEF.MI"), asset_class: "equity" })];
     const w = computeAssetClassWeights(eurPortfolio, emptyPortfolio("USD"), eurWatchlist, [], 1.1);
     assert.equal(w.totalValueEur, 100);
     assert.equal(w.byAssetClass.length, 1);
@@ -159,7 +161,7 @@ describe("computeAssetClassWeights", () => {
   it("converts USD positions to EUR-equivalent by dividing by the exchange rate", () => {
     const usdPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("USD"),
-      positions: [position({ ticker: "MSFT", currency: "USD", volume: 10, currentPrice: 110 })],
+      positions: [position({ ticker: tk("MSFT"), currency: "USD", volume: 10, currentPrice: 110 })],
     };
     // 10 * 110 USD = 1100 USD; a 1.10 USD/EUR -> 1000 EUR
     const w = computeAssetClassWeights(emptyPortfolio("EUR"), usdPortfolio, [], [], 1.1);
@@ -169,11 +171,11 @@ describe("computeAssetClassWeights", () => {
   it("combines EUR and USD (EUR-equivalent) positions in the same total", () => {
     const eurPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("EUR"),
-      positions: [position({ ticker: "DEF.MI", volume: 1, currentPrice: 500 })],
+      positions: [position({ ticker: tk("DEF.MI"), volume: 1, currentPrice: 500 })],
     };
     const usdPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("USD"),
-      positions: [position({ ticker: "MSFT", currency: "USD", volume: 1, currentPrice: 550 })],
+      positions: [position({ ticker: tk("MSFT"), currency: "USD", volume: 1, currentPrice: 550 })],
     };
     // 500 EUR + (550 USD / 1.1) = 500 + 500 = 1000
     const w = computeAssetClassWeights(eurPortfolio, usdPortfolio, [], [], 1.1);
@@ -186,13 +188,13 @@ describe("computeAssetClassWeights", () => {
     const eurPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("EUR"),
       positions: [
-        position({ ticker: "DEF.MI", volume: 1, currentPrice: 750 }),
-        position({ ticker: "4GLD.DE", volume: 1, currentPrice: 250 }),
+        position({ ticker: tk("DEF.MI"), volume: 1, currentPrice: 750 }),
+        position({ ticker: tk("4GLD.DE"), volume: 1, currentPrice: 250 }),
       ],
     };
     const eurWatchlist = [
-      watchlistEntry({ ticker: "DEF.MI", asset_class: "equity" }),
-      watchlistEntry({ ticker: "4GLD.DE", asset_class: "commodity" }),
+      watchlistEntry({ ticker: tk("DEF.MI"), asset_class: "equity" }),
+      watchlistEntry({ ticker: tk("4GLD.DE"), asset_class: "commodity" }),
     ];
     const w = computeAssetClassWeights(eurPortfolio, emptyPortfolio("USD"), eurWatchlist, [], 1.1);
     assert.equal(w.totalValueEur, 1000);
@@ -205,7 +207,7 @@ describe("computeAssetClassWeights", () => {
   it("a ticker without a watchlist entry falls back to asset_class equity", () => {
     const eurPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("EUR"),
-      positions: [position({ ticker: "HUERFANO", volume: 1, currentPrice: 100 })],
+      positions: [position({ ticker: tk("HUERFANO"), volume: 1, currentPrice: 100 })],
     };
     const w = computeAssetClassWeights(eurPortfolio, emptyPortfolio("USD"), [], [], 1.1);
     assert.equal(w.byPosition[0].assetClass, "equity");
@@ -221,7 +223,7 @@ describe("formatPortfolioWeights", () => {
   it("includes the ticker and the % in the formatted text", () => {
     const eurPortfolio: PortfolioSnapshot = {
       ...emptyPortfolio("EUR"),
-      positions: [position({ ticker: "DEF.MI", volume: 1, currentPrice: 100 })],
+      positions: [position({ ticker: tk("DEF.MI"), volume: 1, currentPrice: 100 })],
     };
     const w = computeAssetClassWeights(eurPortfolio, emptyPortfolio("USD"), [], [], 1.1);
     const text = formatPortfolioWeights(w);
@@ -243,7 +245,7 @@ describe("computeAssetClassWeights — orphan ticker warning", () => {
     try {
       const eurPortfolio: PortfolioSnapshot = {
         ...emptyPortfolio("EUR"),
-        positions: [position({ ticker: "HUERFANO", volume: 1, currentPrice: 100 })],
+        positions: [position({ ticker: tk("HUERFANO"), volume: 1, currentPrice: 100 })],
       };
       computeAssetClassWeights(eurPortfolio, emptyPortfolio("USD"), [], [], 1.1);
       assert.equal(warnings.length, 1);
@@ -260,9 +262,9 @@ describe("computeAssetClassWeights — orphan ticker warning", () => {
     try {
       const eurPortfolio: PortfolioSnapshot = {
         ...emptyPortfolio("EUR"),
-        positions: [position({ ticker: "DEF.MI", volume: 1, currentPrice: 100 })],
+        positions: [position({ ticker: tk("DEF.MI"), volume: 1, currentPrice: 100 })],
       };
-      const eurWatchlist = [watchlistEntry({ ticker: "DEF.MI", asset_class: "equity" })];
+      const eurWatchlist = [watchlistEntry({ ticker: tk("DEF.MI"), asset_class: "equity" })];
       computeAssetClassWeights(eurPortfolio, emptyPortfolio("USD"), eurWatchlist, [], 1.1);
       assert.equal(warnings.length, 0);
     } finally {

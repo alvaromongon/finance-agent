@@ -1,5 +1,5 @@
 ---
-status: Accepted
+status: "Deprecated — detail moved to [flows.md](../flows.md#market-data-freshness)"
 date: 2026-10-15
 decision-makers: Repository owner
 ---

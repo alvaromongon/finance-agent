@@ -167,7 +167,7 @@ describe("every flow runs on the example brain", () => {
   it("decision:record logs a trade the owner narrates", async () => {
     const { FixturesProvider } = await import("../providers/fixtures.js");
     const { recordOwnerDecision } = await import("../decision.js");
-    const d = await recordOwnerDecision(
+    const [d] = await recordOwnerDecision(
       { type: "entry", ticker: "AIR.PA", currency: "EUR", price: 150, units: 1, stop: 140 },
       new FixturesProvider(join(EXAMPLES, "market")),
     );

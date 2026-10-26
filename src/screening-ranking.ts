@@ -24,6 +24,7 @@ import { CURRENCIES } from "./types.js";
 import type { Currency } from "./types.js";
 import { daysBetween } from "./utils/forward-returns.js";
 import { sma } from "./utils/technicals.js";
+import type { Ticker } from "./ticker.js";
 
 /** Blocks of `screening-universe.md`. */
 export const UNIVERSE_POOLS = ["eur", "usd", "commodities"] as const;
@@ -49,7 +50,7 @@ export interface ScreeningRules {
 export type ExclusionReason = "no_data" | "stale" | "short_history" | "below_sma200" | "illiquid" | "no_overlap";
 
 export interface RankableTicker {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
 }
 
@@ -68,7 +69,7 @@ export interface RankedTicker<T extends RankableTicker> {
 
 export interface UniverseRanking<T extends RankableTicker> {
   bySilo: Record<Currency, RankedTicker<T>[]>;
-  excluded: { ticker: string; reason: ExclusionReason }[];
+  excluded: { ticker: Ticker; reason: ExclusionReason }[];
 }
 
 /** Picked candidate, by ranking or by draw: always with its bars and filter 0 already passed. */
@@ -183,7 +184,7 @@ export function scoreSilo<T extends RankableTicker>(
 /** The N best non-excluded of each silo and the random exploration among the remaining eligibles. */
 export function selectFromRanking<T extends RankableTicker>(
   ranking: UniverseRanking<T>,
-  isExcluded: (ticker: string) => boolean,
+  isExcluded: (ticker: Ticker) => boolean,
   rules: Pick<ScreeningRules, "rankedBySilo" | "explorationBySilo"> = config.framework.screening,
   random: () => number = Math.random,
 ): SelectedCandidate<T>[] {
@@ -210,7 +211,7 @@ export function selectFromRanking<T extends RankableTicker>(
  */
 export async function drawWithFilterZero<T extends RankableTicker>(
   universe: Readonly<Record<UniversePool, readonly T[]>>,
-  isExcluded: (ticker: string) => boolean,
+  isExcluded: (ticker: Ticker) => boolean,
   loadBars: HistoryLoader,
   today: string,
   rules: ScreeningRules = config.framework.screening,
@@ -280,7 +281,7 @@ export type RankingOutcome<T extends RankableTicker> =
 
 /** Why the ranking is not reliable this run, as data: summarize renders it. */
 export type RankingFallback =
-  | { code: "no_reference_history"; ticker: string }
+  | { code: "no_reference_history"; ticker: Ticker }
   | { code: "low_coverage"; withData: number; total: number }
   | { code: "stale_universe"; medianLastBar?: string };
 

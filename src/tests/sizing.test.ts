@@ -4,6 +4,7 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { config } from "../config.js";
@@ -24,10 +25,11 @@ import { trailingStop } from "../utils/atr-stop.js";
 import { findResistances, targetLevels } from "../utils/technicals.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { PortfolioSnapshot, Recommendation, Signal } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 // Entry 100, ATR 3, medium horizon: stop at 3 ATR = 91, 9 of risk per unit.
 const input = (overrides: Partial<SizingInput> = {}): SizingInput => ({
-  ticker: "XOM",
+  ticker: tk("XOM"),
   currency: "USD",
   entry: 100,
   atr: 3,
@@ -40,10 +42,19 @@ const input = (overrides: Partial<SizingInput> = {}): SizingInput => ({
 describe("siloValue", () => {
   const portfolio: PortfolioSnapshot = {
     currency: "USD",
-    cash: 500,
+    cash: money(500),
+    lots: [],
     syncedAt: "2026-09-14",
     positions: [
-      { ticker: "ADBE", currency: "USD", volume: 2, avgPrice: 480, currentPrice: 500, pl: 40, stopLoss: 450 },
+      {
+        ticker: tk("ADBE"),
+        currency: "USD",
+        volume: 2,
+        avgPrice: 480,
+        currentPrice: 500,
+        pl: money(40),
+        stopLoss: 450,
+      },
     ],
   };
 
@@ -53,18 +64,18 @@ describe("siloValue", () => {
   });
 
   it("counts cash held by pending orders: uses total cash if present", () => {
-    assert.equal(siloValue({ ...portfolio, cash: 28, totalCash: 595 }), 1595);
+    assert.equal(siloValue({ ...portfolio, cash: money(28), totalCash: money(595) }), 1595);
   });
 });
 
 describe("purchaseTaxPct (ADR-0009 §7)", () => {
   it("charges by market suffix, only on stocks", () => {
-    assert.equal(purchaseTaxPct("SGO.PA"), 0.4);
-    assert.equal(purchaseTaxPct("REP.MC", "equity"), 0.2);
-    assert.equal(purchaseTaxPct("DEF.MI"), 0.1);
-    assert.equal(purchaseTaxPct("ADBE"), 0);
-    assert.equal(purchaseTaxPct("EXSA.DE", "etf"), 0);
-    assert.equal(purchaseTaxPct("SGLN.MI", "commodity"), 0);
+    assert.equal(purchaseTaxPct(tk("SGO.PA")), 0.4);
+    assert.equal(purchaseTaxPct(tk("REP.MC"), "equity"), 0.2);
+    assert.equal(purchaseTaxPct(tk("DEF.MI")), 0.1);
+    assert.equal(purchaseTaxPct(tk("ADBE")), 0);
+    assert.equal(purchaseTaxPct(tk("EXSA.DE"), "etf"), 0);
+    assert.equal(purchaseTaxPct(tk("SGLN.MI"), "commodity"), 0);
   });
 });
 
@@ -91,7 +102,7 @@ describe("sizeBuy", () => {
   });
 
   it("without enough cash, cash caps it counting the tax", () => {
-    const s = sizeBuy(input({ ticker: "SGO.PA", currency: "EUR", cash: 50 }))!;
+    const s = sizeBuy(input({ ticker: tk("SGO.PA"), currency: "EUR", cash: 50 }))!;
     assert.equal(s.cappedBy, "cash");
     assert.equal(s.taxPct, 0.4);
     assert.ok(s.amount + s.costs <= 50);
@@ -126,7 +137,7 @@ describe("buildBuyTicket — R:R and anchored target", () => {
   it("the R:R is required net of the buy tax", () => {
     // Gross (118.3 − 100) / 9 = 2.03; net (18.3 − 0.4) / 9 = 1.99.
     const { ticket, reasons } = buildBuyTicket({
-      ...input({ ticker: "SGO.PA", currency: "EUR" }),
+      ...input({ ticker: tk("SGO.PA"), currency: "EUR" }),
       target: 118.3,
       levels: [118.3],
     });
@@ -177,7 +188,7 @@ describe("trailingStop / buildAdjustStopTicket", () => {
 
 describe("evaluateRecommendation", () => {
   const signal = (overrides: Partial<Signal> = {}): Signal => ({
-    ticker: "XOM",
+    ticker: tk("XOM"),
     currency: "USD",
     triggers: ["big_move"],
     price: 100,
@@ -188,7 +199,7 @@ describe("evaluateRecommendation", () => {
     ...overrides,
   });
   const rec = (overrides: Partial<Recommendation> = {}): Recommendation => ({
-    ticker: "XOM",
+    ticker: tk("XOM"),
     action: "BUY",
     ticket: { direction: "BUY", currency: "USD", target: 120 },
     thesis_summary: "t",
@@ -205,23 +216,26 @@ describe("evaluateRecommendation", () => {
   });
 
   it("a BUY in an adverse regime comes out with a ticket but blocked by regime_adverse", () => {
-    const ev = evaluateRecommendation(rec(), signal({ benchmark: { ticker: "VOO", price: 600, regime: "adverso" } }));
+    const ev = evaluateRecommendation(
+      rec(),
+      signal({ benchmark: { ticker: tk("VOO"), price: 600, regime: "adverso" } }),
+    );
     assert.equal(ev.blocked, true);
     assert.deepEqual(ev.reasons, ["regime_adverse"]);
     assert.equal(ev.ticket?.kind, "BUY");
     // Exits and stops do not change.
     const position = {
-      ticker: "XOM",
+      ticker: tk("XOM"),
       currency: "USD" as const,
       volume: 1,
       avgPrice: 90,
       currentPrice: 100,
-      pl: 10,
+      pl: money(10),
       stopLoss: 85,
     };
     const sell = evaluateRecommendation(
       rec({ action: "SELL", ticket: { direction: "SELL", currency: "USD", amount: 100 } }),
-      signal({ benchmark: { ticker: "VOO", price: 600, regime: "adverso" }, position }),
+      signal({ benchmark: { ticker: tk("VOO"), price: 600, regime: "adverso" }, position }),
     );
     assert.equal(sell.blocked, false);
   });
@@ -250,12 +264,12 @@ describe("evaluateRecommendation", () => {
 
   it("SELL above the position or without one and ADJUST_STOP without a position are blocked", () => {
     const position = {
-      ticker: "XOM",
+      ticker: tk("XOM"),
       currency: "USD" as const,
       volume: 1,
       avgPrice: 90,
       currentPrice: 100,
-      pl: 10,
+      pl: money(10),
       stopLoss: 80,
     };
     const sellEv = evaluateRecommendation(

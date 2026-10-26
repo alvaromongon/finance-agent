@@ -114,10 +114,10 @@ export class YahooFinanceProvider implements IMarketDataProvider {
     private retryBaseMs = 1000,
   ) {}
 
-  async getPrices(tickers: string[]): Promise<Map<string, number>> {
+  async getPrices<T extends string>(tickers: T[]): Promise<Map<T, number>> {
     await this.loadQuotes(tickers);
 
-    const prices = new Map<string, number>();
+    const prices = new Map<T, number>();
     for (const ticker of tickers) {
       const price = this.quoteCache.get(ticker)?.price;
       if (price != null) prices.set(ticker, price);

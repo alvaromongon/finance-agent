@@ -1,4 +1,7 @@
 // Shared types of the Finance Agent.
+import type { DecisionOrigin } from "./decisions.js";
+import type { Money } from "./money.js";
+import type { Ticker } from "./ticker.js";
 
 export type Currency = "EUR" | "USD";
 export type Horizon = "short" | "medium";
@@ -34,7 +37,7 @@ export interface EngineConviction {
 
 /** Watchlist entry (parsed from the YAML block of watchlist.md). */
 export interface WatchlistEntry {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   market: string;
   currency: Currency;
@@ -48,27 +51,71 @@ export interface WatchlistEntry {
 
 /** Open position synced by hand from the broker. */
 export interface Position {
-  ticker: string;
+  ticker: Ticker;
+  /** The `Ticker` cell as the owner wrote it, when that differs from `ticker` (`tck` for `TCK`); absent otherwise. */
+  written?: string;
   currency: Currency;
   volume: number;
   avgPrice: number;
   currentPrice: number;
-  pl: number;
+  pl: Money;
   stopLoss: number | null;
+}
+
+/**
+ * The open units of one entry (ADR-0015), one row of the `Lots` table of portfolio.md. The row names
+ * its ticker, so `Volume` can be checked against it without reading the decision log (#52).
+ */
+export interface Lot {
+  /** Ticker of the position the lot belongs to; it must be the one of its entry in the log. */
+  ticker: Ticker;
+  /** Id of the `entry` decision that opened the lot. */
+  entryId: string;
+  /** Entry date, YYYY-MM-DD. */
+  date: string;
+  /** Units still open. */
+  units: number;
+  /** Units the entry bought. */
+  entryUnits: number;
+  entryPrice: number;
+  /** Stop at entry, the base of R; `null` if the entry had none. */
+  initialStop: number | null;
+  /** Entry costs in the silo currency; `null` if none were recorded. */
+  entryCosts: Money | null;
+  origin: DecisionOrigin;
+  rulesVersion: string;
+  /** Rules the entry broke; empty for none. */
+  rulesViolations: string[];
+}
+
+/**
+ * A row of `Lots` the reader skipped because it does not read as a lot. `ticker` and `entryId` are what
+ * the row still says (absent when its cell is empty or does not read), so the lots check can leave out
+ * the messages that follow from the row instead of repeating them.
+ */
+export interface SkippedLotRow {
+  /** `Lots row 2 (TCK, id): Units "6x" is not a number; the row is skipped`, without the file prefix. */
+  message: string;
+  ticker?: Ticker;
+  entryId?: string;
 }
 
 /** Portfolio snapshot per currency. */
 export interface PortfolioSnapshot {
   currency: Currency;
   /** "Available cash": capital free to trade. */
-  cash: number;
+  cash: Money;
   /**
    * "Total cash", including what pending orders hold: the cash that counts
    * towards the silo value (ADR-0009 §3). Absent if portfolio.md does not tell
    * it apart from the available balance.
    */
-  totalCash?: number;
+  totalCash?: Money;
   positions: Position[];
+  /** Open lots of the silo; `Volume` of each position is the sum of its lots' units. */
+  lots: Lot[];
+  /** The rows of `Lots` the reader skipped because they do not read as a lot; absent if none. */
+  skippedLotRows?: SkippedLotRow[];
   syncedAt: string; // ISO timestamp
 }
 
@@ -141,7 +188,7 @@ export interface StrengthSnapshot {
 }
 
 export interface Signal {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   triggers: TriggerKind[];
   price: number;
@@ -220,14 +267,14 @@ export const MARKET_REGIMES: readonly MarketRegime[] = ["favorable", "neutral", 
 
 /** Price of a silo benchmark (ADR-0009) on a date, with its regime if there was history. */
 export interface Benchmark {
-  ticker: string;
+  ticker: Ticker;
   price: number;
   regime?: MarketRegime;
 }
 
 /** Structured recommendation returned by Claude (the reasoner). */
 export interface Recommendation {
-  ticker: string;
+  ticker: Ticker;
   action: Action;
   // No conviction: a setup's is computed by the engine
   // (Signal.conviction) and a decision on a position carries none.

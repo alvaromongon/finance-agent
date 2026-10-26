@@ -2,7 +2,7 @@
  * The demo: a heartbeat per silo against examples/brain with the
  * fixtures provider, without Claude, SMTP or network, in a temporary copy so
  * the example stays clean. It also checks that every example file parses with
- * the v1 input format.
+ * the input format (portfolio.md v2, every other file v1).
  */
 import { describe, it, after, mock } from "node:test";
 import assert from "node:assert/strict";
@@ -45,17 +45,26 @@ describe("demo against examples/brain", () => {
   });
 
   it("leaves examples/brain untouched", async () => {
-    const files = await readdir(join(import.meta.dirname, "..", "..", "examples", "brain"));
-    assert.ok(!files.includes("logs"));
+    const brain = join(import.meta.dirname, "..", "..", "examples", "brain");
+    // The example ships the decision log its lots refer to; a demo run must leave nothing next to it
+    // (no outbox, no pending files, no decision logs).
+    assert.deepEqual(await readdir(join(brain, "logs")), ["decisions.jsonl"]);
   });
 
-  it("every example file parses with the v1 input format", async () => {
+  it("every example file parses with the input format, and its lots match the decision log", async () => {
     // Read the example itself, not a copy a demo run already changed.
     process.env.VAULT_PROJECT_DIR = join(import.meta.dirname, "..", "..", "examples", "brain");
     const io = await import("../vault-io.js");
     for (const currency of ["EUR", "USD"] as const) {
-      assert.equal((await io.readPortfolio(currency)).positions.length, 1);
+      const portfolio = await io.readPortfolio(currency);
+      assert.equal(portfolio.positions.length, 1);
+      assert.equal(portfolio.lots.length, 1);
       assert.equal((await io.readWatchlist(currency)).length, 1);
+    }
+    const { assertLotsMatch } = await import("../utils/lots-check.js");
+    const decisions = await io.readDecisionHistory();
+    for (const currency of ["EUR", "USD"] as const) {
+      assertLotsMatch(await io.readPortfolio(currency), decisions);
     }
     assert.equal((await io.readScreeningLog()).length, 2);
     const { readUniverse } = await import("../weekly-screening.js");

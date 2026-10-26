@@ -8,6 +8,7 @@ process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { HistoricalBar } from "../providers/types.js";
+import { parseTicker as tk } from "../ticker.js";
 import {
   drawWithFilterZero,
   filterZero,
@@ -143,7 +144,7 @@ describe("percentileRanks and scoreSilo", () => {
 
   it("scores with the mean of the two percentiles and breaks ties by relative strength", () => {
     const entry = (ticker: string, proximity: number, rs: number) => ({
-      item: { ticker, currency: "USD" as const },
+      item: { ticker: tk(ticker), currency: "USD" as const },
       bars: [],
       proximity,
       relativeStrength: rs,
@@ -167,7 +168,7 @@ describe("percentileRanks and scoreSilo", () => {
 });
 
 describe("selectFromRanking", () => {
-  const ticker = (t: string, currency: "EUR" | "USD") => ({ ticker: t, currency });
+  const ticker = (t: string, currency: "EUR" | "USD") => ({ ticker: tk(t), currency });
   const ranked = (items: RankableTicker[]) =>
     items.map((item, i) => ({ item, rank: i + 1, score: 1 - i / 10, proximity: 1, relativeStrength: 0, bars: [] }));
   const ranking: UniverseRanking<RankableTicker> = {
@@ -239,10 +240,10 @@ describe("historyLoader", () => {
 
 describe("rankUniverse", () => {
   const universe = [
-    { ticker: "UP.PA", currency: "EUR" as const },
-    { ticker: "DOWN.PA", currency: "EUR" as const },
-    { ticker: "UP", currency: "USD" as const },
-    { ticker: "STEEP", currency: "USD" as const },
+    { ticker: tk("UP.PA"), currency: "EUR" as const },
+    { ticker: tk("DOWN.PA"), currency: "EUR" as const },
+    { ticker: tk("UP"), currency: "USD" as const },
+    { ticker: tk("STEEP"), currency: "USD" as const },
   ];
   const data: Record<string, HistoricalBar[]> = {
     "EXSA.DE": rising,
@@ -341,8 +342,8 @@ describe("rankUniverse", () => {
 });
 
 describe("drawWithFilterZero", () => {
-  const eur = (t: string): RankableTicker => ({ ticker: t, currency: "EUR" });
-  const usd = (t: string): RankableTicker => ({ ticker: t, currency: "USD" });
+  const eur = (t: string): RankableTicker => ({ ticker: tk(t), currency: "EUR" });
+  const usd = (t: string): RankableTicker => ({ ticker: tk(t), currency: "USD" });
   const falling = series((i) => 200 - i * 0.25);
   const bars: Record<string, HistoricalBar[]> = {
     E1: falling,
