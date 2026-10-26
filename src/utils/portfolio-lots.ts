@@ -156,9 +156,11 @@ export function planSale(
 function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, taken: Money): Money | undefined {
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
-  const left = money(Math.max(0, total - taken));
+  const remainder = subtractMoney(total, taken);
+  const left = remainder > ZERO ? remainder : ZERO;
   if (t.unitsLeft === 0) return left;
-  return money(Math.min(money((total * t.unitsSold) / t.lot.entryUnits), left));
+  const share = money((total * t.unitsSold) / t.lot.entryUnits);
+  return share < left ? share : left;
 }
 
 // ─── portfolio.md ─────────────────────────────────────────────────────────────

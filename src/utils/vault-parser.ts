@@ -2,7 +2,7 @@
 // Exported so they can be unit-tested.
 import yaml from "js-yaml";
 import { normalizeEol, parseMarkdownMoney, parseMarkdownNumber } from "./parse.js";
-import { ZERO, type Money } from "../money.js";
+import { ZERO, canCountInCents, money, type Money } from "../money.js";
 import { DECISION_ORIGINS } from "../decisions.js";
 import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
@@ -528,10 +528,11 @@ function readLotRow(
     numbers[key] = value;
   }
   const costs = cell("entryCosts");
-  const entryCosts = parseMarkdownMoney(costs);
-  if (entryCosts === null && parseMarkdownNumber(costs) !== null) {
+  const costsNumber = parseMarkdownNumber(costs);
+  if (costsNumber !== null && !canCountInCents(costsNumber)) {
     return { reason: `${LOT_COLUMNS.entryCosts} "${costs}" is too large to count in cents` };
   }
+  const entryCosts = costsNumber === null ? null : money(costsNumber);
   const origin = cell("origin");
   if (!(DECISION_ORIGINS as readonly string[]).includes(origin)) {
     const right = DECISION_ORIGINS.find((o) => o === origin.toLowerCase());
