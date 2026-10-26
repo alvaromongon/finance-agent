@@ -9,16 +9,16 @@ to `VAULT_PROJECT_DIR`, except `DECISIONS_ARCHIVE_DIR`, which must be absolute (
 Queues. Each file is removed once its content has moved to its final place, so a healthy
 repository holds none of them between runs. A file that lingers is work not done.
 
-| Path                                               | Written by                                                       | Deleted by                | When                                                                  |
-| -------------------------------------------------- | ---------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------- |
-| `logs/pending/<date>-<ticker>.md`                  | heartbeat ([handoff mode](glossary.md#reasoner-api-and-handoff)) | `pending:resolve`         | The answer is validated and recorded, blocked or not                  |
-| `logs/pending-screening/<date>-<ticker>.md`        | `screening:prepare`                                              | `screening:resolve`       | The candidate's result is recorded                                    |
-| `logs/pending-screening/results.jsonl`, `run.json` | `screening:resolve`, `prepare`                                   | `screening:summarize`     | The run's summary email is sent (or email is off); kept if it was not |
-| `logs/outbox/*.json`                               | any flow with `MAIL_TRANSPORT=outbox`                            | `outbox:send` (the relay) | The email was sent; a file that failed to send is kept and retried    |
-| `logs/heartbeat-sent-eur.json`, `-usd.json`        | [heartbeat](glossary.md#heartbeat)                               | rewritten daily           | Holds only today's alert keys, so it does not grow                    |
+| Path                                               | Written by                                                                                | Deleted by                | When                                                                  |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| `logs/pending/<date>-<ticker>.md`                  | [heartbeat](glossary.md#heartbeat) ([handoff mode](glossary.md#reasoner-api-and-handoff)) | `pending:resolve`         | The answer is validated and recorded, blocked or not                  |
+| `logs/pending-screening/<date>-<ticker>.md`        | `screening:prepare`                                                                       | `screening:resolve`       | The candidate's result is recorded                                    |
+| `logs/pending-screening/results.jsonl`, `run.json` | `screening:resolve`, `prepare`                                                            | `screening:summarize`     | The run's summary email is sent (or email is off); kept if it was not |
+| `logs/outbox/*.json`                               | any flow with `MAIL_TRANSPORT=outbox`                                                     | `outbox:send` (the relay) | The email was sent; a file that failed to send is kept and retried    |
+| `logs/heartbeat-sent-eur.json`, `-usd.json`        | [heartbeat](glossary.md#heartbeat)                                                        | rewritten daily           | Holds only today's alert keys, so it does not grow                    |
 
 If a `pending` file stays for days, the [reasoner](glossary.md#reasoner-api-and-handoff) did not run: resolve it, or delete it by hand if
-the signal is stale (it is not in the decision log until resolved).
+the signal is stale (it is not in the [decision log](glossary.md#decision-log) until resolved).
 
 ## Files that grow
 
@@ -27,7 +27,7 @@ the signal is stale (it is not in the decision log until resolved).
 | `logs/decisions.jsonl`                                               | The [decision log](glossary.md#decision-log)         | Everything: recording, the two-month rule, attribution, the heartbeat, the Monday briefing, the evaluation |
 | `logs/<date>-<ticker>.md`                                            | One Markdown log per analysed signal                 | The re-analysis cooldown (latest of the ticker); the Monday briefing (last 30 days)                        |
 | `logs/<date>-monday-briefing.md`                                     | Weekly report                                        | Nobody; the decision log holds its decisions                                                               |
-| Report files of the emails not sent (see below)                      | With email off, each message as a Markdown file      | Nobody: you read them                                                                                      |
+| Report files of the emails not sent (see below)                      | With email off, each message as a Markdown file      | The Monday briefing, if the name starts with a date (last 30 days); otherwise nobody: you read them        |
 | `logs/decisions-evaluation.md`, `.svg`, `logs/screening-outcomes.md` | Reports, regenerated on each run: never archive them | The Monday briefing reads `decisions-evaluation.md`                                                        |
 
 ## Report files written when email is off
@@ -36,9 +36,11 @@ With `MAIL_TRANSPORT=none` (`email: false` in the reusable workflows) nothing is
 [#33](https://github.com/alvaromongon/finance-agent/issues/33) on, each message the engine would
 have emailed (heartbeat digest, screening summary, Monday briefing summary, alerts) is written
 instead as one Markdown file under `logs/`, with its subject, body and source, named so that it
-sorts by date. They are for you to read in the data repository; nothing reads them back and
-nothing deletes them, so they grow like the other Markdown logs and are archived the same way
-(next section). Until #33
+sorts by date. They are for you to read in the data repository. Nothing deletes them, so they grow
+like the other Markdown logs and are archived the same way (next section). They are not write-only: the Monday briefing reads every `logs/<YYYY-MM-DD>*.md` of the last 30 days, apart
+from the files with `weekly-review` or `monday-briefing` in their name, as context for its
+summary. A report file whose name starts with a date is therefore read back for 30 days; one
+whose name does not is not (`src/monday-briefing.ts`). Until #33
 lands, the engine writes no such file and an email that is off is only logged.
 
 ## Archiving old logs
@@ -82,7 +84,8 @@ What stays in the live file, whatever its date:
   and of the earlier exits; until then they all stay. So a lot bought in Q1, partly sold in Q2 and
   used up in Q3 is archived by the Q3 run, in one piece. An `exit` that cites a lot that is never
   used up (one written before `lot_units_left` existed) stays with its entry;
-- anything from the last three months. Archive only quarters older than that.
+- anything from the last three months. Archive only quarters older than that. Two readers read the
+  live file only: the heartbeat and the two-month rule (an archived decision is invisible to them).
 
 Every other line (deposits, withdrawals, conversions, proposals, stop changes, an `exit` that cites
 no lot) is archived by its own date.
@@ -94,9 +97,7 @@ rule above leaves in the live file. The other history it reads is the proposal a
 (10-day window) and the trades that already cite it, all recent. So **with no archive readable at
 all, `decision:record` records every later sale correctly**; the archive adds nothing to it. The
 exception is a trade dated in an archived quarter: its proposal is gone from the live file, so
-the trade is recorded as yours (`propietario`) instead of the system's. The heartbeat and the
-two-month rule read the live file only in any case (an archived decision is invisible to them).
-Archives made with an earlier version of this program may hold the exits of a lot that was still
+the trade is recorded as yours (`propietario`) instead of the system's. Archives made with an earlier version of this program may hold the exits of a lot that was still
 open: for those, `decision:record` still needs the archive readable.
 
 `DECISIONS_ARCHIVE_DIR` must be an **absolute** path. The engine does not resolve it against

@@ -19,7 +19,7 @@ as JSON on stdin. That command appends to the
 | Event               | `decision:record` writes                                                                                                             | You edit by hand               |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
 | Deposit, withdrawal | the log                                                                                                                              | `Available cash`               |
-| Currency conversion | the log                                                                                                                              | `Available cash` of both silos |
+| Currency conversion | the log                                                                                                                              | `Available cash` of both [silos](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo) |
 | Buy | the log, a new row in `Lots`, `Volume` and `Avg price` of the position, and `Stop loss` (new position only) | `Available cash`               |
 | Sale                | the log, shrinks or removes the `Lots` rows it consumes, recomputes `Volume` and `Avg price`, deletes the position with its last lot | `Available cash`               |
 | Stop change         | the log                                                                                                                              | the `Stop loss` cell           |
@@ -32,14 +32,15 @@ figure, and commit that on its own, as a correction commit. Editing `Volume` alo
 `decision:record` refuses a portfolio whose `Volume` is not the sum of its lots' `Units`, or whose
 lots disagree with the log, and reports everything it found in one round.
 
-The engine rebuilds each [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo)'s
+The engine rebuilds each silo's
 value backwards from today's `portfolio.md` through the logged events, to compare you with the
 [shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio).
 If the two disagree (a trade in the log that `portfolio.md` does not show, or the other way
 round), the evaluation warns about negative cash or oversold units instead of reporting a wrong
 number.
 
-The engine fills in the rest: id, rules version, benchmark price, rules broken, and the system
+The engine fills in the rest: id, [rules version](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#rules-version), [benchmark price](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#benchmark),
+rules broken, and the system
 proposal the trade follows (that sets its `origin`). Omit `date` for today; give it (`YYYY-MM-DD`)
 when you record something that happened earlier.
 
@@ -51,16 +52,19 @@ log and `portfolio.md` together.
 1. **Money in or out, and currency conversions, first within their date.** Later buys are funded by them, and the
    shadow portfolio buys its benchmark with every flow on its own date, so a wrong or missing date
    shifts the comparison.
-2. **A buy:** record it. The engine adds the lot and the position.
-3. **A sale:** record it. The engine takes the result from the lots' own entry prices, so the
-   order against your own edits does not matter, but a sale dated before a lot it would consume
-   is refused. Record sales and buys of the same ticker in the order they happened: a sale
-   consumes the oldest lot first.
-4. **A stop change:** record it, then edit the `Stop loss` cell.
-5. **Cash and timestamp:** set `Available cash` (and `Total cash`, if you keep it) to the
+2. **Buys and sales, in the order they happened.** Record each with its command; the engine
+   adds the lot and the position for a buy, and takes the result from the lots' own entry prices
+   for a sale, so the order against your own edits does not matter. A sale dated before a lot it
+   would consume is refused. The order does matter between trades of the same ticker: a sale
+   consumes the oldest lot first, and the log has no time of day, so the order in which you run
+   the commands is the order of two trades on the same date. For a sale followed by a buy-back of
+   the same ticker on the same day, record the sale first: the other way round, a sale larger than
+   your older lots would consume the lot you have just bought.
+3. **A stop change:** record it, then edit the `Stop loss` cell.
+4. **Cash and timestamp:** set `Available cash` (and `Total cash`, if you keep it) to the
    broker's figures and `last_manual_sync` to now (ISO, UTC). This is the step that silences the
    stale warning.
-6. **Reconcile** each position's `Volume` against the broker (see above).
+5. **Reconcile** each position's `Volume` against the broker (see above).
 
 Each command prints what it recorded and the rules it found broken; read that line, it is the
 engine's feedback on your trade.
@@ -113,13 +117,22 @@ When you add to a position you already hold (a scale-in), `decision:record` writ
 buy's `stop` into its lot only. It leaves the position's `Stop loss` cell as it was, so if the
 stop of the position changes with the buy, edit `Stop loss` by hand.
 
-Every buy is checked against the watchlist and the stop distance; one without a
-[setup](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#setup) is
-recorded with the broken rule `entry_without_setup`. A buy that follows a system proposal or an
-armed breakout within 10 days is attributed to the system (`origin` `sistema`). Any other buy is
-yours (`propietario`), and so is one that follows a `buy_blocked` proposal: it is recorded with
-`overrode_block`. The buy needs `portfolio.md` to exist: without it the lot would be lost, so it
-is refused.
+Every buy is checked against the watchlist, the [setup](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#setup) and the stop, and the rules it breaks are
+recorded with it as these codes:
+
+- `not_in_watchlist`: the ticker is not in `watchlist.md` for that silo;
+- `entry_without_setup`: it is in the watchlist but no system setup
+  (proposal or armed breakout) precedes the buy. The two codes never come together: the first
+  one wins;
+- `no_stop`: you gave no `stop`;
+- `stop_below_min_atr`: the stop is closer to the price than the minimum distance in ATR
+  (`STOP_MIN_ATR`; checked only when the ATR can be fetched);
+- `overrode_block`: the buy follows a `buy_blocked` proposal of the system.
+
+A buy that follows a system proposal or an armed breakout within 10 days is attributed to the
+system (`origin` `sistema`). Any other buy is yours (`propietario`), and so is one that follows a
+`buy_blocked` proposal. The buy needs `portfolio.md` to exist: without it the lot would be lost,
+so it is refused.
 
 ### Sell
 

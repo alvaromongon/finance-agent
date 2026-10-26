@@ -228,7 +228,9 @@ them. It needs one history request per position with a stop; without ATR the pos
     error. All of them are refused before any call to the market data
     provider ("no open lots" and "more units than open" included), and nothing is recorded; the last
     one names both dates.
-- **Reads / writes**: reads `logs/decisions.jsonl` (and the archive), `portfolio.md`, `watchlist.md`,
+- **Reads / writes**: reads `logs/decisions.jsonl` (and the archive, if `DECISIONS_ARCHIVE_DIR` gives
+  one: an owner trade is recorded correctly from the live file alone, because the quarter archive
+  keeps every line of an open lot live, see [Log retention](log-retention.md)), `portfolio.md`, `watchlist.md`,
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
@@ -329,7 +331,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Steps**:
   1. Read the whole decision history: the live `logs/decisions.jsonl` and any
      `decisions-YYYY-QN.jsonl` in `DECISIONS_ARCHIVE_DIR`, de-duplicated by id and in date order; a
-     line that fails to validate is skipped with a warning. Check the portfolio's lots against it,
+     line that fails to validate is skipped with a warning. Without the variable only the live file
+     is read, and the engine says so on stderr, as it does for a directory that does not exist, is
+     not a directory or is not absolute (a note once per run when it is unset; no exit code or output
+     changes; see [Log retention](log-retention.md#reading-the-archive-back)). Check the portfolio's lots against it,
      and stop if they do not match.
   2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
      its [lot](glossary.md#lot)); a lot is closed when its last exit has `lot_units_left` = 0. An

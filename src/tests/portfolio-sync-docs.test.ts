@@ -22,6 +22,21 @@ const JSON_FENCE = /```json\n([\s\S]*?)```/g;
 const jsonBlocks = (md: string): { json: unknown; before: string }[] =>
   [...md.matchAll(JSON_FENCE)].map((m) => ({ json: JSON.parse(m[1]), before: md.slice(0, m.index) }));
 
+/**
+ * Whether the first use of `term` in the prose of a Markdown document is a link to the glossary
+ * (code spans and fences are left out: `Lots` the table is not "lot" the term).
+ */
+const firstUseLinked = (md: string, term: string): boolean => {
+  const prose = md
+    .replace(/```[\s\S]*?```/g, (m) => " ".repeat(m.length))
+    .replace(/`[^`\n]*`/g, (m) => " ".repeat(m.length));
+  const found = new RegExp(`(?<![\\w-])${term}s?(?![\\w-])`, "i").exec(prose);
+  assert.ok(found, `the document never uses "${term}"`);
+  return (
+    prose[found.index - 1] === "[" && /^s?\]\([^)]*glossary\.md#[a-z-]+\)/i.test(prose.slice(found.index + term.length))
+  );
+};
+
 /** The event types each `###` heading of the guide may carry. */
 const HEADING_EVENTS: Record<string, readonly string[]> = {
   "Deposit or withdrawal": ["deposit", "withdrawal"],
@@ -110,6 +125,37 @@ describe("portfolio-sync guide", () => {
   });
 });
 
+describe("portfolio-sync guide: review fixes", () => {
+  it("links the glossary on the first use of silo, rules version, benchmark price, shadow portfolio and lot", async () => {
+    const guide = await read(GUIDE);
+    for (const term of [
+      "silo",
+      "rules version",
+      "benchmark price",
+      "decision log",
+      "shadow portfolio",
+      "setup",
+      "lot",
+    ]) {
+      assert.ok(firstUseLinked(guide, term), `the first use of "${term}" is not a glossary link`);
+    }
+  });
+
+  it("lists every rule code a buy can break, as the engine writes them", async () => {
+    const guide = await read(GUIDE);
+    for (const code of ["not_in_watchlist", "entry_without_setup", "no_stop", "stop_below_min_atr", "overrode_block"]) {
+      assert.ok(guide.includes(`\`${code}\``), `the guide does not name ${code}`);
+    }
+  });
+
+  it("puts a sale before the buy-back of the same ticker on the same day, and says the order of the commands is the order of the day", async () => {
+    const guide = await read(GUIDE);
+    assert.match(guide, /sale followed by a buy-back/);
+    assert.match(guide, /record the sale first/i);
+    assert.match(guide, /no time of day/);
+  });
+});
+
 describe("log retention doc", () => {
   it("covers the queue files, the archive and DECISIONS_ARCHIVE_DIR", async () => {
     const doc = await read(RETENTION);
@@ -148,6 +194,51 @@ describe("log retention doc", () => {
     assert.match(doc, /MAIL_TRANSPORT=none/);
     assert.match(doc, /#33/);
     assert.match(doc, /report files?/i);
+  });
+
+  it("links the glossary on the first use of decision log, heartbeat, silo, lot, SLO and reasoner", async () => {
+    const doc = await read(RETENTION);
+    for (const term of ["decision log", "heartbeat", "silo", "lot", "SLO", "reasoner"]) {
+      assert.ok(firstUseLinked(doc, term), `the first use of "${term}" is not a glossary link`);
+    }
+  });
+
+  it("says the Monday briefing reads back the dated logs of the last 30 days, report files included", async () => {
+    const doc = await read(RETENTION);
+    const section = doc.slice(
+      doc.indexOf("## Report files written when email is off"),
+      doc.indexOf("## Archiving old logs"),
+    );
+    assert.doesNotMatch(section, /nothing reads them back/);
+    assert.match(section, /Monday briefing reads/);
+    assert.match(section, /last 30 days/);
+    assert.match(section, /weekly-review/);
+    assert.doesNotMatch(doc, /\| Nobody: you read them/);
+  });
+
+  it("explains what stays live for an open lot, that decision:record needs no archive, and what the evaluation loses", async () => {
+    const doc = await read(RETENTION);
+    assert.match(doc, /every line of a \[lot\]\(glossary\.md#lot\) that is still open/);
+    assert.match(doc, /only\s+together/);
+    assert.match(doc, /with no archive readable at\s+all, `decision:record` records every later sale correctly/);
+    assert.match(doc, /What is lost without it/);
+    assert.doesNotMatch(doc, /must be set wherever those commands run, including your CI/);
+  });
+
+  it("documents the three engine warnings", async () => {
+    const doc = await read(RETENTION);
+    assert.match(doc, /NOTE: DECISIONS_ARCHIVE_DIR is not set/);
+    assert.match(doc, /does not exist, is not a directory/);
+    assert.match(doc, /is not an absolute path/);
+  });
+
+  it("says in .env.example what the variable is for and that the engine warns", async () => {
+    const env = await read(".env.example");
+    const at = env.indexOf("DECISIONS_ARCHIVE_DIR=");
+    const note = env.slice(env.lastIndexOf("\n\n", at), at);
+    assert.match(note, /decisions:evaluate/);
+    assert.match(note, /warns/i);
+    assert.match(note, /log-retention\.md/);
   });
 
   it("says in .env.example that DECISIONS_ARCHIVE_DIR must be an absolute path", async () => {
