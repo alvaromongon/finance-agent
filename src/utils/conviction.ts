@@ -5,6 +5,7 @@ import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
 import type { Decision } from "../decisions.js";
 import type { Conviction, ConvictionPoint, EngineConviction, MarketRegime } from "../types.js";
+import type { Ticker } from "../ticker.js";
 
 /** What the rubric scores: three engine data points and one from the reasoner. */
 export interface ConvictionRubric {
@@ -58,7 +59,7 @@ export function describeConviction(c: EngineConviction, m: Messages = messages()
 }
 
 /** The ticker's last `screen_interesting` up to `date`: the one that put (or kept) it in the watchlist. */
-export function latestScreening(history: readonly Decision[], ticker: string, date: string): Decision | undefined {
+export function latestScreening(history: readonly Decision[], ticker: Ticker, date: string): Decision | undefined {
   return history
     .filter((d) => d.type === "screen_interesting" && d.ticker === ticker && d.date <= date)
     .reduce<Decision | undefined>((last, d) => (last && last.date > d.date ? last : d), undefined);

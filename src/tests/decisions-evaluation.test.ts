@@ -5,12 +5,14 @@
  */
 // These tests assert the owner's Spanish output; English is covered in i18n.test.ts.
 process.env.OUTPUT_LANGUAGE = "es";
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildDecision, type Decision } from "../decisions.js";
+import { buildDecision, validateDecision, type Decision } from "../decisions.js";
 import {
   buildCutBoard,
   buildEvaluationReport,
+  barsFrom,
   buyPlan,
   closedTrades,
   counterStart,
@@ -37,13 +39,14 @@ import { closes, weekdayBars } from "./fixtures/weekday-bars.js";
 import { en } from "../i18n/en.js";
 import { es } from "../i18n/es.js";
 import { SPANISH } from "./fixtures/spanish.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function assertClose(actual: number | null | undefined, expected: number, epsilon = 1e-9) {
   assert.ok(actual != null && Math.abs(actual - expected) < epsilon, `esperado ${expected}, obtenido ${actual}`);
 }
 
 const FRAMEWORK: EvaluationFramework = {
-  reference: { EUR: "EXSA.DE", USD: "VOO" },
+  reference: { EUR: tk("EXSA.DE"), USD: tk("VOO") },
   minRewardRisk: 2,
   cutReviewTrades: 30,
   cutDecisionTrades: 50,
@@ -53,7 +56,7 @@ const FRAMEWORK: EvaluationFramework = {
 const decision = (fields: Partial<Decision> & Pick<Decision, "type">): Decision =>
   buildDecision({
     date: "2026-09-01",
-    ticker: "AAA",
+    ticker: tk("AAA"),
     currency: "USD",
     origin: "sistema",
     source: "monday-briefing",
@@ -72,7 +75,7 @@ function ohlc(start: string, rows: [number, number, number][]): HistoricalBar[] 
 
 const snapshot = (currency: Currency, cash: number): PortfolioSnapshot => ({
   currency,
-  cash,
+  cash: money(cash),
   positions: [],
   lots: [],
   syncedAt: "2026-09-25",
@@ -273,7 +276,7 @@ const entry = decision({
   source: "portfolio-sync",
   date: "2026-09-02",
   amount: 1000,
-  costs: 4,
+  costs: money(4),
   related_id: proposal.id,
   rules_version: "1.0",
 });
@@ -289,7 +292,7 @@ const exit = decision({
   entry_price: 100,
   stop_initial: 90,
   entry_units: 10,
-  entry_costs: 4,
+  entry_costs: money(4),
   entry_date: "2026-09-02",
   entry_origin: "sistema",
   entry_rules_version: "1.0",
@@ -299,7 +302,7 @@ const ownerEntry = decision({
   type: "entry",
   source: "portfolio-sync",
   origin: "propietario",
-  ticker: "BBB",
+  ticker: tk("BBB"),
   date: "2026-09-03",
   amount: 500,
   stop_initial: 95,
@@ -309,7 +312,7 @@ const ownerExit = decision({
   type: "exit",
   source: "portfolio-sync",
   origin: "propietario",
-  ticker: "BBB",
+  ticker: tk("BBB"),
   date: "2026-09-10",
   price: 95,
   amount: 475,
@@ -332,7 +335,7 @@ const lotExit = (fields: Partial<Decision> = {}): Decision =>
   decision({
     type: "exit",
     source: "portfolio-sync",
-    ticker: "LOT",
+    ticker: tk("LOT"),
     date: "2026-09-10",
     price: 120,
     amount: 480,
@@ -380,17 +383,17 @@ describe("closedTrades", () => {
 
   it("without an initial stop R is not made up, and an exit without a snapshot is not a trade", () => {
     const trades = closedTrades([
-      fullExit({ ticker: "CCC", stop_initial: undefined }),
+      fullExit({ ticker: tk("CCC"), stop_initial: undefined }),
       // Legacy exits cite their entry but carry no snapshot: no legacy path, they are skipped.
       decision({
         type: "exit",
         source: "portfolio-sync",
-        ticker: "DDD",
+        ticker: tk("DDD"),
         price: 110,
         amount: 110,
         related_id: entry.id,
       }),
-      decision({ type: "exit", source: "portfolio-sync", ticker: "EEE", price: 110, amount: 110 }),
+      decision({ type: "exit", source: "portfolio-sync", ticker: tk("EEE"), price: 110, amount: 110 }),
     ]);
     assert.equal(trades.length, 1);
     assert.equal(trades[0].ticker, "CCC");
@@ -417,6 +420,30 @@ describe("closedTrades", () => {
       closedTrades([lotExit({ amount: 600, lot_units_left: 5 }), lotExit({ amount: 600, lot_units_left: 0 })]).length,
       1,
     );
+  });
+
+  describe("the snapshot guard is the validation's (#49)", () => {
+    // Unvalidated input: the closed trades must leave out exactly the exits `validateDecision` refuses.
+    for (const [name, change] of [
+      ["a whitespace-only entry_rules_version", { entry_rules_version: "   " }],
+      ["an entry_date after the exit", { entry_date: "2026-09-11" }],
+      ["a malformed entry_date", { entry_date: "03/08/2026" }],
+      ["an empty related_id", { related_id: "" }],
+      ["an empty entry_origin", { entry_origin: "" as Decision["entry_origin"] }],
+    ] satisfies [string, Partial<Decision>][]) {
+      it(`${name}: not measured, as validation refuses it`, () => {
+        const sale: Decision = { ...fullExit(), ...change }; // never validated
+        assert.throws(() => validateDecision(sale));
+        assert.deepEqual(closedTrades([sale]), []);
+        assert.equal(measureTrades([sale]).unmeasured.exitsWithoutSnapshot.length, 1);
+      });
+    }
+
+    it("a valid snapshot is measured and validates", () => {
+      const sale = fullExit();
+      assert.doesNotThrow(() => validateDecision(sale));
+      assert.equal(closedTrades([sale]).length, 1);
+    });
   });
 
   describe("units of an exit (B1 of PR #56)", () => {
@@ -597,7 +624,7 @@ describe("closedTrades", () => {
       const measured = measureTrades([
         lotExit({ amount: 480, lot_units_left: 9 }),
         lotExit({ amount: 720, lot_units_left: 0 }),
-        fullExit({ ticker: "OK", related_id: "lot-ok" }),
+        fullExit({ ticker: tk("OK"), related_id: "lot-ok" }),
       ]);
       assert.deepEqual(
         measured.trades.map((t) => t.ticker),
@@ -719,12 +746,24 @@ describe("closedTrades", () => {
 
     it("the entry costs differ between exits by design and are not a disagreement", () => {
       const measured = measureTrades([
-        lotExit({ amount: 480, lot_units_left: 6, entry_costs: 1.6 }),
-        lotExit({ amount: 720, lot_units_left: 0, entry_costs: 2.4 }),
+        lotExit({ amount: 480, lot_units_left: 6, entry_costs: money(1.6) }),
+        lotExit({ amount: 720, lot_units_left: 0, entry_costs: money(2.4) }),
       ]);
       assert.equal(measured.trades.length, 1);
       assert.deepEqual(measured.unmeasured.inconsistent, []);
     });
+
+    for (const field of ["entry_date", "entry_rules_version"] as const) {
+      it(`an exit whose snapshot lacks ${field} is an exit without a snapshot: counted and named, never measured with undefined (#48)`, () => {
+        const { [field]: _missing, ...incomplete } = fullExit();
+        const measured = measureTrades([incomplete]);
+        assert.deepEqual(measured.trades, []);
+        assert.deepEqual(measured.unmeasured.exitsWithoutSnapshot, [
+          { currency: "USD", ticker: "LOT", date: "2026-09-10", lotId: "lot-a" },
+        ]);
+        assert.deepEqual(closedTrades([incomplete]), []);
+      });
+    }
 
     it("an exit with the snapshot but no lot_units_left is an exit without a snapshot: counted and named", () => {
       const { lot_units_left: _left, ...noLeft } = fullExit();
@@ -747,22 +786,22 @@ describe("closedTrades", () => {
   it("entry_costs of an exit are its share of the lot's entry costs: R is the same as spread over the lot", () => {
     // Lot of 10 units with 4 of entry costs: 4 units sold carry 1.6, the last 6 carry the remaining 2.4.
     const trades = closedTrades([
-      lotExit({ price: 120, amount: 480, entry_costs: 1.6, lot_units_left: 6 }),
-      lotExit({ price: 105, amount: 630, entry_costs: 2.4, lot_units_left: 0 }),
+      lotExit({ price: 120, amount: 480, entry_costs: money(1.6), lot_units_left: 6 }),
+      lotExit({ price: 105, amount: 630, entry_costs: money(2.4), lot_units_left: 0 }),
     ]);
     // 4/10 × (20 − 0.4) / 10 + 6/10 × (5 − 0.4) / 10
     assertClose(trades[0].rNet, 0.4 * 1.96 + 0.6 * 0.46);
   });
 
   it("the costs of the sale are subtracted per unit sold", () => {
-    const withCosts = closedTrades([fullExit({ costs: 10 })]);
+    const withCosts = closedTrades([fullExit({ costs: money(10) })]);
     // (120 − 100 − 1 per unit) / 10
     assertClose(withCosts[0].rNet, 1.9);
   });
 
   it("the counter starts with the first entry under C v1", () => {
-    assert.equal(counterStart([ownerEntry, entry]), "2026-09-02");
-    assert.equal(counterStart([ownerEntry]), null);
+    assert.equal(counterStart([ownerEntry, entry], []), "2026-09-02");
+    assert.equal(counterStart([ownerEntry], []), null);
   });
 });
 
@@ -792,7 +831,7 @@ describe("unmeasured exits and lots", () => {
     decision({
       type: "exit",
       source: "portfolio-sync",
-      ticker,
+      ticker: tk(ticker),
       date: "2026-09-12",
       price: 110,
       amount: 110,
@@ -832,7 +871,7 @@ describe("unmeasured exits and lots", () => {
 
   it("names an oversold lot by ticker and entry id, and a measured trade stays measured", () => {
     // Lot-a is a clean 10-unit lot; lot-b sells 12 units of a 10-unit lot.
-    const decisions = [fullExit(), fullExit({ ticker: "OVR", related_id: "lot-b", amount: 1440 })];
+    const decisions = [fullExit(), fullExit({ ticker: tk("OVR"), related_id: "lot-b", amount: 1440 })];
     const measured = measureTrades(decisions);
     assert.deepEqual(measured.unmeasured.oversold, [{ currency: "USD", ticker: "OVR", lotId: "lot-b" }]);
     assert.deepEqual(measured.unmeasured.exitsWithoutSnapshot, []);
@@ -849,9 +888,9 @@ describe("unmeasured exits and lots", () => {
   it("a lot whose exits do not add up is a warning of its own kind, as data, in both languages", () => {
     const decisions = [
       fullExit(),
-      lotExit({ ticker: "BAD", related_id: "lot-c", amount: 480, lot_units_left: 9 }),
-      lotExit({ ticker: "DIS", related_id: "lot-d", amount: 480, lot_units_left: 6 }),
-      lotExit({ ticker: "DIS", related_id: "lot-d", amount: 720, lot_units_left: 0, entry_price: 101 }),
+      lotExit({ ticker: tk("BAD"), related_id: "lot-c", amount: 480, lot_units_left: 9 }),
+      lotExit({ ticker: tk("DIS"), related_id: "lot-d", amount: 480, lot_units_left: 6 }),
+      lotExit({ ticker: tk("DIS"), related_id: "lot-d", amount: 720, lot_units_left: 0, entry_price: 101 }),
     ];
     const { report } = withBoard(decisions);
     assert.deepEqual(
@@ -876,11 +915,11 @@ describe("unmeasured exits and lots", () => {
   it("the unmeasured kinds sit under one heading, grouped by kind, not by comparing translated titles", () => {
     const { report } = withBoard([
       bare("DDD"),
-      fullExit({ ticker: "OVR", amount: 1440 }),
-      lotExit({ ticker: "BAD", related_id: "lot-c", amount: 480, lot_units_left: 9 }),
+      fullExit({ ticker: tk("OVR"), amount: 1440 }),
+      lotExit({ ticker: tk("BAD"), related_id: "lot-c", amount: 480, lot_units_left: 9 }),
     ]);
     for (const m of [en, es]) {
-      const groups = boardWarnings(report.board, m).filter((g) => g.title !== m.evaluation.reconstructionMismatch);
+      const groups = boardWarnings(report.board, m).filter((g) => g.title === m.evaluation.unmeasured.title);
       assert.equal(groups.length, 1, "one heading");
       assert.equal(groups[0].title, m.evaluation.unmeasured.title);
       assert.equal(groups[0].lines.length, 4, "the count and the exit, the oversold lot, the inconsistent lot");
@@ -888,8 +927,8 @@ describe("unmeasured exits and lots", () => {
   });
 
   it("every kind goes through the board's one warnings list, as structured data", () => {
-    const { report } = withBoard([bare("DDD"), fullExit({ ticker: "OVR", amount: 1440 })]);
-    const unmeasured = report.board.warnings.filter((w) => w.kind !== "reconstruction");
+    const { report } = withBoard([bare("DDD"), fullExit({ ticker: tk("OVR"), amount: 1440 })]);
+    const unmeasured = lotWarnings(report.board);
     assert.deepEqual(unmeasured[0], {
       kind: "exitsWithoutSnapshot",
       exits: [{ currency: "USD", ticker: "DDD", date: "2026-09-12", lotId: "gone" }],
@@ -900,17 +939,53 @@ describe("unmeasured exits and lots", () => {
     });
   });
 
-  it("the silo reconstruction warnings travel in the same list, rendered in the renderer's language", () => {
-    const board = buildCutBoard({ ...INPUT, bars: new Map() });
-    const siloLines = board.silos.flatMap((s) => s.warnings);
-    assert.ok(siloLines.length > 0, "without bars the silos cannot be reconstructed");
-    assert.deepEqual(board.warnings, [{ kind: "reconstruction", lines: siloLines }]);
-    assert.equal(boardWarnings(board, en)[0].title, en.evaluation.reconstructionMismatch);
-    assert.equal(boardWarnings(board, es)[0].title, es.evaluation.reconstructionMismatch);
+  it("the silo reconstruction warnings are data held once on the board, whatever the language, and each renderer puts them into its own", () => {
+    const noBars = { ...INPUT, bars: new Map() };
+    // Without bars the silos cannot be reconstructed: both lose their shadow. The exact value, so prose
+    // in any other field would fail it.
+    const structured = [
+      {
+        kind: "reconstruction",
+        warnings: [
+          { kind: "noShadow", currency: "EUR", reference: "EXSA.DE" },
+          { kind: "noShadow", currency: "USD", reference: "VOO" },
+        ],
+      },
+    ];
+    assert.equal(process.env.OUTPUT_LANGUAGE, "es");
+    const underEs = buildCutBoard(noBars);
+    assert.deepEqual(underEs.warnings, structured);
+    process.env.OUTPUT_LANGUAGE = "en";
+    let underEn: ReturnType<typeof buildCutBoard>;
+    try {
+      underEn = buildCutBoard(noBars);
+    } finally {
+      process.env.OUTPUT_LANGUAGE = "es";
+    }
+    assert.deepEqual(underEn.warnings, underEs.warnings, "the same data under es and en");
+
+    // Produced under es, rendered in English: the language is the renderer's.
+    const groups = boardWarnings(underEs, en);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].title, en.evaluation.reconstructionMismatch);
+    const english = groups[0].lines;
+    assert.equal(english.length, 2);
+    assert.ok(
+      english.every((l) => l.includes("no closes for")),
+      english.join("\n"),
+    );
+    const spanish = boardWarnings(underEs, es);
+    assert.equal(spanish[0].title, es.evaluation.reconstructionMismatch);
+    assert.notDeepEqual(english, spanish[0].lines);
+    const report = renderDecisionsEvaluation(buildEvaluationReport(noBars), en);
+    assert.ok(report.includes(en.evaluation.reconstructionMismatch));
+    for (const line of spanish[0].lines) {
+      assert.ok(!report.includes(line), "no Spanish warning line in the English report");
+    }
   });
 
   it("the warnings are put into words by the renderer, in its language", () => {
-    const { report } = withBoard([bare("DDD"), fullExit({ ticker: "OVR", amount: 1440 })]);
+    const { report } = withBoard([bare("DDD"), fullExit({ ticker: tk("OVR"), amount: 1440 })]);
     const english = extractCutBoard(renderDecisionsEvaluation(report, en))!;
     assert.match(english, /Some exits and lots were not measured/);
     assert.match(english, /1 exit without a lot snapshot/);
@@ -943,7 +1018,7 @@ describe("unmeasured exits and lots", () => {
 
 /** A held lot of the 10-unit lot of `lotExit` (ticker LOT, entry `lot-a`), with `units` still open. */
 const heldLot = (fields: Partial<Lot> = {}): Lot => ({
-  ticker: "LOT",
+  ticker: tk("LOT"),
   entryId: "lot-a",
   date: "2026-08-03",
   units: 6,
@@ -957,10 +1032,11 @@ const heldLot = (fields: Partial<Lot> = {}): Lot => ({
   ...fields,
 });
 
-/** The cut board of a log and the USD silo's `Lots`; nothing else is held. */
+/** The board's warnings about the lots (the unmeasured exits and lots), without the silo reconstruction. */
 const lotWarnings = (board: ReturnType<typeof buildCutBoard>) =>
-  board.warnings.filter((w) => w.kind !== "reconstruction");
+  board.warnings.filter((w) => w.kind !== "reconstruction" && w.kind !== "decisionsMissing");
 
+/** The cut board of a log and the USD silo's `Lots`; nothing else is held. */
 const boardOf = (decisions: Decision[], lots: Lot[]) =>
   buildCutBoard({
     ...INPUT,
@@ -991,7 +1067,7 @@ describe("open trades come from Lots", () => {
   });
 
   it("two lots, one of them sold in part: both are open, an untouched one and a partly sold one", () => {
-    const untouched = heldLot({ ticker: "TWO", entryId: "lot-b", units: 5, entryUnits: 5, date: "2026-08-10" });
+    const untouched = heldLot({ ticker: tk("TWO"), entryId: "lot-b", units: 5, entryUnits: 5, date: "2026-08-10" });
     const board = boardOf([lotExit()], [heldLot(), untouched]);
     assert.deepEqual(
       board.open.map((o) => [o.ticker, o.units]),
@@ -1012,7 +1088,7 @@ describe("open trades come from Lots", () => {
   });
 
   it("an entry with no lot is not an open trade, and an exit's related_id does not make one", () => {
-    const withoutLot = decision({ type: "entry", ticker: "NOL", amount: 500, rules_version: "1.0" });
+    const withoutLot = decision({ type: "entry", ticker: tk("NOL"), amount: 500, rules_version: "1.0" });
     assert.deepEqual(boardOf([withoutLot], []).open, []);
     assert.deepEqual(boardOf([lotExit()], []).open, [], "a partly sold lot that is not in Lots is not held");
   });
@@ -1021,7 +1097,7 @@ describe("open trades come from Lots", () => {
     const entryLine = decision({
       type: "entry",
       id: "lot-a",
-      ticker: "LOT",
+      ticker: tk("LOT"),
       date: "2026-08-03",
       amount: 1000,
       rules_version: "1.0",
@@ -1074,7 +1150,7 @@ describe("open trades come from Lots", () => {
 describe("counterStart reads the entries, the exits' snapshots and the lots", () => {
   it("a lot or an exit snapshot starts the counter when its entry line is archived", () => {
     assert.equal(counterStart([], [heldLot()]), "2026-08-03");
-    assert.equal(counterStart([lotExit()]), "2026-08-03");
+    assert.equal(counterStart([lotExit()], []), "2026-08-03");
   });
 
   it("is the earliest of the three, under the same origin and rules-version filter", () => {
@@ -1101,10 +1177,7 @@ describe("buildCutBoard", () => {
     const usd = board.silos.find((s) => s.currency === "USD")!;
     assertClose(usd.real, 2171, 1e-6);
     assertClose(usd.shadow, 2000, 1e-6);
-    assert.deepEqual(
-      board.silos.flatMap((s) => s.warnings),
-      [],
-    );
+    assert.deepEqual(board.warnings, []);
     assertClose(board.totalEur?.real, 500 + 2171 / 1.25, 1e-6);
     assertClose(board.totalEur?.shadow, 500 + 2000 / 1.25, 1e-6);
   });
@@ -1126,14 +1199,70 @@ describe("buildCutBoard", () => {
   });
 });
 
+describe("a log loaded without its archive (#69)", () => {
+  const archivedEntry = (): Parameters<typeof boardOf> => [[lotExit()], [heldLot()]];
+
+  it("warns when the counter started before the earliest decision loaded", () => {
+    const board = boardOf(...archivedEntry());
+    assert.equal(board.counterStart, "2026-08-03");
+    assert.deepEqual(
+      board.warnings.filter((w) => w.kind === "decisionsMissing"),
+      [{ kind: "decisionsMissing", before: "2026-09-10" }],
+    );
+  });
+
+  it("does not warn when the entry is in the log, nor when the counter has not started", () => {
+    const entryLine = decision({
+      type: "entry",
+      id: "lot-a",
+      ticker: tk("LOT"),
+      date: "2026-08-03",
+      amount: 1000,
+      rules_version: "1.0",
+    });
+    const missing = (board: ReturnType<typeof boardOf>) => board.warnings.filter((w) => w.kind === "decisionsMissing");
+    assert.deepEqual(missing(boardOf([entryLine, lotExit()], [heldLot()])), []);
+    assert.deepEqual(missing(boardOf([ownerEntry], [])), []);
+    assert.deepEqual(missing(boardOf([], [])), []);
+  });
+
+  it("is worded in both languages, with the date and the variable to check", () => {
+    const board = boardOf(...archivedEntry());
+    const missing = (m: typeof en) =>
+      boardWarnings(board, m).filter((g) => g.title === m.evaluation.decisionsMissing.title);
+    const [es_, en_] = [missing(es), missing(en)];
+    assert.deepEqual(en_, [
+      {
+        title: "> [!warning] Part of the decision log was not loaded",
+        lines: ["decisions are missing before 2026-09-10: is `DECISIONS_ARCHIVE_DIR` set?"],
+      },
+    ]);
+    assert.deepEqual(es_, [
+      {
+        title: "> [!warning] Faltan decisiones del registro",
+        lines: ["faltan decisiones anteriores al 2026-09-10: ¿está definido `DECISIONS_ARCHIVE_DIR`?"],
+      },
+    ]);
+  });
+
+  it("the bars reach back to the counter start, not to the earliest decision loaded", () => {
+    const portfolios = { EUR: snapshot("EUR", 500), USD: { ...snapshot("USD", 2171), lots: [heldLot()] } };
+    assert.equal(barsFrom([lotExit()], portfolios), "2026-08-03");
+    // Decisions older than the counter (rehearsal, the owner's) still set how far back the bars go.
+    const older = decision({ type: "entry", origin: "propietario", date: "2026-07-01", amount: 500 });
+    assert.equal(barsFrom([older, lotExit()], portfolios), "2026-07-01");
+    assert.equal(barsFrom([], { EUR: snapshot("EUR", 0), USD: snapshot("USD", 0) }), null);
+  });
+});
+
 describe("decisionGroupings", () => {
   it("splits the screening into ranking and exploration; drawn ones go in neither (ADR-0012)", () => {
     const screen = (fields: Partial<Decision>) => decision({ type: "screen_rejected", source: "screening", ...fields });
     const evals = evaluateDecisions(
       [
-        screen({ ticker: "RANKED", rank: 1, score: 1 }),
-        screen({ ticker: "EXPLORED", rank: 40, score: 0.2, exploration: true }),
-        screen({ ticker: "DRAWN" }),
+        screen({ ticker: tk("RANKED"), rank: 1, score: 1 }),
+        screen({ ticker: tk("EXPLORED"), rank: 40, score: 0.2, exploration: true }),
+        screen({ ticker: tk("DRAWN") }),
       ],
       new Map(),
       FRAMEWORK,
@@ -1150,7 +1279,7 @@ describe("decisionGroupings", () => {
 
   it("groups the interesting ones by rubric conviction, only since the engine computes it", () => {
     const interesting = (ticker: string, fields: Partial<Decision>) =>
-      decision({ type: "screen_interesting", source: "screening", ticker, ...fields });
+      decision({ type: "screen_interesting", source: "screening", ticker: tk(ticker), ...fields });
     const evals = evaluateDecisions(
       [
         interesting("HIGH", { conviction: "high", rules_version: "0.8" }),
@@ -1175,7 +1304,7 @@ describe("decisionGroupings", () => {
     const buy = (ticker: string, fields: Partial<Decision>) =>
       decision({
         type: "buy_blocked",
-        ticker,
+        ticker: tk(ticker),
         price: 100,
         eligibility: { verdict: "blocked", reasons: ["rr_below_min"] },
         ...fields,
@@ -1204,7 +1333,7 @@ describe("decisionGroupings", () => {
 
   it("splits the blocked ones into two disjoint groups: by regime and by other reasons", () => {
     const blocked = (ticker: string, reasons: string[]) =>
-      decision({ type: "buy_blocked", ticker, price: 100, eligibility: { verdict: "blocked", reasons } });
+      decision({ type: "buy_blocked", ticker: tk(ticker), price: 100, eligibility: { verdict: "blocked", reasons } });
     const evals = evaluateDecisions(
       [blocked("REGIME", ["trend_bearish", "regime_adverse"]), blocked("RR", ["rr_below_min"])],
       new Map(),
@@ -1230,12 +1359,12 @@ describe("evaluationSymbols", () => {
         ...snapshot("EUR", 0),
         positions: [
           {
-            ticker: "SAN.MC",
+            ticker: tk("SAN.MC"),
             currency: "EUR" as const,
             volume: 1,
             avgPrice: 1,
             currentPrice: 1,
-            pl: 0,
+            pl: money(0),
             stopLoss: null,
           },
         ],

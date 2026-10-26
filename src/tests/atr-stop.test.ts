@@ -3,6 +3,7 @@
  * ATR, so the same percentage distance is "loose" for a calm security and
  * "tight" for a volatile one. No network — the history provider is injected.
  */
+import { money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -15,15 +16,16 @@ import {
 } from "../utils/atr-stop.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Position } from "../types.js";
+import { parseTicker as tk } from "../ticker.js";
 
 function position(overrides: Partial<Position> = {}): Position {
   return {
-    ticker: "MSFT",
+    ticker: tk("MSFT"),
     currency: "USD",
     volume: 1,
     avgPrice: 492.01,
     currentPrice: 501.02,
-    pl: 9.01,
+    pl: money(9.01),
     stopLoss: 500,
     ...overrides,
   };
@@ -109,10 +111,10 @@ describe("detectTightStops", () => {
   it("the bound is strict: exactly the minimum does not warn", () => {
     // Round numbers on purpose: the multiple is exact in binary and the test
     // checks the bound, not the floating-point error.
-    const atLimit = [position({ ticker: "X", stopLoss: 100 - MIN_STOP_ATR * 3 })];
+    const atLimit = [position({ ticker: tk("X"), stopLoss: 100 - MIN_STOP_ATR * 3 })];
     assert.deepEqual(detectTightStops(atLimit, new Map([["X", 100]]), new Map([["X", 3]])), []);
 
-    const slightlyCloser = [position({ ticker: "X", stopLoss: 100 - MIN_STOP_ATR * 3 + 0.01 })];
+    const slightlyCloser = [position({ ticker: tk("X"), stopLoss: 100 - MIN_STOP_ATR * 3 + 0.01 })];
     assert.equal(detectTightStops(slightlyCloser, new Map([["X", 100]]), new Map([["X", 3]])).length, 1);
   });
 
@@ -163,7 +165,7 @@ describe("fetchAtrForPositions", () => {
     };
 
     const atrs = await fetchAtrForPositions(
-      [position({ ticker: "AVGO" }), position({ ticker: "UNH", stopLoss: null })],
+      [position({ ticker: tk("AVGO") }), position({ ticker: tk("UNH"), stopLoss: null })],
       provider,
     );
 
@@ -182,7 +184,7 @@ describe("fetchAtrForPositions", () => {
     };
 
     const atrs = await fetchAtrForPositions(
-      [position({ ticker: "AVGO" }), position({ ticker: "UNH" })],
+      [position({ ticker: tk("AVGO") }), position({ ticker: tk("UNH") })],
       provider,
       (msg) => warnings.push(msg),
     );

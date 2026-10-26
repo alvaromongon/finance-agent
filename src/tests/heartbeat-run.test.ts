@@ -16,7 +16,8 @@ import { tmpdir } from "node:os";
 import { bar, extend, uptrend } from "./fixtures/setup-bars.js";
 import type { IMarketDataProvider, HistoricalBar } from "../providers/types.js";
 import type { IAnalystProvider } from "../analyst/types.js";
-import type { Currency, Signal } from "../types.js";
+import type { Currency, PortfolioSnapshot, Signal } from "../types.js";
+import { parsePositions } from "../utils/vault-parser.js";
 import { entryLines, lotsSection, type HeldLot } from "./fixtures/lots.js";
 
 const WATCHLIST_MD = `---
@@ -105,6 +106,7 @@ describe("runHeartbeat", () => {
       analyst: IAnalystProvider;
       headlines?: (ticker: string) => Promise<string[]>;
       lastMarketDate?: (ticker: string) => Promise<Date | null>;
+      lotsCheck?: (portfolio: PortfolioSnapshot) => string[];
     },
   ) => Promise<void>;
   const escalated: Signal[] = [];
@@ -180,6 +182,112 @@ describe("runHeartbeat", () => {
     assert.doesNotMatch(emails[0].subject, /pendiente de análisis/);
   });
 
+  describe("a ticker that does not parse (ADR-0016): the row is skipped, the rest keeps working", () => {
+    const BAD_ROW = "| M&M.NS | 4 | 100 | 100 | 0 | 90 |";
+
+    it("a Positions row: the other positions are priced, the crossed stop goes out, the digest warns naming the row", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}\n${BAD_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) => w.includes("M&M.NS")),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is still detected");
+      assert.match(email.subject, /ticker que no se lee/);
+      assert.match(email.body, /## USD — Positions: Ticker "M&M\.NS"/);
+      assert.match(await readFile(join(vaultDir, "portfolio.md"), "utf8"), /^\| CAT \| 1 \| 218\.00 \| 210,77 /m);
+    });
+
+    it("a watchlist entry of another currency: the USD run is not stopped and the digest names the entry", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const list = await readFile(join(vaultDir, "watchlist.md"), "utf8");
+      await writeFile(
+        join(vaultDir, "watchlist.md"),
+        list.replace(
+          "\n```\n",
+          '\n  - ticker: "M&M.NS"\n    name: Mahindra\n    market: NSE\n    currency: EUR\n    horizon: medium\n    thesis: "x"\n```\n',
+        ),
+        "utf8",
+      );
+      await heartbeat();
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(email.body, /watchlist\.md: entry 3.*M&M\.NS/);
+    });
+
+    it("the warning repeats in every run while the row lasts", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${BAD_ROW}`, [MSFT_LOT]);
+      await heartbeat();
+      await heartbeat();
+
+      const emails = await outbox();
+      assert.equal(emails.length, 2);
+      for (const email of emails) assert.match(email.body, /M&M\.NS/);
+    });
+  });
+
+  describe("a money cell that cannot be counted in cents (#83, ADR-0015): read as unreadable, the stop alerts still go out", () => {
+    for (const huge of ["1e307", "-1e307"]) {
+      const crossedStopGoesOut = async () => {
+        const [email] = await outbox();
+        assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is still detected");
+        return email;
+      };
+      const edit = async (change: (text: string) => string) => {
+        const path = join(vaultDir, "portfolio.md");
+        await writeFile(path, change(await readFile(path, "utf8")), "utf8");
+      };
+
+      it(`a Lots Entry costs of ${huge}: the row is skipped with a warning naming it and the reason`, async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        await edit((text) => text.replace(/(\| lot-msft [^\n]*?\| )— (\| sistema)/, `$1${huge} $2`));
+
+        const warnings = await heartbeat();
+
+        assert.ok(
+          warnings.some((w) => w.includes("Lots row 1 (MSFT, lot-msft)") && w.includes("Entry costs")),
+          `warnings: ${JSON.stringify(warnings)}`,
+        );
+        const email = await crossedStopGoesOut();
+        assert.match(email.body, /Lots row 1 \(MSFT, lot-msft\).*Entry costs/);
+      });
+
+      it(`a Positions P/L of ${huge}: the position is still watched, its P/L reads as unreadable`, async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW.replace("-1.10", huge)}`, [MSFT_LOT, CAT_LOT]);
+        const warnings = await heartbeat();
+        const email = await crossedStopGoesOut();
+        assert.ok(
+          warnings.some((w) => /Positions.*CAT.*P\/L.*too large to count in cents/.test(w)),
+          `warnings: ${JSON.stringify(warnings)}`,
+        );
+        assert.match(email.subject, /celda que no se puede contar/);
+        assert.match(email.body, /Positions.*CAT.*P\/L.*too large to count in cents/);
+      });
+
+      for (const row of ["Total cash", "Available cash"]) {
+        it(`a Cash row ${row} of ${huge}: read as unreadable and named`, async () => {
+          await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+          await edit((text) =>
+            row === "Total cash"
+              ? text.replace("| Available cash | $1000.00 |", `| Available cash | $1000.00 |\n| Total cash | ${huge} |`)
+              : text.replace("$1000.00", huge),
+          );
+          const warnings = await heartbeat();
+          const email = await crossedStopGoesOut();
+          assert.ok(
+            warnings.some((w) => new RegExp(`Cash.*${row}.*too large to count in cents`).test(w)),
+            `warnings: ${JSON.stringify(warnings)}`,
+          );
+          assert.match(email.subject, /celda que no se puede contar/);
+          assert.match(email.body, new RegExp(`Cash.*${row}.*too large to count in cents`));
+        });
+      }
+    }
+  });
+
   describe("Lots that do not match (ADR-0015): it keeps watching and warns loudly", () => {
     it("Volume that is not the sum of the units of its lots: the crossed stop still goes out, with the warning", async () => {
       // CAT trades below its stop; its row says 1 unit and its lot 3.
@@ -192,8 +300,24 @@ describe("runHeartbeat", () => {
       );
       const [email] = await outbox();
       assert.match(email.subject, /stop cruzado: CAT/, "the position is still watched for risk");
-      assert.match(email.subject, /lotes que no cuadran/);
+      assert.match(email.subject, /problema con los lotes/);
       assert.match(email.body, /CAT.*Volume 1/);
+    });
+
+    it("a lots check that throws does not lose the crossed stop: the digest goes out with it and the run fails", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await assert.rejects(
+        heartbeat({
+          lotsCheck: () => {
+            throw new Error("lots check blew up");
+          },
+        }),
+        /lots check blew up/,
+      );
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is in the digest that was sent");
+      assert.doesNotMatch(email.subject, /lotes/, "a check that failed is not reported as a warning");
     });
 
     it("the alerting path does not read the decision log: Volume is checked from portfolio.md alone (#52)", async () => {
@@ -209,7 +333,7 @@ describe("runHeartbeat", () => {
       );
       const [email] = await outbox();
       assert.match(email.subject, /stop ceñido: MSFT/);
-      assert.doesNotMatch(email.subject, /lotes que no cuadran/);
+      assert.doesNotMatch(email.subject, /problema con los lotes/);
     });
 
     it("a Volume that does not match is found by the lots' own Ticker column", async () => {
@@ -230,10 +354,51 @@ describe("runHeartbeat", () => {
       const emails = await outbox();
       assert.equal(emails.length, 2, "a lots warning alone still produces a digest, every run");
       for (const email of emails) {
-        assert.match(email.subject, /lotes que no cuadran/);
+        assert.match(email.subject, /problema con los lotes/);
         assert.match(email.body, /MSFT.*Volume 1/);
       }
       assert.doesNotMatch(emails[1].subject, /stop ceñido/, "what is deduplicated still is");
+    });
+
+    it("a lot row that does not read is a lots warning naming the row and the reason, not only a Volume mismatch", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const path = join(vaultDir, "portfolio.md");
+      const text = await readFile(path, "utf8");
+      await writeFile(path, text.replace(/\| sistema \|(?=[^\n]*\n[^\n]*\| lot-cat)/, "| Sistema |"), "utf8");
+
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) =>
+          w.includes('portfolio.md (USD): Lots row 1 (MSFT, lot-msft): Origin "Sistema" is not sistema or propietario'),
+        ),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      const [email] = await outbox();
+      assert.match(email.body, /Lots row 1 \(MSFT, lot-msft\)/);
+    });
+
+    it("a Lots heading that is lost while its table stays: no phantom positions, the missing section is reported", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const path = join(vaultDir, "portfolio.md");
+      const text = await readFile(path, "utf8");
+      const edited = text.replace("## USD — Lots\n", "");
+      assert.notEqual(edited, text);
+      assert.ok(edited.includes("| Entry id |"), "the table stays");
+      await writeFile(path, edited, "utf8");
+
+      const warnings = await heartbeat();
+
+      assert.ok(
+        warnings.some((w) => w.includes('portfolio.md (USD): missing section "## USD — Lots"')),
+        `warnings: ${JSON.stringify(warnings)}`,
+      );
+      assert.deepEqual(
+        parsePositions(edited, "USD").map((p) => p.ticker),
+        ["MSFT", "CAT"],
+      );
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
     });
 
     describe("a Lots table that does not read", () => {
@@ -254,8 +419,8 @@ describe("runHeartbeat", () => {
         );
         const [email] = await outbox();
         assert.match(email.subject, /stop cruzado: CAT/);
-        assert.match(email.subject, /lotes que no cuadran/);
-        assert.match(email.body, /portfolio\.md: ## USD — Lots: columns Entry units missing/);
+        assert.match(email.subject, /problema con los lotes/);
+        assert.match(email.body, /portfolio\.md \(USD\): ## USD — Lots: columns Entry units missing/);
       });
 
       it("two consecutive runs with the same mismatch both include the warning", async () => {
@@ -290,7 +455,7 @@ describe("runHeartbeat", () => {
           );
           const [email] = await outbox();
           assert.match(email.subject, /stop cruzado: CAT/);
-          assert.match(email.body, /portfolio\.md: missing section "## USD — Lots"/);
+          assert.match(email.body, /portfolio\.md \(USD\): missing section "## USD — Lots"/);
         });
       }
 

@@ -3,6 +3,7 @@
 // computed two different ways. The cutoff table goes first and under a fixed
 // heading, because monday-briefing:prepare extracts it for the prompt.
 import { messages, type Messages } from "../i18n/index.js";
+import { formatMoney } from "../money.js";
 import { STOP_ATR_BY_HORIZON } from "./atr-stop.js";
 import {
   MIN_SAMPLE,
@@ -18,6 +19,7 @@ import {
   type EvaluationReport,
 } from "./decisions-evaluation.js";
 import { normalizeEol } from "./parse.js";
+import type { SiloWarning } from "./silo-performance.js";
 
 // Format, not output: monday-briefing:prepare finds the board by this heading, so
 // it is the same in every language.
@@ -29,8 +31,9 @@ export function fmtPct(pct: number): string {
 }
 
 const fmtR = (r: number) => `${r >= 0 ? "+" : ""}${r.toFixed(2)}R`;
-const fmtMoney = (n: number) => n.toFixed(2);
-const fmtSigned = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+/** A price, stop or target: not money, two decimals. */
+const fmtPrice = (n: number) => n.toFixed(2);
+const fmtSigned = (n: number) => `${n >= 0 ? "+" : ""}${formatMoney(n)}`;
 
 function opt<T>(value: T | null | undefined, fmt: (v: T) => string): string {
   return value == null ? "—" : fmt(value);
@@ -44,6 +47,21 @@ function smallSampleWarning(sizes: readonly number[], m: Messages): string[] {
 /** Skipped exits named one by one in the board; the rest are only counted (until #44 every real exit is skipped). */
 const SKIPPED_EXITS_SHOWN = 10;
 
+/** A silo reconstruction warning in words, in the language of `m`. */
+function siloWarningLine(w: SiloWarning, m: Messages): string {
+  const t = m.evaluation.siloWarnings;
+  switch (w.kind) {
+    case "negativeCash":
+      return t.negativeCash(w.currency, w.start, formatMoney(w.cash));
+    case "oversold":
+      return t.oversold(w.currency, w.ticker, w.units.toFixed(4), w.start);
+    case "missingCloses":
+      return t.missingCloses(w.currency, w.tickers.join(", "));
+    case "noShadow":
+      return t.noShadow(w.currency, w.reference);
+  }
+}
+
 /**
  * The board's warnings in words: one heading and its lines per group, in the language of `m`. The
  * group is decided by the kind of the warning, never by comparing the translated headings: the
@@ -51,37 +69,45 @@ const SKIPPED_EXITS_SHOWN = 10;
  */
 export function boardWarnings(board: CutBoard, m: Messages = messages()): { title: string; lines: string[] }[] {
   const t = m.evaluation;
-  const groups = board.warnings.map((w): { group: "reconstruction" | "unmeasured"; title: string; lines: string[] } => {
-    switch (w.kind) {
-      case "reconstruction":
-        return { group: "reconstruction", title: t.reconstructionMismatch, lines: w.lines };
-      case "exitsWithoutSnapshot": {
-        const shown = w.exits.slice(0, SKIPPED_EXITS_SHOWN);
-        const rest = w.exits.length - shown.length;
-        return {
-          group: "unmeasured",
-          title: t.unmeasured.title,
-          lines: [
-            t.unmeasured.exitsWithoutSnapshot(w.exits.length),
-            ...shown.map((e) => t.unmeasured.skippedExit(e.ticker ?? "—", e.date, e.lotId)),
-            ...(rest > 0 ? [t.unmeasured.moreSkippedExits(rest)] : []),
-          ],
-        };
+  const groups = board.warnings.map(
+    (w): { group: "reconstruction" | "unmeasured" | "missing"; title: string; lines: string[] } => {
+      switch (w.kind) {
+        case "decisionsMissing":
+          return { group: "missing", title: t.decisionsMissing.title, lines: [t.decisionsMissing.line(w.before)] };
+        case "reconstruction":
+          return {
+            group: "reconstruction",
+            title: t.reconstructionMismatch,
+            lines: w.warnings.map((x) => siloWarningLine(x, m)),
+          };
+        case "exitsWithoutSnapshot": {
+          const shown = w.exits.slice(0, SKIPPED_EXITS_SHOWN);
+          const rest = w.exits.length - shown.length;
+          return {
+            group: "unmeasured",
+            title: t.unmeasured.title,
+            lines: [
+              t.unmeasured.exitsWithoutSnapshot(w.exits.length),
+              ...shown.map((e) => t.unmeasured.skippedExit(e.ticker ?? "—", e.date, e.lotId)),
+              ...(rest > 0 ? [t.unmeasured.moreSkippedExits(rest)] : []),
+            ],
+          };
+        }
+        case "oversoldLots":
+          return {
+            group: "unmeasured",
+            title: t.unmeasured.title,
+            lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)),
+          };
+        case "inconsistentLots":
+          return {
+            group: "unmeasured",
+            title: t.unmeasured.title,
+            lines: w.lots.map((l) => t.unmeasured.inconsistentLot(l.ticker, l.lotId, l.reason)),
+          };
       }
-      case "oversoldLots":
-        return {
-          group: "unmeasured",
-          title: t.unmeasured.title,
-          lines: w.lots.map((l) => t.unmeasured.oversoldLot(l.ticker, l.lotId)),
-        };
-      case "inconsistentLots":
-        return {
-          group: "unmeasured",
-          title: t.unmeasured.title,
-          lines: w.lots.map((l) => t.unmeasured.inconsistentLot(l.ticker, l.lotId, l.reason)),
-        };
-    }
-  });
+    },
+  );
   return groups
     .reduce<{ group: string; title: string; lines: string[] }[]>((merged, g) => {
       const same = merged.find((x) => x.group === g.group);
@@ -114,8 +140,8 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
     board.totalEur == null
       ? t.totalNone
       : t.total(
-          fmtMoney(board.totalEur.real),
-          fmtMoney(board.totalEur.shadow),
+          formatMoney(board.totalEur.real),
+          formatMoney(board.totalEur.shadow),
           fmtSigned(board.totalEur.real - board.totalEur.shadow),
         );
 
@@ -129,7 +155,7 @@ function cutBoardSection(board: CutBoard, m: Messages): string[] {
     ...t.siloHeader,
     ...board.silos.map(
       (s) =>
-        `| ${s.currency} | ${s.reference} | ${s.start} | ${fmtMoney(s.real)} | ${opt(s.shadow, fmtMoney)} | ` +
+        `| ${s.currency} | ${s.reference} | ${s.start} | ${formatMoney(s.real)} | ${opt(s.shadow, formatMoney)} | ` +
         `${s.shadow == null ? "—" : fmtSigned(s.real - s.shadow)} | ${opt(s.realReturnPct, fmtPct)} | ${opt(s.shadowReturnPct, fmtPct)} | ` +
         `${s.drawdown.currentPct.toFixed(1)}% | ${s.drawdown.maxPct.toFixed(1)}% |`,
     ),
@@ -190,7 +216,7 @@ function tradesSection(trades: readonly ClosedTrade[], m: Messages): string[] {
     ...trades.map(
       (tr) =>
         `| ${tr.entryDate} | ${tr.exitDate} | ${tr.ticker} | ${tr.currency} | ${tr.origin}${tr.counts ? " ✓" : ""} | ` +
-        `${tr.rulesVersion} | ${tr.ruleViolations.join(", ") || "—"} | ${opt(tr.stop, fmtMoney)} | ${opt(tr.rNet, fmtR)} |`,
+        `${tr.rulesVersion} | ${tr.ruleViolations.join(", ") || "—"} | ${opt(tr.stop, fmtPrice)} | ${opt(tr.rNet, fmtR)} |`,
     ),
     "",
     t.countsLegend,
@@ -270,9 +296,9 @@ function detailSection(evals: readonly DecisionEvaluation[], m: Messages): strin
     const d = e.decision;
     const x = e.excursion;
     const horizonCells = SESSION_HORIZONS.map((h) => `${returnCell(e, h, m)} | ${excessCell(e, h)}`).join(" | ");
-    const plan = e.plan ? `${fmtMoney(e.plan.stop)} / ${fmtMoney(e.plan.target)}${e.plan.inferred ? " †" : ""}` : "—";
+    const plan = e.plan ? `${fmtPrice(e.plan.stop)} / ${fmtPrice(e.plan.target)}${e.plan.inferred ? " †" : ""}` : "—";
     lines.push(
-      `| ${d.date} | ${d.ticker} | ${d.type} | ${d.origin} | ${d.conviction ?? "—"} | ${d.rules_version} | ${opt(d.price, fmtMoney)} | ` +
+      `| ${d.date} | ${d.ticker} | ${d.type} | ${d.origin} | ${d.conviction ?? "—"} | ${d.rules_version} | ${opt(d.price, fmtPrice)} | ` +
         `${horizonCells} | ${plan} | ${opt(x?.mfeR, fmtR)} | ${opt(x?.maeR, fmtR)} | ${firstCell(e, m)} | ${opt(x?.resultR, fmtR)} |`,
     );
   }

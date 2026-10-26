@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { HistoricalBar } from "../providers/types.js";
 import { extend, uptrend } from "./fixtures/setup-bars.js";
-import { lotsSection } from "./fixtures/lots.js";
+import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const UNIVERSE_MD = `---
 schema_version: 1
@@ -260,6 +261,14 @@ describe("weekly-screening prepare/resolve/summarize", () => {
   }
 
   describe("screening:prepare", () => {
+    for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
+      it(`builds the candidates' files with ${label}`, async () => {
+        await writeFile(join(vaultDir, "portfolio.md"), broken, "utf8");
+        const files = await prepare();
+        assert.deepEqual(files.sort(), [`${today}-asml.as.md`, `${today}-nvda.md`]);
+      });
+    }
+
     it("writes one file per candidate, excluding the watchlist and recent not-interesting ones", async () => {
       const files = await prepare();
 
@@ -433,7 +442,7 @@ describe("weekly-screening prepare/resolve/summarize", () => {
     it("an exploration candidate keeps the file's mark through to the decision log and the email", async () => {
       await writeScreeningCandidate(
         {
-          ticker: "NVDA",
+          ticker: tk("NVDA"),
           name: "NVIDIA",
           market: "NASDAQ",
           currency: "USD",
@@ -661,7 +670,7 @@ describe("weekly-screening prepare/resolve/summarize", () => {
         "utf8",
       );
       const entry = (ticker: string, thesis_link?: string) => ({
-        ticker,
+        ticker: tk(ticker),
         name: ticker,
         market: "NASDAQ",
         currency: "USD" as const,

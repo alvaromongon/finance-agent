@@ -12,6 +12,7 @@ import { formatRegimeLines } from "./market-regime.js";
 import { describeConviction } from "./conviction.js";
 import { assertSchemaVersion, extractFrontmatter, SCHEMA_VERSION } from "./vault-parser.js";
 import { readTextFile } from "./fs-text.js";
+import type { Ticker } from "../ticker.js";
 
 interface ClassifiableTicker {
   market: string;
@@ -33,7 +34,7 @@ export function classifyIndex(ticker: ClassifiableTicker): string {
 // ── Friendly summary of the screening email ─────────────────────
 
 export interface FriendlySummaryInput {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   conviction: Conviction;
   /** Rubric points that add up to the conviction. */
@@ -72,7 +73,7 @@ export function buildFriendlySummaryLines(input: FriendlySummaryInput, m: Messag
  * watchlist.md and the run email.
  */
 export interface ScreeningResult extends ScreeningSelection {
-  ticker: string;
+  ticker: Ticker;
   name: string;
   index: string;
   currency: Currency;
@@ -412,7 +413,7 @@ export async function findTickersWithPendingExitCriteria(vaultDir: string): Prom
  */
 export function buildThesisNote(
   input: {
-    ticker: string;
+    ticker: Ticker;
     name: string;
     slug: string;
     today: string;

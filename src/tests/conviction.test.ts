@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { describeConviction, latestScreening, scoreConviction, setupConviction } from "../utils/conviction.js";
 import type { Decision } from "../decisions.js";
+import { parseTicker as tk } from "../ticker.js";
 
 describe("scoreConviction", () => {
   const none = { topQuintile: false, regime: "neutral" as const, rewardRisk: undefined, nextCatalyst: null };
@@ -51,7 +52,7 @@ describe("describeConviction", () => {
 const screen = (over: Partial<Decision>): Decision => ({
   id: "x",
   date: "2026-09-26",
-  ticker: "SNOW",
+  ticker: tk("SNOW"),
   currency: "USD",
   origin: "sistema",
   source: "screening",
@@ -69,11 +70,11 @@ describe("latestScreening", () => {
       screen({ id: "a", date: "2026-09-12" }),
       screen({ id: "b", date: "2026-09-26" }),
       screen({ id: "c", date: "2026-10-03" }),
-      screen({ id: "d", ticker: "AMD", date: "2026-09-27" }),
+      screen({ id: "d", ticker: tk("AMD"), date: "2026-09-27" }),
       screen({ id: "e", type: "hold", source: "heartbeat", date: "2026-09-27" }),
     ];
-    assert.equal(latestScreening(history, "SNOW", "2026-09-29")?.id, "b");
-    assert.equal(latestScreening(history, "SNOW", "2026-09-01"), undefined);
+    assert.equal(latestScreening(history, tk("SNOW"), "2026-09-29")?.id, "b");
+    assert.equal(latestScreening(history, tk("SNOW"), "2026-09-01"), undefined);
   });
 });
 

@@ -5,18 +5,27 @@
 // Markdown.
 import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
-import type { Decision, DecisionOrigin, DecisionType } from "../decisions.js";
+import { unitsWorthACent } from "../money.js";
+import {
+  lotSnapshotProblems,
+  tradeUnits,
+  type Decision,
+  type DecisionOrigin,
+  type DecisionType,
+} from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { CONVICTIONS, CURRENCIES } from "../types.js";
 import type { Currency, Lot, PortfolioSnapshot } from "../types.js";
 import { suggestStop } from "./atr-stop.js";
 import { splitRatio } from "./lots-check.js";
+import { UNITS_TOLERANCE } from "./units.js";
 import { closeOnOrBefore, excessReturn, forwardReturn, type HorizonOutcome } from "./forward-returns.js";
-import { siloPerformance, type SiloPerformance } from "./silo-performance.js";
+import { siloPerformance, type SiloPerformance, type SiloWarning } from "./silo-performance.js";
+import type { Ticker } from "../ticker.js";
 
 /** Framework parameters the evaluation uses; `config.framework` and `config.reference` by default. */
 export interface EvaluationFramework {
-  reference: Readonly<Record<Currency, string>>;
+  reference: Readonly<Record<Currency, Ticker>>;
   minRewardRisk: number;
   cutReviewTrades: number;
   cutDecisionTrades: number;
@@ -168,7 +177,7 @@ export function excursion(
 // ─── Per decision ────────────────────────────────────────────────────────────
 
 export interface DecisionEvaluation {
-  decision: Decision & { ticker: string };
+  decision: Decision & { ticker: Ticker };
   /** Benchmark of the decision's silo. */
   reference: string;
   /** Last close ≤ decision date; null = no usable history. */
@@ -190,7 +199,7 @@ export function evaluateDecisions(
 ): DecisionEvaluation[] {
   const byId = new Map(decisions.map((d) => [d.id, d] as const));
   return decisions
-    .filter((d): d is Decision & { ticker: string } => d.ticker != null && TRACKED_TYPES.includes(d.type))
+    .filter((d): d is Decision & { ticker: Ticker } => d.ticker != null && TRACKED_TYPES.includes(d.type))
     .map((d) => {
       const bars = barsBySymbol.get(d.ticker) ?? [];
       const reference = framework.reference[d.currency];
@@ -217,7 +226,7 @@ export function evaluateDecisions(
 // ─── Closed trades ───────────────────────────────────────────────────────────
 
 export interface ClosedTrade {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   /** Date of the lot's entry and of the exit that consumed its last units. */
   entryDate: string;
@@ -236,20 +245,15 @@ export interface ClosedTrade {
   exits: Decision[];
 }
 
-/**
- * Units an exit sold: its `units`, which `decision:record` writes on every exit. `amount / price` is
- * only the fallback for an exit without it (written by hand), whose units are not exact.
- */
-const exitUnits = (exit: Decision): number => exit.units ?? exit.amount! / exit.price!;
+/** Float noise, in units, added to the slack of an exit whose units are derived from its amount rounded to the cent. */
+const DERIVED_UNITS_NOISE = 1e-9;
 
 /**
  * Slack, in units, in the units an exit sold. None to speak of when it carries its `units` (float
  * noise); without them its amount is rounded to the cent, so they are only known to a cent of price.
  */
-const exitSlack = (exit: Decision): number => (exit.units != null ? 1e-8 : 0.01 / exit.price! + 1e-9);
-
-/** Tolerance of the units of a snapshot when it is compared with another by a split ratio: float noise. */
-const SPLIT_UNITS_TOLERANCE = 1e-8;
+const exitSlack = (exit: Decision): number =>
+  exit.units != null ? UNITS_TOLERANCE : unitsWorthACent(exit.price!) + DERIVED_UNITS_NOISE;
 
 /** Key of the lot an exit consumed: its entry id (ADR-0015: every lot has a real one). */
 const lotKey = (exit: Decision): string => `${exit.currency}|${exit.ticker}|${exit.related_id}`;
@@ -280,7 +284,7 @@ export interface UnmeasuredLots {
 export interface SkippedExit {
   currency: Currency;
   /** Absent when the exit has none (a malformed line). */
-  ticker?: string;
+  ticker?: Ticker;
   date: string;
   /** The entry id the exit cites, if it cites one. */
   lotId?: string;
@@ -288,7 +292,7 @@ export interface SkippedExit {
 
 export interface OversoldLot {
   currency: Currency;
-  ticker: string;
+  ticker: Ticker;
   lotId: string;
 }
 
@@ -297,7 +301,7 @@ export type InconsistentLotReason = "units_left" | "snapshot";
 
 export interface InconsistentLot {
   currency: Currency;
-  ticker: string;
+  ticker: Ticker;
   lotId: string;
   reason: InconsistentLotReason;
 }
@@ -329,10 +333,11 @@ export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
       });
       return;
     }
-    const lot = byLot.get(lotKey(d)) ?? { exits: [], last: index };
+    const key = lotKey(d);
+    let lot = byLot.get(key);
+    if (!lot) byLot.set(key, (lot = { exits: [], last: index }));
     lot.exits.push(d);
     lot.last = index;
-    byLot.set(lotKey(d), lot);
   });
 
   // Each lot is judged once: closed (measured), open (not yet a trade) or not measured, with the reason.
@@ -359,7 +364,7 @@ export function measureTrades(decisions: readonly Decision[]): MeasuredTrades {
         ruleViolations: first.rule_violations ?? [],
         stop: first.stop_initial ?? null,
         rNet: tradeR(exits),
-        counts: first.entry_origin === "sistema" && isCv1(first.entry_rules_version!),
+        counts: countsForCutoff(first.entry_origin!, first.entry_rules_version!),
         exits,
       };
     });
@@ -392,7 +397,7 @@ function judgeLot(written: readonly LotExit[]): LotVerdict {
     e.entry_units === reference.entry_units &&
     e.stop_initial === reference.stop_initial
       ? 1
-      : splitRatio(shape(e), shape(reference), SPLIT_UNITS_TOLERANCE);
+      : splitRatio(shape(e), shape(reference), UNITS_TOLERANCE);
   const agrees = (e: Decision) =>
     e.entry_date === reference.entry_date &&
     e.entry_origin === reference.entry_origin &&
@@ -404,7 +409,7 @@ function judgeLot(written: readonly LotExit[]): LotVerdict {
     const r = scaleOf(e);
     if (r === null || !agrees(e)) return "snapshot";
     scaled.push({
-      units: exitUnits(e) / r,
+      units: tradeUnits(e) / r,
       left: e.lot_units_left === 0 ? 0 : e.lot_units_left / r,
       slack: exitSlack(e) / r,
     });
@@ -426,18 +431,15 @@ function judgeLot(written: readonly LotExit[]): LotVerdict {
 }
 
 /** An exit that names its lot (ticker and entry id), so it can be reported by name. */
-type LotExit = Decision & { ticker: string; related_id: string; lot_units_left: number };
+type LotExit = Decision & { ticker: Ticker; related_id: string; lot_units_left: number };
 
 /** The exit carries what a measurement needs of its lot, including the units the lot has left. */
 const hasLotSnapshot = (exit: Decision): exit is LotExit =>
   !!exit.ticker &&
-  !!exit.related_id &&
-  exit.entry_price != null &&
-  exit.entry_units != null &&
-  exit.entry_origin != null &&
   exit.lot_units_left != null &&
   exit.price != null &&
-  !!exit.amount;
+  !!exit.amount &&
+  lotSnapshotProblems({ ...exit }).length === 0;
 
 /** R of a lot: its exits weighted by the units they sold; null if any of them has no R. */
 function tradeR(exits: readonly Decision[]): number | null {
@@ -445,7 +447,7 @@ function tradeR(exits: readonly Decision[]): number | null {
   for (const exit of exits) {
     const r = realizedR(exit);
     if (r == null) return null;
-    total += (exitUnits(exit) / exit.entry_units!) * r;
+    total += (tradeUnits(exit) / exit.entry_units!) * r;
   }
   return total;
 }
@@ -460,7 +462,7 @@ export function realizedR(exit: Decision): number | null {
   if (stop == null || entryPrice == null || !entryUnits || exitPrice == null || !exit.amount || !(stop < entryPrice)) {
     return null;
   }
-  const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / exitUnits(exit);
+  const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / tradeUnits(exit);
   return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
 }
 
@@ -682,10 +684,12 @@ function compareVersions(a: string, b: string): number {
 
 /**
  * One warning of the board, as data: the renderer puts it into words (in its language), and the
- * run prints the same words to the console. The silo reconstruction lines are already text.
+ * run prints the same words to the console. The silo reconstruction warnings are data too, held only here.
  */
 export type BoardWarning =
-  | { kind: "reconstruction"; lines: string[] }
+  | { kind: "reconstruction"; warnings: SiloWarning[] }
+  /** The counter started before the earliest decision loaded: part of the log (an archive) was not read. */
+  | { kind: "decisionsMissing"; before: string }
   | { kind: "exitsWithoutSnapshot"; exits: SkippedExit[] }
   | { kind: "oversoldLots"; lots: OversoldLot[] }
   | { kind: "inconsistentLots"; lots: InconsistentLot[] };
@@ -693,7 +697,7 @@ export type BoardWarning =
 /** A lot still held, the open half of a trade (ADR-0015): read from `Lots`, never from the log. */
 export interface OpenTrade {
   currency: Currency;
-  ticker: string;
+  ticker: Ticker;
   /** Id of the entry that opened the lot. */
   entryId: string;
   entryDate: string;
@@ -704,22 +708,30 @@ export interface OpenTrade {
   ruleViolations: string[];
 }
 
+/** A lot of a silo's `Lots`, with the silo it is in. */
+interface HeldLot {
+  currency: Currency;
+  lot: Lot;
+}
+
+/** The lots of both silos, flattened once. */
+const heldLots = (portfolios: Record<Currency, PortfolioSnapshot>): HeldLot[] =>
+  CURRENCIES.flatMap((currency) => portfolios[currency].lots.map((lot) => ({ currency, lot })));
+
 /** Open trades of the silos' `Lots`: those that count for the cutoff (system, C v1). */
-export function openTrades(portfolios: Record<Currency, PortfolioSnapshot>): OpenTrade[] {
-  return CURRENCIES.flatMap((currency) =>
-    portfolios[currency].lots
-      .filter((lot) => countsForCutoff(lot.origin, lot.rulesVersion))
-      .map((lot) => ({
-        currency,
-        ticker: lot.ticker,
-        entryId: lot.entryId,
-        entryDate: lot.date,
-        units: lot.units,
-        origin: lot.origin,
-        rulesVersion: lot.rulesVersion,
-        ruleViolations: lot.rulesViolations,
-      })),
-  );
+function openTrades(held: readonly HeldLot[]): OpenTrade[] {
+  return held
+    .filter(({ lot }) => countsForCutoff(lot.origin, lot.rulesVersion))
+    .map(({ currency, lot }) => ({
+      currency,
+      ticker: lot.ticker,
+      entryId: lot.entryId,
+      entryDate: lot.date,
+      units: lot.units,
+      origin: lot.origin,
+      rulesVersion: lot.rulesVersion,
+      ruleViolations: lot.rulesViolations,
+    }));
 }
 
 /** A trade counts for the cutoff when it is a system one under C v1 (ADR-0009 §4). */
@@ -750,7 +762,7 @@ export interface CutBoard {
  * so the start is the earliest date among the entry lines still read, the `entry_date` of the
  * snapshots of the exits and the `Date` of the lots, all of a system entry under C v1.
  */
-export function counterStart(decisions: readonly Decision[], lots: readonly Lot[] = []): string | null {
+export function counterStart(decisions: readonly Decision[], lots: readonly Lot[]): string | null {
   const dates = [
     ...decisions.filter((d) => d.type === "entry" && countsForCutoff(d.origin, d.rules_version)).map((d) => d.date),
     ...decisions
@@ -766,6 +778,26 @@ export function counterStart(decisions: readonly Decision[], lots: readonly Lot[
     ...lots.filter((l) => countsForCutoff(l.origin, l.rulesVersion)).map((l) => l.date),
   ];
   return dates.sort()[0] ?? null;
+}
+
+/** Date of the earliest decision loaded; null for an empty log. */
+const earliestDecisionDate = (decisions: readonly Decision[]): string | null =>
+  decisions.map((d) => d.date).sort()[0] ?? null;
+
+/**
+ * The date the bars must reach back to: the earliest decision loaded or, if the counter started
+ * before it (the log was loaded without its archive), the counter start, which is where the portfolios are measured from.
+ */
+export function barsFrom(
+  decisions: readonly Decision[],
+  portfolios: Record<Currency, PortfolioSnapshot>,
+): string | null {
+  const start = counterStart(
+    decisions,
+    heldLots(portfolios).map(({ lot }) => lot),
+  );
+  const earliest = earliestDecisionDate(decisions);
+  return start != null && (earliest == null || start < earliest) ? start : earliest;
 }
 
 export interface EvaluationInput {
@@ -791,12 +823,13 @@ export function buildCutBoard(
 ): CutBoard {
   const { trades, unmeasured } = measured;
   const framework = input.framework ?? configuredFramework();
+  const held = heldLots(input.portfolios);
   const start = counterStart(
     input.decisions,
-    CURRENCIES.flatMap((c) => input.portfolios[c].lots),
+    held.map(({ lot }) => lot),
   );
   const measuredFrom = start ?? input.decisions.map((d) => d.date).sort()[0] ?? null;
-  const silos =
+  const measurements =
     measuredFrom == null
       ? []
       : CURRENCIES.map((currency) =>
@@ -811,6 +844,7 @@ export function buildCutBoard(
           }),
         );
 
+  const silos = measurements.map((x) => x.performance);
   const eur = silos.find((s) => s.currency === "EUR");
   const usd = silos.find((s) => s.currency === "USD");
   const rate = input.eurUsd;
@@ -819,9 +853,12 @@ export function buildCutBoard(
       ? { real: eur.real + usd.real / rate, shadow: eur.shadow + usd.shadow / rate }
       : null;
 
-  const siloLines = silos.flatMap((s) => s.warnings);
+  const siloWarnings = measurements.flatMap((x) => x.warnings);
   const warnings: BoardWarning[] = [];
-  if (siloLines.length > 0) warnings.push({ kind: "reconstruction", lines: siloLines });
+  const earliest = earliestDecisionDate(input.decisions);
+  if (start != null && earliest != null && start < earliest)
+    warnings.push({ kind: "decisionsMissing", before: earliest });
+  if (siloWarnings.length > 0) warnings.push({ kind: "reconstruction", warnings: siloWarnings });
   if (unmeasured.exitsWithoutSnapshot.length > 0) {
     warnings.push({ kind: "exitsWithoutSnapshot", exits: unmeasured.exitsWithoutSnapshot });
   }
@@ -833,7 +870,7 @@ export function buildCutBoard(
     counterStart: start,
     measuredFrom,
     trades: tradeStats(trades.filter((t) => t.counts)),
-    open: openTrades(input.portfolios),
+    open: openTrades(held),
     silos,
     warnings,
     totalEur,
@@ -869,10 +906,10 @@ export function evaluationSymbols(
   decisions: readonly Decision[],
   portfolios: Record<Currency, PortfolioSnapshot>,
   framework: Pick<EvaluationFramework, "reference"> = configuredFramework(),
-): string[] {
+): Ticker[] {
   return [
     ...new Set([
-      ...decisions.map((d) => d.ticker).filter((t): t is string => t != null),
+      ...decisions.map((d) => d.ticker).filter((t): t is Ticker => t != null),
       ...CURRENCIES.flatMap((c) => portfolios[c].positions.map((p) => p.ticker)),
       ...CURRENCIES.map((c) => framework.reference[c]),
     ]),

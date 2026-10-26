@@ -10,6 +10,7 @@ import { describeAdjustStopPreview } from "./sizing.js";
 import { describeSetup, detectSetups, evaluateSetup } from "./setups/index.js";
 import { asHorizon } from "../decisions.js";
 import type { AssetClass, Currency, MarketRegime, PortfolioSnapshot, Position, WatchlistEntry } from "../types.js";
+import type { Ticker } from "../ticker.js";
 
 /** Cash and value (cash + positions at market) of a silo. */
 export interface SiloState {
@@ -20,7 +21,7 @@ export interface SiloState {
 /** What buildTechnicalsSection needs for the position stops and the candidates' setups. */
 export interface BriefingSizingContext {
   silos: Record<Currency, SiloState>;
-  positionsByTicker: ReadonlyMap<string, Position>;
+  positionsByTicker: ReadonlyMap<Ticker, Position>;
   /** Regime of each silo: in `adverso` no setup is ELIGIBLE. */
   regimes?: Partial<Record<Currency, MarketRegime>>;
 }
@@ -36,11 +37,11 @@ function fmt(n: number, d = 2): string {
  * followed).
  */
 export function filterSafeRetireList(
-  toRetire: string[],
-  openPositionTickers: ReadonlySet<string>,
-): { safe: string[]; blocked: string[] } {
-  const safe: string[] = [];
-  const blocked: string[] = [];
+  toRetire: Ticker[],
+  openPositionTickers: ReadonlySet<Ticker>,
+): { safe: Ticker[]; blocked: Ticker[] } {
+  const safe: Ticker[] = [];
+  const blocked: Ticker[] = [];
   for (const ticker of toRetire) {
     (openPositionTickers.has(ticker) ? blocked : safe).push(ticker);
   }
@@ -50,7 +51,7 @@ export function filterSafeRetireList(
 /** Subset of IMarketDataProvider buildTechnicalsSection needs (history required, unlike the general interface). */
 export interface TechnicalsProvider {
   getHistorical(ticker: string, range?: string): Promise<HistoricalBar[]>;
-  getPrices(tickers: string[]): Promise<Map<string, number>>;
+  getPrices<T extends string>(tickers: T[]): Promise<Map<T, number>>;
 }
 
 /**
@@ -62,8 +63,8 @@ export interface TechnicalsProvider {
  */
 export async function buildTechnicalsSection(
   provider: TechnicalsProvider,
-  tickers: string[],
-  entriesByTicker?: ReadonlyMap<string, WatchlistEntry>,
+  tickers: Ticker[],
+  entriesByTicker?: ReadonlyMap<Ticker, WatchlistEntry>,
   sizing?: BriefingSizingContext,
 ): Promise<string> {
   if (tickers.length === 0) return "(no assets)";
@@ -104,7 +105,7 @@ export async function buildTechnicalsSection(
  * candidate: its current setups, or that it has none.
  */
 function setupAndStopLines(
-  ticker: string,
+  ticker: Ticker,
   price: number,
   atr: number | null,
   bars: HistoricalBar[],
@@ -135,9 +136,9 @@ function setupAndStopLines(
  */
 export async function collectTickerSnapshots(
   provider: TechnicalsProvider,
-  tickers: string[],
-): Promise<Map<string, TickerSnapshot>> {
-  const snapshots = new Map<string, TickerSnapshot>();
+  tickers: Ticker[],
+): Promise<Map<Ticker, TickerSnapshot>> {
+  const snapshots = new Map<Ticker, TickerSnapshot>();
   for (const ticker of tickers) {
     try {
       const [bars, priceMap] = await Promise.all([provider.getHistorical(ticker, "1y"), provider.getPrices([ticker])]);
@@ -161,7 +162,7 @@ export async function collectTickerSnapshots(
 // over total cash+positions.
 
 export interface PositionWeight {
-  ticker: string;
+  ticker: Ticker;
   currency: Currency;
   assetClass: AssetClass;
   valueEur: number;
@@ -201,7 +202,7 @@ export function computeAssetClassWeights(
     throw new Error(`computeAssetClassWeights: invalid eurUsdRate (${eurUsdRate})`);
   }
 
-  const assetClassByTicker = new Map<string, AssetClass>();
+  const assetClassByTicker = new Map<Ticker, AssetClass>();
   for (const entry of [...eurWatchlist, ...usdWatchlist]) {
     assetClassByTicker.set(entry.ticker, entry.asset_class ?? "equity");
   }
@@ -210,7 +211,7 @@ export function computeAssetClassWeights(
   // breakdown silently falls back to "equity" — it can skew the commodities %
   // portfolio-policy.md uses as a target. Warn so it does not go unnoticed
   // (it does not block the briefing: it is a warning, not a guardrail).
-  function resolveAssetClass(ticker: string): AssetClass {
+  function resolveAssetClass(ticker: Ticker): AssetClass {
     const found = assetClassByTicker.get(ticker);
     if (found == null) {
       console.warn(

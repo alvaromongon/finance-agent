@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import { lotsSection } from "./fixtures/lots.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const TODAY = "2026-09-14";
 
@@ -91,7 +92,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     proposal = buildDecision({
       date: "2026-09-10",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -183,6 +184,92 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.deepEqual([portfolio.positions, portfolio.lots], [[], []]);
   });
 
+  describe("portfolio.md is read again right before the record writes it (R1-E of #67)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 };
+    /** A provider that changes portfolio.md while the recorder waits on it for the ATR. */
+    const providerThatWrites = (change: (text: string) => string) => ({
+      ...fakeProvider,
+      getHistorical: async () => {
+        const path = join(vaultDir, "portfolio.md");
+        await writeFile(path, change(await readFile(path, "utf8")), "utf8");
+        return bars();
+      },
+    });
+
+    it("a write made while the recorder waits on the market-data provider survives the record", async () => {
+      const provider = providerThatWrites((text) =>
+        text.replace("| Available cash | 1000.00 |", "| Available cash | 1234.50 |"),
+      );
+      await recordOwnerDecision(entryOf, provider, TODAY);
+
+      const text = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      assert.match(text, /\| Available cash \| 1234\.50 \|/, "the concurrent write is not lost");
+      assert.match(text, /\| ADBE \| [^|]+ \| 2026-09-14 \|/, "and the lot is recorded");
+      assert.equal((await readLines()).length, 2);
+    });
+
+    it("a change to the Lots meanwhile (a unit sold at the broker and typed in by hand) is refused with nothing recorded", async () => {
+      await record({ ...entryOf, units: 2 });
+      const provider = providerThatWrites((text) =>
+        text.replace(/(\| ADBE \| [^|]+\| 2026-09-14 \| )2( \|)/, "$11$2").replace(/(\| ADBE \| )2( \|)/, "$11$2"),
+      );
+      await assert.rejects(
+        recordOwnerDecision({ ...entryOf, ticker: "CAT", stop: 440 }, provider, TODAY),
+        /Lots changed while the trade was being recorded.*nothing was recorded/,
+      );
+      assert.equal((await readLines()).length, 2, "the log has the proposal and the first entry, nothing else");
+    });
+  });
+
+  describe("the owner edits portfolio.md while the log is being appended (the window after the last check)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 };
+
+    /** Runs `during` once, at the moment the decisions log is appended to. */
+    async function withEditDuringAppend(during: (text: string) => string, run: () => Promise<unknown>) {
+      const fsp = (await import("node:fs/promises")).default;
+      const original = fsp.appendFile;
+      const path = join(vaultDir, "portfolio.md");
+      mock.method(fsp, "appendFile", async (...args: Parameters<typeof original>) => {
+        await writeFile(path, during(await readFile(path, "utf8")), "utf8");
+        return original(...args);
+      });
+      (await import("node:module")).syncBuiltinESMExports();
+      try {
+        await run();
+      } finally {
+        mock.restoreAll();
+        (await import("node:module")).syncBuiltinESMExports();
+      }
+    }
+
+    it("a change to the Lots in that window is not overwritten; the error says the entry is in the log", async () => {
+      await record({ ...entryOf, units: 2 });
+      const edited = (text: string) => text.replace(/(\| ADBE \| [^|]+\| 2026-09-14 \| )2( \|)/, "$11$2");
+      let after = "";
+      await assert
+        .rejects(
+          withEditDuringAppend(edited, () => recordAll({ ...entryOf, ticker: "CAT" })),
+          (err: Error) =>
+            err.message.includes("IS recorded in the log") && !err.message.includes("nothing was recorded"),
+        )
+        .finally(async () => {
+          after = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+        });
+      assert.ok(!after.includes("CAT"), "portfolio.md keeps the owner's edit, with no CAT lot written over it");
+      assert.equal((await readLines()).length, 3, "the CAT entry is in the log");
+    });
+
+    it("a half-typed Lots row in that window is reported as recorded, not as 'nothing was recorded'", async () => {
+      await assert.rejects(
+        withEditDuringAppend(
+          (text) => text.replace(/(## USD — Lots[\s\S]*?\|---[^\n]*\n)/, "$1| half-typed\n"),
+          () => recordAll(entryOf),
+        ),
+        (err: Error) => err.message.includes("IS recorded in the log") && !err.message.includes("nothing was recorded"),
+      );
+    });
+  });
+
   it("portfolio.md is replaced atomically: a temp file renamed over it, nothing left behind", async () => {
     const { stat, readdir } = await import("node:fs/promises");
     const before = (await stat(join(vaultDir, "portfolio.md"))).ino;
@@ -212,6 +299,32 @@ describe("decision:record (recordOwnerDecision)", () => {
         assert.equal(await readFile(decisionsPath(), "utf8"), log);
       });
     }
+
+    it("a lot row that does not read refuses the entry and names the row and the reason", async () => {
+      const text = `${PORTFOLIO_MD}| ADBE | adbe-1 | 2026-01-01 | 1 | 1 | 1 | — | — | Sistema | 1.0 | — |\n`;
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      await assert.rejects(
+        record(entryOf),
+        /portfolio\.md \(USD\): Lots row 1 \(ADBE, adbe-1\): Origin "Sistema" is not sistema or propietario/,
+      );
+    });
+
+    it("a ticker on two Positions rows, tck and TCK, is refused on read, naming both, before any write (#68)", async () => {
+      const rows = "| tck | 4 | 100.00 | 100.00 | 0 | — |\n| TCK | 6 | 100.00 | 100.00 | 0 | — |\n";
+      const text = PORTFOLIO_MD.replace(/(## USD — Positions\n\n[^\n]*\n[^\n]*\n)/, `$1${rows}`);
+      assert.notEqual(text, PORTFOLIO_MD);
+      await writeFile(join(vaultDir, "portfolio.md"), text, "utf8");
+      const log = await readFile(decisionsPath(), "utf8");
+
+      await assert.rejects(record(entryOf), (err: Error) => {
+        assert.match(err.message, /TCK is on 2 rows of "## USD — Positions" \(tck, TCK\)/);
+        assert.doesNotMatch(err.message, /internal error/);
+        return true;
+      });
+
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), text);
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+    });
 
     it("a deleted Lots section refuses the entry", async () => {
       const text = PORTFOLIO_MD.slice(0, PORTFOLIO_MD.indexOf("## USD — Lots"));
@@ -269,6 +382,71 @@ describe("decision:record (recordOwnerDecision)", () => {
       assert.equal(exit.lot_units_left, 0);
       const md = await readFile(join(vaultDir, "portfolio.md"), "utf8");
       assert.doesNotMatch(md, /ADBE/);
+    });
+  });
+
+  describe("a sale is not dated before the entry of a lot it consumes (#48)", () => {
+    const entryOf = (extra: object) => ({
+      type: "entry",
+      ticker: "ADBE",
+      currency: "USD",
+      price: 25,
+      stop: 20,
+      ...extra,
+    });
+    const sell = (extra: object) => ({ type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, ...extra });
+
+    it("refuses it, naming both dates, and writes neither the log nor portfolio.md", async () => {
+      await record(entryOf({ units: 2, date: "2026-09-10" }));
+      const log = await readFile(decisionsPath(), "utf8");
+      const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+
+      await assert.rejects(
+        record(sell({ units: 1, date: "2026-09-09" })),
+        /entry_date 2026-09-10 is after the exit's date 2026-09-09.*\(nothing was recorded\)/,
+      );
+
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
+    });
+
+    it("refuses it before any call to the market data provider", async () => {
+      await record(entryOf({ units: 2, date: "2026-09-10" }));
+      const calls: string[] = [];
+      const counting = {
+        getPrices: async (tickers: string[]) => {
+          calls.push("getPrices");
+          return fakeProvider.getPrices(tickers);
+        },
+        getHistorical: async () => {
+          calls.push("getHistorical");
+          return bars();
+        },
+      };
+
+      await assert.rejects(
+        recordOwnerDecision(sell({ units: 1, date: "2026-09-09" }), counting, TODAY),
+        /is after the exit's date/,
+      );
+      assert.deepEqual(calls, []);
+    });
+
+    it("refuses a sale that reaches into a later lot even if the first lot is old enough", async () => {
+      await record(entryOf({ units: 1, date: "2026-09-01" }));
+      await record(entryOf({ units: 1, date: "2026-09-10" }));
+      const log = await readFile(decisionsPath(), "utf8");
+
+      await assert.rejects(record(sell({ units: 2, date: "2026-09-05" })), /entry_date 2026-09-10 is after/);
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+    });
+
+    it("accepts a sale on the entry date and one that only consumes the older lot", async () => {
+      await record(entryOf({ units: 1, date: "2026-09-01" }));
+      await record(entryOf({ units: 1, date: "2026-09-10" }));
+      const [onlyOld] = await recordAll(sell({ units: 1, date: "2026-09-05" }));
+      assert.equal(onlyOld.entry_date, "2026-09-01");
+      const [sameDay] = await recordAll(sell({ units: 1, date: "2026-09-10" }));
+      assert.equal(sameDay.entry_date, "2026-09-10");
     });
   });
 
@@ -330,6 +508,60 @@ describe("decision:record (recordOwnerDecision)", () => {
     });
   });
 
+  describe("an amount too large to count in cents is refused with a message (#87)", () => {
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 25, units: 3, stop: 20 };
+    const sell = { type: "exit", ticker: "ADBE", currency: "USD", price: 27.98, units: 1 };
+    /** Sets only the Entry price cell of the `Lots` table (the Avg price of `Positions` is also 25). */
+    const setEntryPriceCell = (portfolio: string, value: string): string => {
+      const lines = portfolio.split("\n");
+      const section = lines.findIndex((l) => l.startsWith("## USD") && l.includes("Lots"));
+      assert.ok(section >= 0, "portfolio.md has the USD Lots section");
+      const header = lines.findIndex((l, i) => i > section && l.startsWith("|"));
+      const column = lines[header].split("|").findIndex((c) => c.trim() === "Entry price");
+      assert.ok(column > 0, "the Lots table has an Entry price column");
+      const row = header + 2;
+      const cells = lines[row].split("|");
+      cells[column] = ` ${value} `;
+      lines[row] = cells.join("|");
+      return lines.join("\n");
+    };
+    /** Rewrites the log and portfolio.md as the owner could have left them, then expects the refusal and no write. */
+    const refused = async (edit: (log: string, portfolio: string) => [string, string], message: RegExp) => {
+      const [log, portfolio] = edit(
+        await readFile(decisionsPath(), "utf8"),
+        await readFile(join(vaultDir, "portfolio.md"), "utf8"),
+      );
+      await writeFile(decisionsPath(), log, "utf8");
+      await writeFile(join(vaultDir, "portfolio.md"), portfolio, "utf8");
+      await assert.rejects(record(sell), (err: Error) => {
+        assert.equal(err.constructor, Error);
+        assert.match(err.message, message);
+        assert.match(err.message, /nothing was recorded/);
+        return true;
+      });
+      assert.equal(await readFile(decisionsPath(), "utf8"), log);
+      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
+    };
+
+    it("a lot whose Entry price is too large to count in cents refuses the sale, naming the lot", async () => {
+      const entry = await record(entryOf);
+      await refused(
+        (log, portfolio) => [log.replace('"price":25,', '"price":5e306,'), setEntryPriceCell(portfolio, "5e306")],
+        new RegExp(`lot ${entry.id} \\(ADBE\\).*Entry price.*too large to count in cents`),
+      );
+    });
+
+    it("entry costs that the exits of a lot took, too large together, refuse the sale, naming the entry", async () => {
+      const entry = await record(entryOf);
+      await record(sell);
+      await record(sell);
+      await refused(
+        (log, portfolio) => [log.replaceAll('"type":"exit",', '"type":"exit","entry_costs":9e305,'), portfolio],
+        new RegExp(`entry_costs.*${entry.id}.*too large to count in cents`),
+      );
+    });
+  });
+
   it("an exit refuses related_id: a sale consumes the lots first in, first out, and nothing is written", async () => {
     const entry = await record({ type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 2, stop: 440 });
     const before = await readFile(decisionsPath(), "utf8");
@@ -344,7 +576,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const blocked = buildDecision({
       date: "2026-09-12",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -366,7 +598,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const armed = buildDecision({
       date: "2026-09-12",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -389,7 +621,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const armed = buildDecision({
       date: "2026-09-12",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",
@@ -411,7 +643,7 @@ describe("decision:record (recordOwnerDecision)", () => {
     const { buildDecision } = await import("../decisions.js");
     const adjust = buildDecision({
       date: "2026-09-11",
-      ticker: "ADBE",
+      ticker: tk("ADBE"),
       currency: "USD",
       origin: "sistema",
       source: "heartbeat",

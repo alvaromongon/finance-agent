@@ -13,6 +13,7 @@
 // conviction; armed breakouts also go out in the heartbeat summary email.
 import { benchmarkFields, buildDecision, setupFields, strengthFields, type Decision } from "../../decisions.js";
 import { latestScreening, setupConviction } from "../conviction.js";
+import { money } from "../../money.js";
 import { round2 } from "../round.js";
 import { siloValue } from "../sizing.js";
 import { snapshotFromTechnicals, type HistoricalSource } from "../strength.js";
@@ -118,7 +119,7 @@ export async function scanSetups(input: SetupScanInput): Promise<SetupScanResult
           target: setup.target,
           stop_initial: ticket?.stop,
           amount: ticket && ticket.amount > 0 ? ticket.amount : undefined,
-          costs: ticket?.costs,
+          costs: ticket?.costs == null ? undefined : money(ticket.costs),
           eligibility:
             ev.reasons.length === 0
               ? { verdict: "eligible", reasons: [] }

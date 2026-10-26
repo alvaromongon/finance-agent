@@ -18,7 +18,7 @@ import {
   readHeartbeatSent,
   readPortfolioTolerantOfLots,
   readRulesVersion,
-  readWatchlist,
+  readWatchlistSkippingBadTickers,
   updatePortfolioPrices,
   writeHeartbeatSent,
 } from "./vault-io.js";
@@ -47,6 +47,8 @@ export interface HeartbeatDeps {
    * without it (another provider) the guard does nothing.
    */
   lastMarketDate?: (ticker: string) => Promise<Date | null>;
+  /** The volume-against-lots check; injectable so a test can make it throw. */
+  lotsCheck?: (portfolio: PortfolioSnapshot) => string[];
 }
 
 export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Promise<void> {
@@ -57,6 +59,8 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     minAtr: config.strategy.stopMinAtr,
     breaches: [],
     lotsWarnings: [],
+    tickerWarnings: [],
+    unreadableCells: [],
     tightStops: [],
     armed: [],
     escalated: [],
@@ -95,30 +99,40 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     lastMarketDate = provider instanceof YahooFinanceProvider
       ? (t: string) => provider.fetchLastMarketDate(t)
       : undefined,
+    lotsCheck = volumeMismatches,
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem } = await readPortfolioTolerantOfLots(currency);
+  const { portfolio, lotsProblem, skippedRows, unreadableCells } = await readPortfolioTolerantOfLots(currency);
   digest.syncedAt = portfolio.syncedAt;
+  // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
+  // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
+  const tickerWarning = (message: string): void => {
+    digest.tickerWarnings.push(message);
+    console.warn(`[finance-agent] WARNING, ticker: ${message}`);
+  };
+  skippedRows.forEach(tickerWarning);
+  // A Positions P/L or Cash cell too large to count in cents reads as unreadable (P/L 0, cash 0): the run
+  // goes on and the digest names the cell (#86).
+  for (const message of unreadableCells) {
+    digest.unreadableCells.push(message);
+    console.warn(`[finance-agent] WARNING, unreadable cell: ${message}`);
+  }
 
-  // 1a. Volume against the lots (ADR-0015), from portfolio.md alone: each lot names its ticker, so the
-  // alerting path does not read the decision log. The checks that need the log run where it is read
-  // (decision:record and the evaluation). Unlike them, the heartbeat never refuses the file for a
-  // mismatch: a typo in Lots must not switch off the stop alerts. It keeps watching the positions and
-  // says so loudly, in the log and in every digest while it lasts (they are not deduplicated). A Lots table
-  // that does not read is the same: the warning replaces the volume check (no lots to compare), and nothing
-  // the check itself throws can stop what follows.
-  digest.lotsWarnings = lotsWarnings(portfolio, lotsProblem);
-  for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots: ${w}`);
+  const checkLots = (): void => {
+    digest.lotsWarnings = lotsProblem ? [lotsProblem] : lotsCheck(portfolio);
+    for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots: ${w}`);
+  };
 
   // 2. Load the watchlist and get market prices from the active provider.
   // The tickers to watch are the union watchlist ∪ portfolio.positions
   //: an open position is watched for risk whether or not it has
   // an entry in watchlist.md.
-  const watchlist = await readWatchlist(currency);
+  const watchlist = await readWatchlistSkippingBadTickers(currency, tickerWarning);
   const tickers = collectWatchedTickers(watchlist, portfolio);
   if (tickers.length === 0) {
     console.log(`[finance-agent] No watchlist or positions for ${currency}. End of run.`);
+    checkLots(); // no position, so no stop to lose to a failure of the check
     return;
   }
 
@@ -146,6 +160,16 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   if (digest.breaches.length > 0) {
     console.log(`[finance-agent] Crossed stop: ${digest.breaches.map((b) => b.ticker).join(", ")}`);
   }
+
+  // 2b'. Volume against the lots (ADR-0015), from portfolio.md alone: each lot names its ticker, so the
+  // alerting path does not read the decision log. The checks that need the log run where it is read
+  // (decision:record and the evaluation). Unlike them, the heartbeat never refuses the file for a
+  // mismatch: a typo in Lots must not switch off the stop alerts. It keeps watching the positions and
+  // says so loudly, in the log and in every digest while it lasts (they are not deduplicated). A Lots table
+  // that does not read is the same: the warning replaces the volume check (no lots to compare).
+  // It goes after the stop detection and has no catch of its own: if the check itself throws, the crossed
+  // stops are already in the digest that the run sends before failing, so a bug here cannot hide them.
+  checkLots();
 
   // 2c. T-09: detect holidays by the age of the last market tick. It is not
   // compared with the runner date: Actions crons run late and, crossing UTC
@@ -263,16 +287,6 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     // Deterministic guardrail + recording: checks financial consistency before
     // alerting (shared with pending.ts — see decision.ts).
     await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
-  }
-}
-
-/** The lots warnings of the run: the lots that do not read, else the volume check; never a throw. */
-function lotsWarnings(portfolio: PortfolioSnapshot, lotsProblem: string | null): string[] {
-  if (lotsProblem) return [lotsProblem];
-  try {
-    return volumeMismatches(portfolio);
-  } catch (err) {
-    return [`portfolio.md (${portfolio.currency}): the lots check failed: ${(err as Error).message}`];
   }
 }
 

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseMarkdownNumber } from "../utils/parse.js";
+import { money } from "../money.js";
+import { parseMarkdownMoney, parseMarkdownNumber } from "../utils/parse.js";
 
 describe("parseMarkdownNumber", () => {
   it("simple number with a decimal point", () => {
@@ -59,5 +60,25 @@ describe("parseMarkdownNumber", () => {
   });
   it("negative European P/L", () => {
     assert.equal(parseMarkdownNumber("-1.234,56 €"), -1234.56);
+  });
+});
+
+describe("parseMarkdownMoney", () => {
+  it("rounds a readable amount to the cent", () => {
+    assert.equal(parseMarkdownMoney("$1,234.567"), 1234.57);
+  });
+  it("is null for a cell that is not a number, as parseMarkdownNumber is", () => {
+    assert.equal(parseMarkdownMoney("TBD"), null);
+    assert.equal(parseMarkdownMoney("—"), null);
+  });
+  it("is null, never a throw, for a number that cannot be counted in cents (#83)", () => {
+    for (const cell of ["1e307", "-1e307", "1e308", "-1.8e306"]) {
+      assert.equal(parseMarkdownMoney(cell), null, cell);
+    }
+  });
+  it("still reads the largest amount that can be counted in cents", () => {
+    const largest = Number.MAX_VALUE / 100;
+    assert.equal(parseMarkdownMoney(String(largest)), money(largest));
+    assert.notEqual(parseMarkdownMoney(String(largest)), null);
   });
 });

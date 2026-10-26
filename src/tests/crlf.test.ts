@@ -23,6 +23,7 @@ import {
   extractPlanSummary,
   applyRetireWatchlistEntry,
 } from "../utils/vault-parser.js";
+import { parseTicker as tk } from "../ticker.js";
 
 const PORTFOLIO_LF = `---
 schema_version: 2
@@ -139,7 +140,7 @@ describe("vault parsers with CRLF", () => {
   });
 
   it("parseLots reads the lots, with `:---:` separator rows", () => {
-    assert.deepEqual(parseLots(crlf(PORTFOLIO_LF), "EUR"), []);
+    assert.throws(() => parseLots(crlf(PORTFOLIO_LF), "EUR"), /missing section "## EUR — Lots"/);
     const [lot] = parseLots(crlf(PORTFOLIO_LF), "USD");
     assert.equal(lot.entryId, "20260901-hal-entry-x");
     assert.equal(lot.units, 10);
@@ -155,7 +156,7 @@ describe("vault parsers with CRLF", () => {
   });
 
   it("applyRetireWatchlistEntry does remove the entry (it used to fail silently)", () => {
-    const updated = applyRetireWatchlistEntry(crlf(WATCHLIST_LF), "HAL");
+    const updated = applyRetireWatchlistEntry(crlf(WATCHLIST_LF), tk("HAL"));
     assert.doesNotMatch(updated, /ticker: HAL/);
     assert.match(updated, /ticker: SGO\.PA/);
   });
