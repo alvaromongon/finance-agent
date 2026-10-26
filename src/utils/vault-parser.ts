@@ -489,6 +489,11 @@ function readLotRow(
     if (value == null) return { reason: `${LOT_COLUMNS[key]} "${cell(key)}" is not a number` };
     numbers[key] = value;
   }
+  const costs = cell("entryCosts");
+  const entryCosts = parseMarkdownMoney(costs);
+  if (entryCosts === null && parseMarkdownNumber(costs) !== null) {
+    return { reason: `${LOT_COLUMNS.entryCosts} "${costs}" is too large to count in cents` };
+  }
   const origin = cell("origin");
   if (!(DECISION_ORIGINS as readonly string[]).includes(origin)) {
     const right = DECISION_ORIGINS.find((o) => o === origin.toLowerCase());
@@ -509,7 +514,7 @@ function readLotRow(
       entryUnits: numbers.entryUnits,
       entryPrice: numbers.entryPrice,
       initialStop: parseMarkdownNumber(cell("initialStop")),
-      entryCosts: parseMarkdownMoney(cell("entryCosts")),
+      entryCosts,
       origin: origin as Lot["origin"],
       rulesVersion,
       rulesViolations: isPlaceholder(cell("rulesViolations"))

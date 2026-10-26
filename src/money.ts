@@ -14,6 +14,9 @@ export type Money = number & { readonly [moneyBrand]: "Money" };
 
 const CENTS = 100;
 
+/** True if `n` is a finite number small enough to count in cents; `money` throws for any other (#83). */
+export const canCountInCents = (n: number): boolean => Number.isFinite(n) && Number.isFinite(n * CENTS);
+
 /** The only way to make a `Money`: rounds to whole cents (half away from zero on the positive side, as `Math.round`). Throws on a value that is not finite. */
 export function money(n: number): Money {
   if (typeof n !== "number" || !Number.isFinite(n)) throw new RangeError(`money must be a finite number; got: ${n}`);

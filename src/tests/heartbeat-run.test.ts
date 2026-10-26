@@ -229,6 +229,53 @@ describe("runHeartbeat", () => {
     });
   });
 
+  describe("a money cell that cannot be counted in cents (#83, ADR-0015): read as unreadable, the stop alerts still go out", () => {
+    for (const huge of ["1e307", "-1e307"]) {
+      const crossedStopGoesOut = async () => {
+        const [email] = await outbox();
+        assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is still detected");
+        return email;
+      };
+      const edit = async (change: (text: string) => string) => {
+        const path = join(vaultDir, "portfolio.md");
+        await writeFile(path, change(await readFile(path, "utf8")), "utf8");
+      };
+
+      it(`a Lots Entry costs of ${huge}: the row is skipped with a warning naming it and the reason`, async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        await edit((text) => text.replace(/(\| lot-msft [^\n]*?\| )— (\| sistema)/, `$1${huge} $2`));
+
+        const warnings = await heartbeat();
+
+        assert.ok(
+          warnings.some((w) => w.includes("Lots row 1 (MSFT, lot-msft)") && w.includes("Entry costs")),
+          `warnings: ${JSON.stringify(warnings)}`,
+        );
+        const email = await crossedStopGoesOut();
+        assert.match(email.body, /Lots row 1 \(MSFT, lot-msft\).*Entry costs/);
+      });
+
+      it(`a Positions P/L of ${huge}: the position is still watched, its P/L reads as unreadable`, async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW.replace("-1.10", huge)}`, [MSFT_LOT, CAT_LOT]);
+        await heartbeat();
+        await crossedStopGoesOut();
+      });
+
+      for (const row of ["Total cash", "Available cash"]) {
+        it(`a Cash row ${row} of ${huge}: read as a cell that is not a number`, async () => {
+          await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+          await edit((text) =>
+            row === "Total cash"
+              ? text.replace("| Available cash | $1000.00 |", `| Available cash | $1000.00 |\n| Total cash | ${huge} |`)
+              : text.replace("$1000.00", huge),
+          );
+          await heartbeat();
+          await crossedStopGoesOut();
+        });
+      }
+    }
+  });
+
   describe("Lots that do not match (ADR-0015): it keeps watching and warns loudly", () => {
     it("Volume that is not the sum of the units of its lots: the crossed stop still goes out, with the warning", async () => {
       // CAT trades below its stop; its row says 1 unit and its lot 3.
