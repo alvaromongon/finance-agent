@@ -68,6 +68,10 @@ line is kept), and a `RETIRE` token that is not a ticker is reported and not ret
 
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
 notation. `—`, `-` or `TBD` mean "no value".
+A number too large to count in cents (`1e307`) is also read as "no value", but the
+heartbeat names it: a `Positions` `P/L` (read as 0, the row is still watched), `Available cash` (0) or
+`Total cash` (absent) holding one is reported in the digest, in every run while it lasts. An `Entry costs`
+cell that large makes its `Lots` row skipped (see below). No `schema_version` change.
 
 ## `portfolio.md`
 

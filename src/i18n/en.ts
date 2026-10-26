@@ -90,6 +90,7 @@ export const en = {
       breaches: "stop crossed",
       lots: "problem with the lots",
       tickers: "ticker that does not read",
+      unreadableCells: "cell that cannot be counted",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -134,6 +135,15 @@ export const en = {
       ``,
     ],
     tickersOutro: [``, `Fix the ticker by hand (see \`docs/input-format.md\`).`],
+    unreadableCellsIntro: [
+      `## \`portfolio.md\`: cell that cannot be counted`,
+      ``,
+      `These cells hold an amount too large to count in cents. They read as unreadable (a P/L as 0, available cash as`,
+      `0, total cash as absent) and the row is still watched. With cash at 0 the engine can only cut or block a buy,`,
+      `never enlarge one:`,
+      ``,
+    ],
+    unreadableCellsOutro: [``, `Fix the cell by hand (see \`docs/input-format.md\`).`],
     tightIntro: (minAtr: number) => [
       `## Stops too tight`,
       ``,

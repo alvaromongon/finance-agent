@@ -134,18 +134,23 @@ export async function readPortfolio(currency: Currency): Promise<PortfolioSnapsh
  * (ADR-0016): it is skipped and `skippedRows` says which, so the other positions are still watched.
  * Every other problem of the file (`Cash`, the `Positions` columns) still throws.
  */
-export async function readPortfolioTolerantOfLots(
-  currency: Currency,
-): Promise<{ portfolio: PortfolioSnapshot; lotsProblem: string | null; skippedRows: string[] }> {
+export async function readPortfolioTolerantOfLots(currency: Currency): Promise<{
+  portfolio: PortfolioSnapshot;
+  lotsProblem: string | null;
+  skippedRows: string[];
+  unreadableCells: string[];
+}> {
   let lotsProblem: string | null = null;
   const skippedRows: string[] = [];
+  const unreadableCells: string[] = [];
   const portfolio = parsePortfolioText(await readPortfolioText(), currency, {
     onLotsError: (err) => {
       lotsProblem = err.message;
     },
     onSkippedPosition: (message) => skippedRows.push(message),
+    onUnreadableCell: (message) => unreadableCells.push(message),
   });
-  return { portfolio, lotsProblem, skippedRows };
+  return { portfolio, lotsProblem, skippedRows, unreadableCells };
 }
 
 /**
@@ -156,8 +161,9 @@ export async function readPortfolioTolerantOfLots(
  * whose ticker does not parse is skipped with a warning (ADR-0016).
  */
 export async function readPortfolioIgnoringLots(currency: Currency): Promise<PortfolioSnapshot> {
-  const { portfolio, skippedRows } = await readPortfolioTolerantOfLots(currency);
+  const { portfolio, skippedRows, unreadableCells } = await readPortfolioTolerantOfLots(currency);
   skippedRows.forEach(warnSkipped);
+  unreadableCells.forEach(warnSkipped);
   return portfolio;
 }
 
@@ -173,6 +179,8 @@ export function parsePortfolioText(
     onLotsError?: (err: Error) => void;
     /** Given, a `Positions` row whose ticker does not parse is reported here and skipped instead of throwing. */
     onSkippedPosition?: (message: string) => void;
+    /** Given, a `Positions` P/L or `Cash` cell too large to count in cents is reported here; it reads as 0 or absent (#86). */
+    onUnreadableCell?: (message: string) => void;
   } = {},
 ): PortfolioSnapshot {
   assertSchemaVersion(raw, "portfolio.md");
@@ -202,12 +210,12 @@ export function parsePortfolioText(
   // Parse the Markdown tables of the given currency's silo. Placeholder rows
   // ("—") and non-numeric values ("TBD") are safely ignored → empty snapshot
   // instead of an error.
-  const totalCash = parseTotalCash(raw, currency);
+  const totalCash = parseTotalCash(raw, currency, tolerance.onUnreadableCell);
   return {
     currency,
-    cash: parseCash(raw, currency),
+    cash: parseCash(raw, currency, tolerance.onUnreadableCell),
     ...(totalCash != null ? { totalCash } : {}),
-    positions: parsePositions(raw, currency, tolerance.onSkippedPosition),
+    positions: parsePositions(raw, currency, tolerance.onSkippedPosition, tolerance.onUnreadableCell),
     ...readLots(raw, currency, tolerance.onLotsError),
     syncedAt: lastSync ?? new Date().toISOString(),
   };
