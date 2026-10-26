@@ -75,24 +75,34 @@ P&L: keep it, and the archive, private.
 
 What stays in the live file, whatever its date:
 
-- the `entry` of an open [lot](glossary.md#lot): no `exit` citing it has `lot_units_left` 0 (an
-  `exit` without `lot_units_left` does not count).
-  A lot only partly sold is still open: its entry stays. `decision:record` and the evaluation read
-  the archive too (see below), so this is not needed to keep them correct; it keeps the open lots
-  where a reader of the live file only (the heartbeat, the two-month rule) and you, comparing
-  with `Lots` in `portfolio.md`, find them. The commands below keep those entries and archive
-  everything else in the quarter, including the exits of a lot that is still open (they are read
-  back from the archive). When the `exit` that uses a lot up is archived, the entry goes with it,
-  whatever its date, so an entry kept for an open lot is archived in the quarter that closes it;
-- anything from the last three months. Two readers read the live file only: the heartbeat and the
-  two-month rule (an archived decision is invisible to them). The attribution of trades to
-  proposals (10-day window) is not one of them: `decision:record` reads the whole history, archive
-  included.
+- **every line of a [lot](glossary.md#lot) that is still open**: its `entry` and all its `exit`
+  lines, partial sales included. A lot is open until an `exit` citing it has `lot_units_left` 0 (an
+  `exit` without `lot_units_left` does not use it up). A lot's entry and exits move to the archive
+  only together, in the quarter of the `exit` that used the lot up, whatever the dates of the entry
+  and of the earlier exits; until then they all stay. So a lot bought in Q1, partly sold in Q2 and
+  used up in Q3 is archived by the Q3 run, in one piece. An `exit` that cites a lot that is never
+  used up (one written before `lot_units_left` existed) stays with its entry;
+- anything from the last three months. Archive only quarters older than that.
+
+Every other line (deposits, withdrawals, conversions, proposals, stop changes, an `exit` that cites
+no lot) is archived by its own date.
+
+Why a lot goes whole: `decision:record` needs, to record a sale, the entry of each open lot (the
+check of `Lots` against the log) and what the earlier exits of the lot took of its entry costs
+(`entry_costs`, so the last exit takes the rest). Both come from the lot's own lines, which the
+rule above leaves in the live file. The other history it reads is the proposal a trade follows
+(10-day window) and the trades that already cite it, all recent. So **with no archive readable at
+all, `decision:record` records every later sale correctly**; the archive adds nothing to it. The
+exception is a trade dated in an archived quarter: its proposal is gone from the live file, so
+the trade is recorded as yours (`propietario`) instead of the system's. The heartbeat and the
+two-month rule read the live file only in any case (an archived decision is invisible to them).
+Archives made with an earlier version of this program may hold the exits of a lot that was still
+open: for those, `decision:record` still needs the archive readable.
 
 `DECISIONS_ARCHIVE_DIR` must be an **absolute** path. The engine does not resolve it against
 `VAULT_PROJECT_DIR`: a relative path is resolved against the working directory of whatever runs
-the engine, and a directory that does not exist is silently ignored, so archived quarters would
-drop out of the evaluation without a warning.
+the engine. The engine warns on stderr when it is unset, missing, not a directory or not absolute
+(see below).
 
 1. Pick the quarter, for example Q2 2026 (`2026-04-01` to `2026-06-30`), and set the variables.
    The file name must match `decisions-<anything>.jsonl`; use `decisions-YYYY-QN.jsonl`, since the
@@ -103,22 +113,26 @@ drop out of the evaluation without a warning.
    DECISIONS_ARCHIVE_DIR=/absolute/path/to/archive # the value you set in .env
    ARCHIVE="$DECISIONS_ARCHIVE_DIR/decisions-$QUARTER.jsonl"
    PROGRAM='[.[] | select(.type == "exit" and .lot_units_left == 0 and .related_id != null)] as $closers
-     | (reduce $closers[] as $x ({}; .[$x.related_id] = true)) as $used_up
-     | (reduce ($closers[] | select(.date >= $from and .date <= $to)) as $x ({}; .[$x.related_id] = true)) as $closed_now
-     | .[] | select((if .type == "entry"
-         then $used_up[.id] == true and ((.date >= $from and .date <= $to) or $closed_now[.id] == true)
-         else (.date >= $from and .date <= $to) end) == ($mode == "archive"))'
+     | (reduce $closers[] as $x ({}; .[$x.related_id] = (if .[$x.related_id] == null or .[$x.related_id] < $x.date then $x.date else .[$x.related_id] end))) as $closed_on
+     | def in_quarter: . != null and . >= $from and . <= $to;
+     .[] | select((if .type == "entry" then ($closed_on[.id] | in_quarter)
+         elif .type == "exit" and .related_id != null then ($closed_on[.related_id] | in_quarter)
+         else (.date | in_quarter) end) == ($mode == "archive"))'
    ```
 
 2. Copy the quarter's lines to the archive. It refuses to run when the target already exists, so
-   a repeat cannot overwrite an archive with fewer lines:
+   a repeat cannot overwrite an archive with fewer lines. It writes to `decisions-<quarter>.jsonl.tmp`
+   and moves the file into place only when `jq` succeeded, so a bad line cannot leave an empty
+   archive behind that would block the retry (a `.tmp` file is never read as an archive):
 
    ```bash
    : "${DECISIONS_ARCHIVE_DIR:?set it to the absolute path of the archive directory}" &&
      case "$DECISIONS_ARCHIVE_DIR" in /*) ;; *) echo "DECISIONS_ARCHIVE_DIR must be absolute" >&2; false ;; esac &&
      { [ ! -e "$ARCHIVE" ] || { echo "$ARCHIVE exists: check it, delete it if step 3 never ran" >&2; false; }; } &&
      mkdir -p "$DECISIONS_ARCHIVE_DIR" &&
-     jq -c -s --arg from "$FROM" --arg to "$TO" --arg mode archive "$PROGRAM" logs/decisions.jsonl > "$ARCHIVE" &&
+     { jq -c -s --arg from "$FROM" --arg to "$TO" --arg mode archive "$PROGRAM" logs/decisions.jsonl > "$ARCHIVE.tmp" ||
+       { rm -f "$ARCHIVE.tmp"; false; }; } &&
+     mv -n -- "$ARCHIVE.tmp" "$ARCHIVE" &&
      wc -l "$ARCHIVE"
    ```
 
@@ -145,12 +159,29 @@ line counts no longer add up and the live file is not replaced.
 ## Reading the archive back
 
 Set `DECISIONS_ARCHIVE_DIR` to the absolute path of the directory holding the `decisions-*.jsonl`
-files (see [`.env.example`](../.env.example)). Unset or empty means no archive; a path that does
-not exist is ignored without a warning. `npm run decisions:evaluate` (the [SLO](glossary.md#sli-and-slo) report and the
-[silo](glossary.md#silo) reconstruction, which need the whole history), `npm run decisions:chart`
-and `npm run decision:record` (which looks up the entries of your lots) read it: they load the archived files in name order and then the live
-file. The variable must be set wherever those commands run, including your CI. A line that does
-not validate is skipped with a warning naming the file and line.
+files (see [`.env.example`](../.env.example)). `npm run decisions:evaluate` (the
+[SLO](glossary.md#sli-and-slo) report and the [silo](glossary.md#silo) reconstruction, which need
+the whole history), `npm run decisions:chart` and `npm run decision:record` read it: they load the
+archived files in name order and then the live file. A line that does not validate is skipped with
+a warning naming the file and line.
+
+**Where it must be set.** Only where you want the full history: your `decisions:evaluate` and
+`decisions:chart` runs, including the CI that runs them. `decision:record` does not need it (see
+above); it uses it when it is there. **What is lost without it**: the evaluation measures the live
+file only, so trades closed in an archived quarter drop out of the SLIs, and the silo
+reconstruction cannot see archived flows (it then warns about negative cash or oversold units, and
+the cutoff board says decisions are missing before a date). Nothing is written wrongly: the
+reports are regenerated on each run. The reusable workflows do not take the variable yet, so in
+their CI the evaluation is of the live file until it does.
+
+**Warnings.** The engine never changes its result for these, but says on stderr:
+
+- unset or empty: `[vault-io] NOTE: DECISIONS_ARCHIVE_DIR is not set ...`, one line per run,
+  not per read. If you have never archived, it is expected: ignore it;
+- set but the directory does not exist, is not a directory, or cannot be read:
+  `[vault-io] WARNING: DECISIONS_ARCHIVE_DIR "..." does not exist ...`; the live file is read alone;
+- set but not absolute: `[vault-io] WARNING: ... is not an absolute path ...`; it is still read,
+  against the working directory, which is why it is not reliable.
 
 ## See also
 

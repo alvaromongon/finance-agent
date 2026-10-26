@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OWNER_TYPES, validateOwnerInput } from "../decisions.js";
@@ -253,6 +253,10 @@ describe("log retention: the documented archive commands", () => {
     line({ id: "x5", type: "exit", ticker: "ITX", date: "2026-05-15", related_id: "e5" }), // no lot_units_left
     line({ id: "d1", type: "deposit", date: "2026-05-05" }),
     line({ id: "d2", type: "deposit", date: "2026-09-01" }),
+    line({ id: "e6", type: "entry", ticker: "MSFT", date: "2026-04-05" }), // sold in part in Q2, used up in Q3
+    line({ id: "x6", type: "exit", ticker: "MSFT", date: "2026-05-20", related_id: "e6", lot_units_left: 1 }),
+    line({ id: "x7", type: "exit", ticker: "MSFT", date: "2026-08-01", related_id: "e6", lot_units_left: 0 }),
+    line({ id: "x8", type: "exit", ticker: "BP", date: "2026-05-21" }), // cites no lot: archived by its date
   ];
   let dir: string;
   let archive: string;
@@ -272,14 +276,24 @@ describe("log retention: the documented archive commands", () => {
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
-  it("archives the quarter, archives an entry closed this quarter, keeps open lots (legacy exit included) and what is out of range", async () => {
+  it("archives a lot's entry and exits together once the quarter closes it, and keeps every line of an open lot (legacy exit included) and what is out of range", async () => {
     const [vars, copy, prune] = archiveBlocks(await read(RETENTION));
     const first = run([vars, copy]);
     assert.equal(first.status, 0, first.stderr);
-    assert.deepEqual(await ids(join(archive, "decisions-2026-Q2.jsonl")), ["e4", "e2", "x2", "x3", "x4", "x5", "d1"]);
+    assert.deepEqual(await ids(join(archive, "decisions-2026-Q2.jsonl")), ["e4", "e2", "x2", "x4", "d1", "x8"]);
     assert.notEqual(run([vars, copy]).status, 0, "step 2 repeated must refuse, not overwrite");
     assert.equal(run([vars, prune]).status, 0);
-    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), ["e1", "e3", "e5", "d2"]);
+    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), [
+      "e1",
+      "e3",
+      "x3",
+      "e5",
+      "x5",
+      "d2",
+      "e6",
+      "x6",
+      "x7",
+    ]);
   });
 
   it("is safe to repeat: step 2 refuses an existing archive and step 3 does not touch the log", async () => {
@@ -291,13 +305,35 @@ describe("log retention: the documented archive commands", () => {
     assert.notEqual(run([vars, copy]).status, 0);
     assert.equal(await readFile(target, "utf8"), archived, "the archive was overwritten");
     assert.notEqual(run([vars, prune]).status, 0, "line counts no longer add up");
-    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), ["e1", "e3", "e5", "d2"]);
+    assert.deepEqual(await ids(join(dir, "logs", "decisions.jsonl")), [
+      "e1",
+      "e3",
+      "x3",
+      "e5",
+      "x5",
+      "d2",
+      "e6",
+      "x6",
+      "x7",
+    ]);
   });
 
   it("fails on an empty or relative archive directory", async () => {
     const [vars, copy] = archiveBlocks(await read(RETENTION));
     assert.notEqual(run([vars, copy], "").status, 0);
     assert.notEqual(run([vars, copy], "relative/archive").status, 0);
+  });
+
+  it("leaves no archive behind when jq fails on a bad line, so the retry is not blocked", async () => {
+    const [vars, copy] = archiveBlocks(await read(RETENTION));
+    const live = join(dir, "logs", "decisions.jsonl");
+    await writeFile(live, LIVE.join("\n") + "\n{not json\n");
+    assert.notEqual(run([vars, copy]).status, 0);
+    assert.deepEqual(await readdir(archive), [], "a failed copy left a file in the archive directory");
+    await writeFile(live, LIVE.join("\n") + "\n");
+    const retry = run([vars, copy]);
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.deepEqual(await readdir(archive), ["decisions-2026-Q2.jsonl"], "the temporary file is gone");
   });
 
   it("leaves the live log untouched when a line is malformed", async () => {
