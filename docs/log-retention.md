@@ -15,7 +15,7 @@ repository holds none of them between runs. A file that lingers is work not done
 | `logs/pending-screening/<date>-<ticker>.md`        | `screening:prepare`                                              | `screening:resolve`       | The candidate's result is recorded                                    |
 | `logs/pending-screening/results.jsonl`, `run.json` | `screening:resolve`, `prepare`                                   | `screening:summarize`     | The run's summary email is sent (or email is off); kept if it was not |
 | `logs/outbox/*.json`                               | any flow with `MAIL_TRANSPORT=outbox`                            | `outbox:send` (the relay) | The email was sent; a file that failed to send is kept and retried    |
-| `logs/heartbeat-sent-eur.json`, `-usd.json`        | heartbeat                                                        | rewritten daily           | Holds only today's alert keys, so it does not grow                    |
+| `logs/heartbeat-sent-eur.json`, `-usd.json`        | [heartbeat](glossary.md#heartbeat)                               | rewritten daily           | Holds only today's alert keys, so it does not grow                    |
 
 If a `pending` file stays for days, the [reasoner](glossary.md#reasoner-api-and-handoff) did not run: resolve it, or delete it by hand if
 the signal is stale (it is not in the decision log until resolved).
@@ -47,7 +47,9 @@ Markdown logs older than 30 days are not read by the briefing. Keep the latest l
 ticker you still follow: the cooldown reads it (without it the only effect is one earlier
 re-analysis, not an error). Move the rest to wherever you keep history (another folder or
 repository), by year or quarter. The destination is outside the repository, so use `mv` and tell
-git the files are gone (`git mv` cannot cross the repository boundary).
+git the files are gone (`git mv` cannot cross the repository boundary). The commands never
+overwrite: if a file of the same name is already in `$DEST` they stop before moving anything (and
+`mv -n` would refuse it anyway).
 
 Move only what you reviewed, never a whole glob: list the candidates, drop from the list the latest
 log of every ticker you still follow, and put what is left in `FILES`. The expansions are quoted,
@@ -58,7 +60,10 @@ with "no matches found" once the files have moved):
 ls logs/2026-0[7-9]-*.md # review this list first
 FILES=(logs/2026-07-14-ko.md logs/2026-08-03-sap-de.md) # only the files you reviewed
 DEST=../archive/logs/2026-Q3
-mkdir -p "$DEST" && mv -- "${FILES[@]}" "$DEST/" && git rm --cached --quiet -- "${FILES[@]}"
+mkdir -p "$DEST" &&
+  CLASH=$(for f in "${FILES[@]}"; do [ -e "$DEST/${f##*/}" ] && echo "$DEST/${f##*/}"; done; true) &&
+  { [ -z "$CLASH" ] || { echo "already archived, nothing moved: $CLASH" >&2; false; }; } &&
+  mv -n -- "${FILES[@]}" "$DEST/" && git rm --cached --quiet -- "${FILES[@]}"
 ```
 
 ## Archiving decision-log quarters
@@ -70,15 +75,19 @@ P&L: keep it, and the archive, private.
 
 What stays in the live file, whatever its date:
 
-- the `entry` of a lot you still hold, that is, one no `exit` has used up (no `exit` for it with
-  `lot_units_left` 0). A lot only partly sold is still open: its entry stays, whatever its date.
-  `decision:record` and the evaluation read the archive too (see below), so this is not needed to
-  keep them correct; it keeps the open lots where a reader of the live file only (the heartbeat,
-  the two-month rule) and you, comparing with `Lots` in `portfolio.md`, find them. The commands
-  below keep those entries and archive everything else in the quarter, including the exits of a
-  lot that is still open (they are read back from the archive);
-- anything from the last three months: the two-month rule and the attribution of trades to
-  proposals (10-day window) read the live file only.
+- the `entry` of an open [lot](glossary.md#lot): no `exit` citing it has `lot_units_left` 0 (an
+  `exit` without `lot_units_left` does not count).
+  A lot only partly sold is still open: its entry stays. `decision:record` and the evaluation read
+  the archive too (see below), so this is not needed to keep them correct; it keeps the open lots
+  where a reader of the live file only (the heartbeat, the two-month rule) and you, comparing
+  with `Lots` in `portfolio.md`, find them. The commands below keep those entries and archive
+  everything else in the quarter, including the exits of a lot that is still open (they are read
+  back from the archive). When the `exit` that uses a lot up is archived, the entry goes with it,
+  whatever its date, so an entry kept for an open lot is archived in the quarter that closes it;
+- anything from the last three months. Two readers read the live file only: the heartbeat and the
+  two-month rule (an archived decision is invisible to them). The attribution of trades to
+  proposals (10-day window) is not one of them: `decision:record` reads the whole history, archive
+  included.
 
 `DECISIONS_ARCHIVE_DIR` must be an **absolute** path. The engine does not resolve it against
 `VAULT_PROJECT_DIR`: a relative path is resolved against the working directory of whatever runs
@@ -93,10 +102,12 @@ drop out of the evaluation without a warning.
    QUARTER=2026-Q2 FROM=2026-04-01 TO=2026-06-30
    DECISIONS_ARCHIVE_DIR=/absolute/path/to/archive # the value you set in .env
    ARCHIVE="$DECISIONS_ARCHIVE_DIR/decisions-$QUARTER.jsonl"
-   PROGRAM='(reduce (.[] | select(.type == "exit" and (.lot_units_left // 0) == 0 and .related_id != null) | .related_id)
-         as $id ({}; .[$id] = true)) as $used_up
-     | .[] | select(((.date >= $from and .date <= $to) and (.type != "entry" or $used_up[.id] == true))
-         == ($mode == "archive"))'
+   PROGRAM='[.[] | select(.type == "exit" and .lot_units_left == 0 and .related_id != null)] as $closers
+     | (reduce $closers[] as $x ({}; .[$x.related_id] = true)) as $used_up
+     | (reduce ($closers[] | select(.date >= $from and .date <= $to)) as $x ({}; .[$x.related_id] = true)) as $closed_now
+     | .[] | select((if .type == "entry"
+         then $used_up[.id] == true and ((.date >= $from and .date <= $to) or $closed_now[.id] == true)
+         else (.date >= $from and .date <= $to) end) == ($mode == "archive"))'
    ```
 
 2. Copy the quarter's lines to the archive. It refuses to run when the target already exists, so
@@ -135,7 +146,7 @@ line counts no longer add up and the live file is not replaced.
 
 Set `DECISIONS_ARCHIVE_DIR` to the absolute path of the directory holding the `decisions-*.jsonl`
 files (see [`.env.example`](../.env.example)). Unset or empty means no archive; a path that does
-not exist is ignored without a warning. `npm run decisions:evaluate` (the SLO report and the
+not exist is ignored without a warning. `npm run decisions:evaluate` (the [SLO](glossary.md#sli-and-slo) report and the
 [silo](glossary.md#silo) reconstruction, which need the whole history), `npm run decisions:chart`
 and `npm run decision:record` (which looks up the entries of your lots) read it: they load the archived files in name order and then the live
 file. The variable must be set wherever those commands run, including your CI. A line that does

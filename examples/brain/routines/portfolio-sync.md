@@ -20,7 +20,7 @@ as JSON on stdin. That command appends to the
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
 | Deposit, withdrawal | the log                                                                                                                              | `Available cash`               |
 | Currency conversion | the log                                                                                                                              | `Available cash` of both silos |
-| Buy                 | the log, a new row in `Lots`, and `Volume`, `Avg price` and `Stop loss` of the position                                              | `Available cash`               |
+| Buy | the log, a new row in `Lots`, `Volume` and `Avg price` of the position, and `Stop loss` (new position only) | `Available cash`               |
 | Sale                | the log, shrinks or removes the `Lots` rows it consumes, recomputes `Volume` and `Avg price`, deletes the position with its last lot | `Available cash`               |
 | Stop change         | the log                                                                                                                              | the `Stop loss` cell           |
 | Any sync            | -                                                                                                                                    | `last_manual_sync`             |
@@ -45,10 +45,10 @@ when you record something that happened earlier.
 
 ## Order that keeps the P&L right
 
-Process the events in the order they happened at the broker, and commit the log and
-`portfolio.md` together.
+Order the events by date; within a date, flows first. Process them in that order, and commit the
+log and `portfolio.md` together.
 
-1. **Money in or out, and currency conversions, first.** Later buys are funded by them, and the
+1. **Money in or out, and currency conversions, first within their date.** Later buys are funded by them, and the
    shadow portfolio buys its benchmark with every flow on its own date, so a wrong or missing date
    shifts the comparison.
 2. **A buy:** record it. The engine adds the lot and the position.
@@ -108,6 +108,10 @@ is measured against.
 `Volume` and its weighted `Avg price`. **A second buy of a held ticker is a new lot**, a trade of
 its own: its R is measured from its own price and stop, and the first lot is not touched. The
 engine does not touch cash: lower `Available cash` by what the buy cost.
+
+When you add to a position you already hold (a scale-in), `decision:record` writes the second
+buy's `stop` into its lot only. It leaves the position's `Stop loss` cell as it was, so if the
+stop of the position changes with the buy, edit `Stop loss` by hand.
 
 Every buy is checked against the watchlist and the stop distance; one without a
 [setup](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#setup) is
