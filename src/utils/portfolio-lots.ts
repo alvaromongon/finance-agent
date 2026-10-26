@@ -20,11 +20,12 @@ import {
 } from "./vault-parser.js";
 import { namesTicker, type Ticker } from "../ticker.js";
 import {
-  money,
+  addCounted,
+  countedInCents,
   shareExactAmount,
   shareMoney,
-  subtractMoney,
-  sumMoney,
+  subtractCounted,
+  sumCounted,
   unitsWorthHalfACent,
   ZERO,
   type Money,
@@ -140,15 +141,24 @@ export function planSale(
   // Each exit keeps its lot's own result (from the entry price). A result the owner gave for the whole
   // sale only moves them by the difference to the computed sum (costs, FX), shared by units in whole cents,
   // so a losing lot stays a loss when the sale as a whole is a gain.
-  const computed = taken.map((t) => money((sale.price - t.lot.entryPrice) * t.unitsSold));
-  const difference = sale.pnl === undefined ? undefined : subtractMoney(sale.pnl, sumMoney(computed));
+  const computed = taken.map((t) =>
+    countedInCents((sale.price - t.lot.entryPrice) * t.unitsSold, `the result of ${lotName(t.lot)} (its Entry price)`),
+  );
+  const difference =
+    sale.pnl === undefined
+      ? undefined
+      : subtractCounted(
+          sale.pnl,
+          sumCounted(computed, `the results of the lots of ${sale.ticker} sold together`),
+          `the difference between the pnl and the results of the lots of ${sale.ticker}`,
+        );
   const adjustments = shareOf(difference);
 
   return taken.map((t, i) => ({
     ...t,
     amount: amounts[i],
     costs: costs[i],
-    pnl: money(computed[i] + (adjustments[i] ?? 0)),
+    pnl: addCounted(computed[i], adjustments[i] ?? ZERO, `the result of ${lotName(t.lot)}`),
     entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? ZERO),
   }));
 }
@@ -156,12 +166,23 @@ export function planSale(
 function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, taken: Money): Money | undefined {
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
-  const remainder = subtractMoney(total, taken);
+  const remainder = subtractCounted(total, taken, `the entry costs of ${lotName(t.lot)} left`);
   const left = remainder > ZERO ? remainder : ZERO;
   if (t.unitsLeft === 0) return left;
-  const share = money((total * t.unitsSold) / t.lot.entryUnits);
+  if (!(t.lot.entryUnits > 0)) {
+    throw new Error(
+      `${lotName(t.lot)} has Entry units ${t.lot.entryUnits}: its entry costs cannot be shared over a partial sale (nothing was recorded)`,
+    );
+  }
+  const share = countedInCents(
+    (total * t.unitsSold) / t.lot.entryUnits,
+    `the entry costs of ${lotName(t.lot)} taken by the sale`,
+  );
   return share < left ? share : left;
 }
+
+/** How a lot is named in a refusal: its entry id and ticker. */
+const lotName = (lot: Lot): string => `lot ${lot.entryId} (${lot.ticker})`;
 
 // ─── portfolio.md ─────────────────────────────────────────────────────────────
 

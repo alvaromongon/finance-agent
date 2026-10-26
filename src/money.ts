@@ -27,6 +27,16 @@ export function money(n: number): Money {
 
 export const ZERO: Money = money(0);
 
+/**
+ * `money(n)`, or an `Error` in words, not a bare `RangeError`, when `n` cannot be counted in cents (#87):
+ * `what` names the amount in the message, which says whether it is not a number or too large.
+ */
+export function countedInCents(n: number, what: string): Money {
+  if (Number.isNaN(n)) throw new Error(`${what} is not a number; got: ${n} (nothing was recorded)`);
+  if (!canCountInCents(n)) throw new Error(`${what} is too large to count in cents; got: ${n} (nothing was recorded)`);
+  return money(n);
+}
+
 /** The whole number of cents of an amount, for comparing and sharing without float noise. */
 const centsOf = (n: number): number => Math.round(n * CENTS);
 
@@ -36,6 +46,17 @@ export const sumMoney = (values: Iterable<Money>): Money => {
   let cents = 0;
   for (const value of values) cents += centsOf(value);
   return money(cents / CENTS);
+};
+
+/** `addMoney`, or a refusal naming `what` when the total is too large to count in cents (`countedInCents`). */
+export const addCounted = (a: Money, b: Money, what: string): Money => countedInCents(a + b, what);
+/** `subtractMoney`, or a refusal naming `what` when the difference is too large to count in cents. */
+export const subtractCounted = (a: Money, b: Money, what: string): Money => countedInCents(a - b, what);
+/** `sumMoney`, or a refusal naming `what` when the total is too large to count in cents. */
+export const sumCounted = (values: Iterable<Money>, what: string): Money => {
+  let cents = 0;
+  for (const value of values) cents += centsOf(value);
+  return countedInCents(cents / CENTS, what);
 };
 
 /** True if two amounts are the same at the cent: the one comparison of money, whatever the float noise. */

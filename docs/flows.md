@@ -223,7 +223,9 @@ them. It needs one history request per position with a stop; without ATR the pos
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
   - A sale of a ticker with no lots, of more units than are open, with no `portfolio.md`, or dated
     before the entry of a lot it would consume (a lot cannot be sold before it was bought; the same
-    day is allowed) is an error. All of them are refused before any call to the market data
+    day is allowed), a lot whose Entry price or entry costs (or the sums made from them) are too
+    large to count in cents, or a partial sale of a lot with entry costs and Entry units 0, is an
+    error. All of them are refused before any call to the market data
     provider ("no open lots" and "more units than open" included), and nothing is recorded; the last
     one names both dates.
 - **Reads / writes**: reads `logs/decisions.jsonl` (and the archive), `portfolio.md`, `watchlist.md`,
