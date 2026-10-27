@@ -211,9 +211,10 @@ them. It needs one history request per position with a stop; without ATR the pos
     upper case. It needs `portfolio.md`:
     without it the lot would be lost, so the entry is refused.
   - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
-    `exit` per lot consumed. Each exit cites its own lot, carries `units` (the units it sold from the
-    lot; those of a sale's exits add up to the units sold), the snapshot the evaluation needs
-    (entry price, units, date, origin, rules version, initial stop, rules broken, its share of the
+    `exit` per lot consumed. Each exit cites its own lot (`related_id`, the lot's entry id), carries
+    `units` (the units it sold from the lot; those of a sale's exits add up to the units sold), the
+    snapshot the evaluation needs (`entry_price`, `entry_units`, `entry_date`, `entry_origin`,
+    `entry_rules_version`, `stop_initial`, `rule_violations` and `entry_costs`, its share of the
     entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). A
     sale narrated by amount alone has units known only to half a cent of price, so a lot it leaves
     with less than that is used up; units the owner gave are exact and nothing is snapped.

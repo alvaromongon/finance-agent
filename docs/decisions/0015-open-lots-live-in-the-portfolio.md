@@ -34,10 +34,10 @@ An `exit` stored only its half of the trade and pointed to its entry through `re
 Chosen option: "lots in `portfolio.md`, written by the engine", because it is the only one where both the open state and each closed trade are readable without scanning or joining the log, and it keeps one source of truth for what is owned.
 
 - `portfolio.md` gets a required `Lots` table per currency, in a new, incompatible version of its format; the version is per file, so no other file changes. Each row carries the ticker and what an exit needs to measure its trade: the entry id, date, units left and the entry's units, price, initial stop, costs, origin and rules. A file in the previous version is refused; there is no migration.
-- `decision:record` is the only writer of lots. An entry adds a lot; a sale consumes lots first in, first out, writes one exit per lot consumed and keeps the ticker's position row in step with its lots. It appends to the decision log first and rewrites the portfolio second.
-- Each exit carries a snapshot of its lot (the entry id and the entry data its R needs, its share of the entry costs, the units it sold and the units the lot has left), so it can be measured on its own. A lot is closed when an exit leaves it no units: the writer records that, the evaluation does not infer it.
+- `decision:record` is the only program that writes lots; the owner corrects them by hand (below). An entry adds a lot; a sale consumes lots first in, first out, writes one exit per lot consumed and keeps the ticker's position row in step with its lots. It appends to the decision log first and rewrites the portfolio second.
+- Each exit carries a snapshot of its lot (the entry id and the entry data its R needs, its share of the entry costs, the units it sold and the units the lot has left), so it can be measured on its own. A lot is closed when an exit leaves it no units: the writer records that, the evaluation does not infer it. Inferring it by summing the units of the exits against a rounding slack was rejected: on a low-priced asset the slack can exceed a real unsold remainder (100 units at 0.02 with 99 sold at 0.01 would read as closed).
 - A trade is one lot: its R is the units-weighted sum of the R of the exits that consumed it. Scale-ins are separate trades.
-- The owner reconciles the position's volume against the broker and corrects a mismatch (a split, a partial fill, a recording mistake) by editing `Lots` by hand in a correction commit; a split scales units, price and stop by one common ratio, so R does not change.
+- The owner reconciles the position's volume against the broker and corrects a mismatch (a split, a partial fill, a recording mistake) by editing `Lots` by hand in a correction commit; a split multiplies the units by one ratio and divides the price and the stop by it, so R does not change.
 - Lots are checked against the decision log on read. The commands that write or measure with the lots (`decision:record` and the evaluation) refuse a file whose lots do not match the log. The heartbeat checks the volume against the lots from `portfolio.md` alone and only warns, loudly and in every digest while it lasts, because a typo must never switch off stop alerts; every other reader tolerates a broken `Lots` table.
 
 **What we give up**:
@@ -76,7 +76,7 @@ Engine tests with hand-calculated expectations, grouped as R1 to R5 in one suite
 
 **Success measure**: those tests pass in CI. Measured 2026-10-27: the measurable-exits suite has 36 tests (R1 to R5 and the cases around them), and all 36 pass, in 1 local run and in the CI run of the same commit; before the change four of R1 to R5 failed (measured 2026-10-19). A check on the owner's real log was dropped, because the owner starts from scratch on the new format.
 
-The rules that change with the code (the table's columns, how the file is parsed and written, the exact checks and their messages, the archive procedure) are in the flow document, not in this record.
+The rules that change with the code are not in this record: the table's columns and the checks are in the input format, how the file is read and written in the flow document, and the archive procedure in the log retention guide.
 
 ## Pros and cons of the options
 
