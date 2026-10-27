@@ -1,6 +1,6 @@
 ---
-status: Proposed
-date: 2026-10-19
+status: Accepted
+date: 2026-10-27
 decision-makers: Repository owner
 ---
 
@@ -33,31 +33,33 @@ An `exit` stored only its half of the trade and pointed to its entry through `re
 
 Chosen option: "lots in `portfolio.md`, written by the engine", because it is the only one where both the open state and each closed trade are readable without scanning or joining the log, and it keeps one source of truth for what is owned.
 
-- `portfolio.md` gets a required `Lots` table per currency, in a new, incompatible version of its format. Each row carries what an exit's snapshot needs: ticker, entry id, date, units left, entry units, entry price, initial stop, entry costs, origin, rules version and rules violations. The ticker is in the row so that `Volume` can be checked against the lots from `portfolio.md` alone.
-- `decision:record` is the only writer: an entry adds a lot; a sale consumes lots FIFO, writes one exit per lot consumed and recomputes `Volume` and `Avg price` in `Positions`. It appends to the log first and rewrites the portfolio second, and both changes go in one commit. A lot that a sale uses up is removed from `Lots`; its history lives in its exit lines.
-- Each exit carries the snapshot of its lot, in optional fields of the decision log: `related_id` (the entry id of the lot, never the latest open entry), `entry_price`, `entry_units`, `entry_costs` (the exit's share of the lot's entry costs, pro rata to the units sold, the remainder on the last exit of the lot, so the shares add up exactly to the lot's costs), `entry_date`, `entry_origin`, `entry_rules_version`, `stop_initial`, `rule_violations`, `units` (the units the exit sold from its lot; the exits of one sale add up to the units sold) and `lot_units_left`.
+- `portfolio.md` gets a required `Lots` table per currency, in a new, incompatible version of its format (`schema_version` 2; the version is per file, so no other file changes). Each row carries what an exit's snapshot needs, with `Ticker` first: ticker, entry id, date, units left, entry units, entry price, initial stop, entry costs, origin, rules version and rules violations. The ticker is in the row so that `Volume` can be checked against the lots from `portfolio.md` alone. The reader refuses a version 1 file; there is no reading of it and no migration.
+- `portfolio.md` has one codec: parsing gives a model that keeps every line (notes and spacing included) and serializing writes it back, so read then write unchanged is identical. Both writers, `decision:record` and the heartbeat's price update, edit that model instead of patching text, which keeps their changes to the same table from losing each other's lines. `decision:record` reads the file again right before it writes and applies its change to that text.
+- `decision:record` is the only writer of lots: an entry adds a lot; a sale consumes lots FIFO, writes one exit per lot consumed and recomputes `Volume` and `Avg price` in `Positions` (it creates the ticker's row on its first entry, with the lot's initial stop as `Stop loss`, and deletes it with the last lot; the other columns stay as they are). It appends to the log first and rewrites the portfolio second, and both changes go in one commit. A lot that a sale uses up is removed from `Lots`; its history lives in its exit lines.
+- Each exit carries the snapshot of its lot, in optional fields of the decision log: `related_id` (the entry id of the lot, never the latest open entry), `entry_price`, `entry_units`, `entry_costs` (the exit's share of the lot's entry costs, pro rata to the units sold, the remainder on the last exit of the lot, so the shares add up exactly to the lot's costs), `entry_date`, `entry_origin`, `entry_rules_version`, `stop_initial`, `rule_violations`, `units` (the units the exit sold from its lot; the exits of one sale add up to the units sold) and `lot_units_left`. An exit's `amount` is its exact share of the sale amount (not rounded to the cent, the shares add up to the sale), so a lot with very few units can still be sold.
 - A lot is closed when its last exit has `lot_units_left` = 0, the units the lot has left after that exit. The writer knows exactly when a lot is used up, so the evaluation does not infer it. Inferring it by summing the units of the exits against a rounding slack was rejected: on a low-priced asset the slack can exceed a real unsold remainder (100 units at 0.02 with 99 sold at 0.01 read as closed), exits of one lot that disagree go unnoticed, and the sum depends on float arithmetic. The evaluation also checks that, across a lot's exits followed by `lot_units_left`, highest first (the order they were written in, whatever their dates; a backdated sale breaks date order), `lot_units_left` falls by the units each exit sold (its `units`; `amount / price`, within cent rounding, only for an exit without it) and never below 0, and that the exits agree on the rest of the snapshot. Exits whose `entry_units`, `entry_price` and `stop_initial` differ by one common ratio r (a split corrected in `Lots` between two sales: units × r, price and stop ÷ r, the rule of the lots check) still agree, and their `units` and `lot_units_left` are rescaled by r before the check; a lot that fails is not measured and the report names it.
 - A trade is one lot (one entry): its R is Σ(unitsᵢ / entry_units) × Rᵢ over the exits that consumed it. Scale-ins are separate trades.
 - The owner reconciles `Volume` against the broker. A mismatch (split, partial fill, recording mistake) is fixed by editing `Lots` by hand in a correction commit. `decision:record` and the evaluation, which read the whole decision log, refuse the file when:
   - `Volume` differs from the sum of its lots' units;
   - a lot has more units than its entry bought, or two rows share an entry id;
-  - a lot's entry id is not in the log, its ticker is not its entry's, or its snapshot of the entry (price, units, initial stop, date, origin, rules version, rules violations) differs from the entry's;
+  - a ticker is on several `Positions` rows, or a `Lots` row cannot be read (the message names it and the reason; the file is never rewritten around a row the reader skipped);
+  - a lot's entry id is not in the log (the message says the quarter may be archived), its ticker is not its entry's, or its snapshot of the entry (price, units, initial stop, date, origin, rules version, rules violations, entry costs to the cent) differs from the entry's;
   - an entry in the log is still open and has no lot, where an entry is open until an exit citing it has `lot_units_left` = 0 (an entry whose log line has no `units` was recorded before this contract and is not checked);
   - a lot is still in `Lots` although an exit used it up.
 
-  The heartbeat does not read the log: it checks `Volume` against the lots from `portfolio.md` alone, keeps watching the positions for risk and raises a loud warning, because a typo must never switch off stop alerts. A split is corrected by scaling units, entry price and stop by one common ratio r (units × r, price and stop ÷ r), which the snapshot comparison accepts; any other difference is refused. The check cannot catch a wrong ratio.
+  All the messages of one read are reported together, so one round of fixes is enough. The heartbeat does not read the log: it checks `Volume` against the lots from `portfolio.md` alone, after it has detected the crossed stops and with no catch of its own (a defect in the check fails the run visibly, with the stops already in the digest), keeps watching the positions for risk and raises a loud warning that is repeated in every digest while it lasts, because a typo must never switch off stop alerts. An unreadable or missing `Lots` table is the same warning there. Every other reader of the portfolio (`pending:resolve`, the Monday briefing, the weekly screening) uses only positions, cash and silo value and tolerates a broken `Lots` table; only `decision:record` and the evaluation, which write or measure with the lots, refuse it. A split is corrected by scaling units, entry price and stop by one common ratio r (units × r, price and stop ÷ r), which the snapshot comparison accepts; any other difference is refused. The check cannot catch a wrong ratio. A split between two exits of one lot keeps the lot measurable for the same reason, and R does not change with a split. A partial sale that reached the log but not the portfolio cannot be told from a split correction, so it is not caught on read; the owner catches it when reconciling `Volume` with the broker.
 
 **What we give up**:
 
 - The owner no longer edits position rows, only corrects lots.
 - About five static entry fields are duplicated in every exit. This is safe because the log is append-only.
-- No backward compatibility: portfolio files in the previous format and log lines without a snapshot are discarded and rewritten by hand, with no migration script. Accepted because the owner is the only user.
+- No backward compatibility: portfolio files in the previous format and log lines without a snapshot are discarded, with no migration script. Accepted because the owner is the only user and starts from scratch on the new format instead of converting a live portfolio.
 
 **Scope**: `decision:record`, the `portfolio.md` format with its reader and writer, the evaluation and its chart, and the owner's routine for keeping the portfolio in sync.
 
 **Confidence**: medium. Revisit if:
 
-- a second user arrives with data in the previous format, which would need a real migration;
+- a second user arrives with a portfolio in the previous format, which would need a real migration;
 - another consumer of entries cannot work from the snapshot;
 - the evaluation takes more than 1 s, or the live log exceeds 10,000 lines (then consider views of the log).
 
@@ -66,10 +68,10 @@ Chosen option: "lots in `portfolio.md`, written by the engine", because it is th
 - Good: realized R of a partial or scaled trade is computed from exit lines alone.
 - Good: archiving a quarter can never strand data a measurement needs.
 - Good: the owner no longer has to record a sale before touching its row, because the engine updates the row.
-- Bad: two writers now touch `portfolio.md`. The heartbeat rewrites prices and `decision:record` rewrites lots and positions, so a heartbeat run in flight while the owner records a trade can conflict on rebase. The decision log avoids this by merging appended lines, but a Markdown table cannot. The conflict is visible, not silent: each writer commits and rebases. Moving prices to a file only the heartbeat writes would remove the conflict; it is left out until a conflict actually happens.
+- Bad: two writers now touch `portfolio.md`. The heartbeat rewrites prices and `decision:record` rewrites lots and positions. On one checkout the re-read before writing keeps an edit made meanwhile; between checkouts a heartbeat run in flight while the owner records a trade can conflict on rebase. The decision log avoids this by merging appended lines, but a Markdown table cannot. The conflict is visible, not silent: each writer commits and rebases, and a heartbeat job that clashes fails. Moving prices to a file only the heartbeat writes would remove the conflict; it is left out until a conflict actually happens.
 - Bad: `decision:record` writes two files. If it stops between the log and the portfolio, the exit exists but the lot does not shrink. When the sale used the lot up, the next read refuses the file (the lot is still there although an exit used it up) and the owner fixes `Lots` by hand. When the lot only shrank, the units left in `Lots` are not compared with the last exit's `lot_units_left` (a split correction would trip that comparison), so the owner has to notice. The portfolio rewrite itself is atomic (a temporary file in the same directory, renamed over `portfolio.md`), so a stop can only fall between the two files, not inside one.
 - Bad: a hand correction of `Lots` is not traced in the log, only in git history.
-- Bad: rewriting the previous format by hand can carry a transcription mistake into R. Open positions are re-recorded as entries with their original date, so each lot has a real entry id, and the result is checked once against a broker statement.
+- Bad: a lot written by hand can carry a transcription mistake into R (a typo in `Entry costs` once moved a trade's R from 1.96 to 1.60 unnoticed, which is why the costs are compared with the entry's). Every lot needs a real entry id, so open positions are recorded as entries, never typed straight into `Lots`.
 
 ### Confirmation
 
@@ -79,10 +81,13 @@ Engine tests with hand-calculated expectations:
 - two partial exits of one entry;
 - FIFO across two lots;
 - archiving any quarter leaves the evaluation unchanged;
-- a sale spanning two lots keeps `Lots` and `Positions` consistent, and a mismatch fails on read;
-- a lot sold in two partial sales and then a sale across two lots gives each exit its own lot's entry id, and the entry costs of one lot add up across its exits.
+- a sale spanning two lots keeps `Lots` and `Positions` consistent, and a mismatch fails on read (write side), and the same file read back by the evaluation (read side);
+- a lot sold in two partial sales and then a sale across two lots gives each exit its own lot's entry id, and the entry costs of one lot add up across its exits;
+- archiving a quarter that separates an entry from a later exit leaves the evaluation unchanged, and a missing archive is a warning, not a silent change.
 
-**Success measure**: those tests pass in CI, and on the owner's real log single-lot trades keep their R (a human check once the change is complete).
+These five R tests are one suite that runs in CI.
+
+**Success measure**: those tests pass in CI. Measured 2026-10-27: 36 tests in the suite, 36 pass, 0 fail, 1 local run, plus the CI run of the same commit green; before the change four of the five failed (measured 2026-10-19). A check on the owner's real log was dropped, because the owner starts from scratch on the new format.
 
 ## Pros and cons of the options
 

@@ -44,7 +44,9 @@ parentheses so a code comment that cites it can be found here.
      cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
      briefing and the screening log the same warning.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
-     (current price and P/L). This happens before the market-session guard on purpose.
+     (current price and P/L). This happens before the market-session guard on purpose. The write
+     goes through the file's one codec, which keeps every line it does not change (notes and
+     spacing included), as `decision:record`'s does; every `Positions` row of a ticker is updated.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
      4a. Check the [lots](glossary.md#lot), from `portfolio.md` alone (it does not read the decision
@@ -86,6 +88,7 @@ parentheses so a code comment that cites it can be found here.
 - **Why**: [ADR-0002](decisions/0002-escalate-to-claude-only-after-deterministic-filters.md) (filters
   first), [ADR-0007](decisions/0007-portfolio-is-the-source-of-truth-for-risk-watch.md) (what is
   watched), [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md) (two reasoner backends).
+  For the lots check and the portfolio write: [spec #27](https://github.com/alvaromongon/finance-agent/issues/27).
 
 ### Market data freshness
 
@@ -195,12 +198,15 @@ them. It needs one history request per position with a stop; without ATR the pos
   rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
   `overrode_block`. The engine also keeps the [lots](glossary.md#lot):
+  - The ticker is parsed first (trimmed, letters, digits and `. - ^ =`, upper case; see the
+    [ticker](glossary.md#ticker)): one outside the pattern is refused before anything is written.
   - Units and amount are one fact: given both, they must agree to within a cent
     (`|amount − units × price| ≤ 0.01`), otherwise the trade is refused and nothing is written; given
     one, the other is derived.
   - An entry writes `units` (the units bought) on its log line and adds a lot to `Lots`, whose
     `Entry units` is that number; it creates the ticker's row in `Positions` (with the lot's
-    initial stop as `Stop loss`) or updates its `Volume` and `Avg price`. It needs `portfolio.md`:
+    initial stop as `Stop loss`; the other columns stay as they are) or updates its `Volume` and
+    `Avg price`. It needs `portfolio.md`:
     without it the lot would be lost, so the entry is refused.
   - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
     `exit` per lot consumed. Each exit cites its own lot, carries `units` (the units it sold from the
@@ -234,15 +240,23 @@ them. It needs one history request per position with a stop; without ATR the pos
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
-  it), so a stop never leaves `portfolio.md` cut short. The portfolio is read again after the
+  it), so a stop never leaves `portfolio.md` cut short. Both writers of the file (this one and
+  the heartbeat's price update) share one codec: it keeps every line of the file, notes and spacing
+  included, so reading and writing back unchanged is identical. The portfolio is read again after the
   market-data calls, right before it is written, and the lot change is applied to that text; if the
   lots moved meanwhile the record is refused with nothing written.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the
   record, because a Markdown log without its decision line would mean measuring halfway. If the
   process stops between the log and the portfolio, an exit exists whose lot did not shrink; the
-  owner corrects `Lots` by hand.
+  owner corrects `Lots` by hand. A partial sale that reached the log but not the portfolio is not
+  caught on read (a split correction looks the same); the owner finds it when reconciling `Volume`
+  with the broker, and every failure after the log append says the decision is recorded and the lot
+  change has to be applied by hand.
 - **Why**: [ADR-0006](decisions/0006-single-append-only-decision-log.md),
-  [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md).
+  [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md),
+  [ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md) (lots), and for the lot design
+  [spec #27](https://github.com/alvaromongon/finance-agent/issues/27). The contract of the `Lots` table is in
+  [input-format.md](input-format.md#portfoliomd).
 
 Sizing parameters in force (the framework itself stays in ADR-0009): each trade risks 1 % of the silo
 value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2:1 net of costs.
@@ -337,7 +351,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      changes; see [Log retention](log-retention.md#reading-the-archive-back)). Check the portfolio's lots against it,
      and stop if they do not match.
   2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
-     its [lot](glossary.md#lot)); a lot is closed when its last exit has `lot_units_left` = 0. An
+     its [lot](glossary.md#lot)). A trade is one lot, so a scale-in is a separate trade, and its R
+     is the units-weighted sum of its exits' R (see [R](glossary.md#r)). Exits of one lot
+     whose entry units, entry price and initial stop differ by one common ratio (a split corrected
+     in `Lots` between two sales) still count as one lot, and R does not change. A lot is closed when its last exit has `lot_units_left` = 0. An
      exit without the snapshot or without `lot_units_left`, an oversold lot, and a lot whose exits do
      not add up (units left that do not follow the sales, or snapshots that disagree) are not
      measured but are reported (the exits and lots by name) in the cutoff board and on the console.
@@ -360,8 +377,13 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   the files above. It never touches the decision log, `portfolio.md` or the watchlist.
 - **When it fails**: it exits non-zero and writes nothing, also when the portfolio's lots do not
   match the decision history; "insufficient data" is a status, not a failure.
+- **Archive**: archiving a quarter never changes the result, because an exit carries everything
+  its R needs and a lot's entry and exits stay live while it is open (see [Log
+  retention](log-retention.md)); a lot whose entry is in no loaded file is a lots mismatch that
+  names `DECISIONS_ARCHIVE_DIR`.
 - **Why**: [ADR-0014](decisions/0014-decision-quality-slo.md),
-  [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md) §4.
+  [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md) §4, and for the
+  per-lot exits [spec #27](https://github.com/alvaromongon/finance-agent/issues/27).
 
 ## Email delivery
 
