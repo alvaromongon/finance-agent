@@ -46,7 +46,7 @@ parentheses so a code comment that cites it can be found here.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose. The write
      goes through the file's one codec, which keeps every line it does not change (notes and
-     spacing included), as `decision:record`'s does; every `Positions` row of a ticker is updated.
+     spacing included); every `Positions` row of a ticker is updated.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
      4a. Check the [lots](glossary.md#lot), from `portfolio.md` alone (it does not read the decision
@@ -194,7 +194,7 @@ them. It needs one history request per position with a stop; without ATR the pos
 - **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match the
   decision history (a `Lots` row the reader skipped, a ticker on several `Positions` rows, a `Volume` that is not the
   sum of its lots' units, a lot that disagrees with its entry, entry costs included, or an entry
-  still open in the log with no lot), reporting together the messages of the lots comparison once the file has parsed (a `Lots` row or a `Positions` ticker that does not parse stops the read first, on its own), then fill what the owner need not know: id,
+  still open in the log with no lot), reporting together the messages of the lots comparison once the file has parsed (a `Positions` ticker that does not parse, or a `Lots` table that does not read, stops the read first, on its own; an unreadable `Lots` row is reported with the rest), then fill what the owner need not know: id,
   rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
   follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
   `overrode_block`. The engine also keeps the [lots](glossary.md#lot):
@@ -205,7 +205,8 @@ them. It needs one history request per position with a stop; without ATR the pos
     one, the other is derived.
   - An entry writes `units` (the units bought) on its log line and adds a lot to `Lots`, whose
     `Entry units` is that number; it creates the ticker's row in `Positions` (with the lot's
-    initial stop as `Stop loss`; the other columns stay as they are) or updates its `Volume` and
+    initial stop as `Stop loss`, the current price, or the average price when none is known, as
+    `Current price`, a `P/L` of 0 and the other columns empty) or updates only its `Volume` and
     `Avg price`. It needs `portfolio.md`:
     without it the lot would be lost, so the entry is refused.
   - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
@@ -240,13 +241,14 @@ them. It needs one history request per position with a stop; without ATR the pos
   the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the `Lots` and
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
-  it), so a stop never leaves `portfolio.md` cut short. Both writers of the file (this one and
-  the heartbeat's price update) share one codec: it keeps the lines of the file, notes and spacing
+  it), so a stop never leaves `portfolio.md` cut short. Every writer of the file (this one and
+  the price update that the heartbeat and the Monday briefing run) shares one codec: it keeps the lines of the file, notes and spacing
   included, so reading and writing back unchanged is identical; when this writer rewrites the
   `Positions` table it drops the placeholder (`—`) rows. Only this writer re-reads the file and
-  writes atomically; the heartbeat's price update has no re-read and no lots check and writes the file
-  in place, so a heartbeat that read the file before a record and writes after it overwrites the new
-  `Lots` and `Positions` rows (see _Bad_ in the ADR). The portfolio is read again after the
+  writes atomically; the price update has no re-read and no lots check and writes the file in place,
+  so a price update that read the file before a record and writes after it (a short window: it
+  receives prices already fetched, then reads, edits and writes) overwrites the new `Lots` and
+  `Positions` rows (see _Bad_ in the ADR). The portfolio is read again after the
   market-data calls, right before the decision is appended, and if the lots moved meanwhile the
   record is refused with nothing written. It is read once more after the append, and if the lots
   moved in that short window the decision is already in the log: the error says so, and the trade
@@ -359,9 +361,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      not a directory or is not absolute (a note once per run when it is unset; no exit code or output
      changes; see [Log retention](log-retention.md#reading-the-archive-back)). Check the portfolio's lots against it,
      and stop if they do not match.
-  2. Compute the net R of each closed trade from its exits alone (each exit carries a snapshot of
-     its [lot](glossary.md#lot)). A trade is one [lot](glossary.md#lot) and its [R](glossary.md#r)
-     is measured on its exits. Exits of one lot
+  2. Compute the net [R](glossary.md#r) of each closed trade, one per [lot](glossary.md#lot), from
+     its exits alone (each exit carries a snapshot of its lot). Exits of one lot
      whose entry units, entry price and initial stop differ by one common ratio (a split corrected
      in `Lots` between two sales) still count as one lot, and R does not change. A lot is closed when its last exit has `lot_units_left` = 0. An
      exit without the snapshot or without `lot_units_left`, an oversold lot, and a lot whose exits do
@@ -386,9 +387,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   the files above. It never touches the decision log, `portfolio.md` or the watchlist.
 - **When it fails**: it exits non-zero and writes nothing, also when the portfolio's lots do not
   match the decision history; "insufficient data" is a status, not a failure.
-- **Archive**: archiving a quarter never changes the result, because an exit carries everything
-  its R needs and a lot's entry and exits stay live while it is open (see [Log
-  retention](log-retention.md)); a lot whose entry is in no loaded file is a lots mismatch that
+- **Archive**: with the archive read (`DECISIONS_ARCHIVE_DIR` set to it), archiving a quarter
+  never changes the result, because an exit carries everything its R needs and a lot's entry and
+  exits stay live while it is open (see [Log retention](log-retention.md)); without it, the
+  archived quarters are not measured and the run warns, as in step 1; a lot whose entry is in no loaded file is a lots mismatch that
   names `DECISIONS_ARCHIVE_DIR`.
 - **Why**: [ADR-0014](decisions/0014-decision-quality-slo.md),
   [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md) §4, and for the
