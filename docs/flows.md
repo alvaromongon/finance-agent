@@ -45,8 +45,9 @@ parentheses so a code comment that cites it can be found here.
      briefing and the screening log the same warning.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose. The write
-     goes through the file's one codec, which keeps every line it does not change (notes and
-     spacing included); every `Positions` row of a ticker is updated.
+     goes through the file's one codec and edits the priced cells in place, so every other line
+     stays where it was (notes and spacing included); every `Positions` row of a ticker that has a
+     price and a readable `Volume` and `Avg price` is updated, its ticker written in upper case.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
      4a. Check the [lots](glossary.md#lot), from `portfolio.md` alone (it does not read the decision
@@ -205,9 +206,9 @@ them. It needs one history request per position with a stop; without ATR the pos
     one, the other is derived.
   - An entry writes `units` (the units bought) on its log line and adds a lot to `Lots`, whose
     `Entry units` is that number; it creates the ticker's row in `Positions` (with the lot's
-    initial stop as `Stop loss`, the current price, or the average price when none is known, as
-    `Current price`, a `P/L` of 0 and the other columns empty) or updates only its `Volume` and
-    `Avg price`. It needs `portfolio.md`:
+    initial stop as `Stop loss`, the entry price as `Avg price` and `Current price`, a `P/L` of 0
+    and the other columns empty) or updates its `Volume` and `Avg price` and writes its ticker in
+    upper case. It needs `portfolio.md`:
     without it the lot would be lost, so the entry is refused.
   - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
     `exit` per lot consumed. Each exit cites its own lot, carries `units` (the units it sold from the
@@ -242,9 +243,12 @@ them. It needs one history request per position with a stop; without ATR the pos
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
   it), so a stop never leaves `portfolio.md` cut short. Every writer of the file (this one and
-  the price update that the heartbeat and the Monday briefing run) shares one codec: it keeps the lines of the file, notes and spacing
-  included, so reading and writing back unchanged is identical; when this writer rewrites the
-  `Positions` table it drops the placeholder (`—`) rows. Only this writer re-reads the file and
+  the price update that the heartbeat and the Monday briefing run) shares one codec, so reading and
+  writing back unchanged is identical. The price update edits cells in place; this writer rewrites
+  the `Lots` and `Positions` rows as one block per table: blank lines that split the table are
+  dropped, a note between its rows moves under it (as [the format](input-format.md#portfoliomd)
+  says) and the placeholder (`—`) rows of `Positions` are dropped; every line outside those tables
+  is kept. Only this writer re-reads the file and
   writes atomically; the price update has no re-read and no lots check and writes the file in place,
   so a price update that read the file before a record and writes after it (a short window: it
   receives prices already fetched, then reads, edits and writes) overwrites the new `Lots` and
