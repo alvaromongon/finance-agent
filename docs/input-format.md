@@ -56,7 +56,9 @@ A [ticker](glossary.md#ticker) in any file is read case-insensitively and writte
 and a file is not rewritten just to change the case (a row the engine writes, or an entry it adds,
 carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
 `EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit, and no two dots in a row and no leading dot (`A..B`, `..A` and
-`.A` are refused). A ticker outside that pattern (`TC|K`, `M&M.NS`, `A..B`) is never silently
+`.A` are refused; this narrowing of the pattern shipped without a `schema_version` bump because the
+owner approved it in [#93](https://github.com/alvaromongon/finance-agent/issues/93) on 2026-10-26, as
+the `portfolio.md` v2 exception below). A ticker outside that pattern (`TC|K`, `M&M.NS`, `A..B`) is never silently
 accepted, and a typo there must never switch off the stop alerts
 ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)): only `decision:record` and
 `decisions:evaluate` refuse the file, naming it and the row. Every other reader (the heartbeat,
@@ -64,8 +66,8 @@ accepted, and a typo there must never switch off the stop alerts
 `watchlist.md`, the screening universe or the screening log, a `Lots` row, or a decision-log line
 that has one, warns with the reason, and carries on with the rest; the heartbeat digest repeats the
 warning, naming the row, in every run while it lasts. A skipped `Positions` row is not watched until
-it is fixed. A `benchmark` whose ticker does not parse is dropped from its decision-log line (the
-line is kept), and a `RETIRE` token that is not a ticker is reported and not retired.
+it is fixed. A `benchmark` whose ticker does not parse is dropped from its decision-log line with a warning
+(the decision is kept), and a `RETIRE` token that is not a ticker is reported and not retired.
 
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
 notation. `—`, `-` or `TBD` mean "no value".
@@ -188,7 +190,7 @@ The reasons:
 - `Origin` is not `sistema` or `propietario`. It matches exactly, in lower case,
   because it is compared with the entry's in the decision log, which writes it so;
   the message says which case to write. (Column headers, which you type, match any case);
-- `Entry costs` is a number too large to count in cents (`1e307`);
+- `Entry costs` is a number too large to count in cents (`1e307`; the reason reads `Entry costs "1e307" is too large to count in cents`);
 - `Date` is not `YYYY-MM-DD`;
 - `Rules version` is empty or `—`.
 
@@ -207,6 +209,9 @@ reads it as one table, and when it writes (`decision:record` the `Lots` and
 rows it rewrites end up in one block, with a note that sat between them moved
 under the table; every other line, blank lines and line ends (LF or CRLF) included, is
 written back as it was.
+
+When one lot of a silo changes, `decision:record` writes the whole `Lots` table of that silo, so the
+rows it did not touch may come back re-formatted (cell padding) and with their ticker in upper case.
 
 `decision:record` also keeps `Positions`: the first entry of a ticker creates
 its row, with the lot's initial stop as `Stop loss` (`—` if there was none);
