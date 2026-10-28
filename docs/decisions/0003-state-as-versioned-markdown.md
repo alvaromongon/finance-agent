@@ -32,7 +32,7 @@ The user maintains the portfolio by hand: the engine integrates with no broker. 
 
 Chosen option: "Markdown with a versioned format". People can read it, git can merge it, and it works in any notes app.
 
-**What we give up**: tables in Markdown are a fragile contract. Columns are located by header, and the engine is strict: a missing section or an unknown value is an error. An incompatible change bumps `schema_version` and ships a migration. Where a format must be machine-first (the decision log), JSON Lines is used instead ([ADR-0006](0006-single-append-only-decision-log.md)).
+**What we give up**: tables in Markdown are a fragile contract. Columns are located by header, and the engine is strict: a missing section or an unknown value is an error. An incompatible change bumps `schema_version` and ships a migration, except where the owner has approved otherwise: `portfolio.md` v2 shipped without a migration, and a narrower ticker rule (two dots in a row or a leading dot are refused) shipped without a version bump. Where a format must be machine-first (the decision log), JSON Lines is used instead ([ADR-0006](0006-single-append-only-decision-log.md)).
 
 **Scope**: every file in [`docs/input-format.md`](../input-format.md), and every user's data directory.
 
