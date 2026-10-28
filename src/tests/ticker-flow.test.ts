@@ -212,6 +212,20 @@ describe("a ticker written in another case is the same ticker", () => {
     await assert.rejects(() => vaultIo.readPortfolio("USD"), /## USD — Positions: Ticker "TC;K"/);
   });
 
+  it("a Positions row with two dots in a row or a leading dot is refused like any other non-ticker", async () => {
+    for (const bad of ["A..B", ".A"]) {
+      await writeFile(path("portfolio.md"), portfolioMd([`| ${bad} | 2 | 100 | 100 | 0 | 80 |`], []), "utf8");
+      await assert.rejects(
+        () => vaultIo.readPortfolio("USD"),
+        (error: Error) => {
+          assert.ok(error.message.includes(`## USD — Positions: Ticker "${bad}"`), error.message);
+          assert.match(error.message, /two dots in a row|start with a dot/);
+          return true;
+        },
+      );
+    }
+  });
+
   it("decision:record refuses a Positions row or a watchlist entry that is not a ticker, writing nothing", async () => {
     await setUp([TCK_ROW, "| M&M.NS | 1 | 5 | 5 | 0 | 4 |"], [TCK_LOT]);
     const entry = { type: "entry", ticker: "tck", currency: "USD", price: 110, units: 1, stop: 90 };
