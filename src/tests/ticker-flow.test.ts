@@ -217,7 +217,11 @@ describe("a ticker written in another case is the same ticker", () => {
       await writeFile(path("portfolio.md"), portfolioMd([`| ${bad} | 2 | 100 | 100 | 0 | 80 |`], []), "utf8");
       await assert.rejects(
         () => vaultIo.readPortfolio("USD"),
-        new RegExp(`## USD — Positions: Ticker "${bad.replace(/\./g, "\\.")}"`),
+        (error: Error) => {
+          assert.ok(error.message.includes(`## USD — Positions: Ticker "${bad}"`), error.message);
+          assert.match(error.message, /two dots in a row|start with a dot/);
+          return true;
+        },
       );
     }
   });
