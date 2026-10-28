@@ -175,8 +175,9 @@ uses. Its canonical form is trimmed and upper case: letters, digits and `. - ^ =
 one letter or digit, and no two dots in a row and no leading dot. The engine makes a ticker only
 by parsing, so `tck` and `TCK` are one ticker everywhere and two tickers are equal exactly when
 `===` says so. A value that does not parse (for example `M&M.NS` or `A..B`) is not a ticker: the
-readers skip its row with a warning, and only `decision:record` and `decisions:evaluate` refuse
-the file.
+readers skip its row with a warning, except that `decision:record` and `decisions:evaluate` refuse
+a `portfolio.md` with such a `Positions` or `Lots` row (a decision-log line is skipped by every
+reader; see [input-format.md](input-format.md)).
 
 ### Money
 

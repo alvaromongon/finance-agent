@@ -4,15 +4,15 @@ date: 2026-10-25
 decision-makers: Repository owner
 ---
 
-# 0016. Domain values are branded types made only by parsing at the boundary, compared with `===`
+# 0016. Domain values are branded types made only by parsing at the boundary, compared by plain equality
 
-**Decision**: a domain value that has a canonical form (a ticker first, money next) is a branded type, a string or number that the compiler treats as a type of its own, and the only way to make one is a `parse` function at the boundary where the value enters; inside the engine two values are equal exactly when `===` says so. We expect the class of defect where two parts of the engine disagree on whether `TCK` and `tck` are the same asset to be impossible by construction, instead of caught one check at a time.
+**Decision**: a domain value that has a canonical form (a ticker first, money next) is a branded type, a string or number that the compiler treats as a type of its own, and the only way to make one is to parse it at the boundary where the value enters; inside the engine two values are equal exactly when they are the same string (or number). We expect the class of defect where two parts of the engine disagree on whether `TCK` and `tck` are the same asset to be impossible by construction, instead of caught one check at a time.
 
 ## Context and problem statement
 
-The engine read a ticker as a plain string in about 15 files and each place decided for itself what "the same ticker" meant: about 22 comparisons used exact `===`, one check (the lots check) compared without case, about 12 places lower-cased a ticker for a file name or slug in slightly different ways (with and without removing dots), and 5 checked "non-empty string" separately. A review of the lots check found the consequence: the check treated `TCK` and `tck` as one ticker while the writers matched exactly, so recording an entry on `tck` appended a second `Positions` row for the same asset and every later `decision:record` and `decisions:evaluate` was refused.
+The engine read a ticker as a plain string in about 15 files and each place decided for itself what "the same ticker" meant: about 22 comparisons used exact equality, one check (the consistency check between the lots and the positions) compared without case, about 12 places lower-cased a ticker for a file name or slug in slightly different ways (with and without removing dots), and 5 checked "non-empty string" separately. A review of that check found the consequence: it treated `TCK` and `tck` as one ticker while the writers matched exactly, so recording an entry on `tck` appended a second `Positions` row for the same asset and every later `decision:record` and `decisions:evaluate` was refused.
 
-**Why it matters**: the owner trades real money on this output. Counted on 2026-10-25 by `grep` over the sources without tests (measured): 42 lines handle a ticker by hand in 15 files. Each is a place where a future change can reintroduce the disagreement, and money (amounts, prices, units) has the same shape of problem with rounding and currency instead of case.
+**Why it matters**: the owner trades real money on this output. Counted on 2026-10-25 by a text search over the sources without tests (measured): 42 lines handle a ticker by hand in 15 files. Each is a place where a future change can reintroduce the disagreement, and money (amounts, prices, units) has the same shape of problem with rounding and currency instead of case.
 
 ## Decision drivers
 
@@ -24,22 +24,22 @@ The engine read a ticker as a plain string in about 15 files and each place deci
 
 ## Considered options
 
-- **Branded type made only by parsing**: `Ticker` is `string & brand`, `parseTicker` trims, checks the pattern and upper-cases it, and the domain types carry `Ticker`.
-- **Normalize at every comparison**: keep `string` and compare through one helper (`sameTicker(a, b)`), key the maps by it.
-- **Value class**: a `Ticker` object with `equals`.
-- **Do nothing**: fix the lots check to compare exactly, like the writers.
+- **Branded type made only by parsing**: a ticker is a string with a brand, the one way to make it trims the text, checks the pattern and upper-cases it, and the domain types carry the branded ticker.
+- **Normalize at every comparison**: keep `string` and compare through one shared helper, key the maps by it.
+- **Value class**: a ticker object with its own equality method.
+- **Do nothing**: fix the consistency check to compare exactly, like the writers.
 
 ## Decision outcome
 
 Chosen option: "branded type made only by parsing", because it is the only one where the compiler rejects a value that was not parsed, it costs nothing at run time and it survives JSON.
 
-- A ticker is trimmed, checked against the pattern (letters, digits and `. - ^ =`, with at least one letter or digit, no two dots in a row and no leading dot; `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X` are tickers, `TC|K`, `-`, `A..B` and `.A` are not) and upper-cased. The domain types (watchlist entry, position, lot, signal, recommendation, decision, benchmark) carry `Ticker`.
-- Every boundary that reads a ticker parses it: the owner's `decision:record` input, `portfolio.md` (`Positions` and `Lots`), the decision log (live and archived), the watchlist, the screening universe and log, the pending files, the analyst's and the briefing's JSON, the command-line arguments and the benchmark configuration. A value that does not parse is refused with a message naming the source, but who refuses follows [ADR-0015](0015-open-lots-live-in-the-portfolio.md) ("a typo must never switch off stop alerts"): only `decision:record` and `decisions:evaluate` refuse a file with a ticker that does not parse, as they do for a broken `Lots`; every other reader (the heartbeat, `pending:resolve`, the Monday briefing, the weekly screening) skips that row or entry (`Positions`, watchlist, screening universe and log, a `Lots` row, a decision-log line) with a warning naming it and carries on, and the heartbeat digest repeats the warning in every run while it lasts. A benchmark whose ticker does not parse is dropped from its decision-log line with a console warning, and the decision is kept. The reader of a command-line argument, a pending file or a screening candidate refuses, since the command cannot run without it.
+- A ticker is trimmed, checked against the pattern (letters, digits and `. - ^ =`, with at least one letter or digit, no two dots in a row and no leading dot; `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X` are tickers, `TC|K`, `-`, `A..B` and `.A` are not) and upper-cased. The domain types (watchlist entry, position, lot, signal, recommendation, decision, benchmark) carry the branded ticker.
+- Every boundary that reads a ticker parses it: the owner's `decision:record` input, `portfolio.md` (`Positions` and `Lots`), the decision log (live and archived), the watchlist, the screening universe and log, the pending files, the analyst's and the briefing's JSON, the command-line arguments and the benchmark configuration. A value that does not parse is never accepted, and what happens next follows [ADR-0015](0015-open-lots-live-in-the-portfolio.md) ("a typo must never switch off stop alerts"). For `portfolio.md`, `decision:record` and `decisions:evaluate` refuse the file, naming the source, when a `Positions` row or a `Lots` row has a ticker that does not parse; `decision:record` also refuses a watchlist entry that does not. Every other reader (the heartbeat, `pending:resolve`, the Monday briefing, the weekly screening) skips that `Positions` row, `Lots` row, watchlist entry, screening-universe entry or screening-log row with a warning naming it and carries on, and the heartbeat digest repeats the warning in every run while it lasts for the skipped `Positions` rows and watchlist entries (a skipped `Lots` row is reported among its `Lots` problems). A decision-log line (live or archived) whose ticker does not parse is different: every reader skips it with a console warning, `decision:record` and `decisions:evaluate` included, and the digest does not repeat it. A benchmark whose ticker does not parse is dropped from its decision-log line with a console warning, and the decision is kept. The reader of a command-line argument, a pending file or a screening candidate refuses, since the command cannot run without it.
 - Reading is case-insensitive and writing is upper case: a ticker written in lower case in `portfolio.md` or in the log reads as its upper-case value, the files are not rewritten, and a row the engine writes carries the canonical ticker.
-- File names and slugs derived from a ticker come from one module, and keep the names the engine already writes.
+- File names and slugs derived from a ticker come from one place, and keep the names the engine already writes.
 - Money (amount, price, units, with their rounding and currency) is the next value to follow this pattern, in its own change. Until then it stays a number.
 
-**What we give up**: every place that builds a domain object from untyped data must call a parser, and tests build tickers through `parseTicker`; a ticker outside the pattern (an Indian ticker such as `M&M.NS`) is skipped by the readers that carry on (and refused by the two that write or measure) until the pattern is widened by a decision of its own. The simple option (normalize at each comparison) is not enough because it leaves 42 places that each have to remember to do it, which is how the defect arose.
+**What we give up**: every place that builds a domain object from untyped data must call a parser, and tests build tickers through the same parsing; a ticker outside the pattern (an Indian ticker such as `M&M.NS`) is skipped by the readers that carry on (and refused by the two commands that write or measure, for `portfolio.md`) until the pattern is widened by a decision of its own. The simple option (normalize at each comparison) is not enough because it leaves 42 places that each have to remember to do it, which is how the defect arose.
 
 **Sequence**: `Ticker` first, because it caused a blocking defect; money after, because its rules (rounding, currency) need their own design.
 
@@ -51,14 +51,14 @@ Chosen option: "branded type made only by parsing", because it is the only one w
 
 - Good: a ticker that was not parsed does not compile; two tickers differing in case cannot exist inside the engine; one place defines a file name.
 - Good: the case-insensitive comparison of the lots check is deleted, since the case can no longer differ.
-- Bad: a brand is erased at run time, so a cast (`as Ticker`) can still defeat it; review is what remains. Two casts are left in `src`, one inside `parseTicker` and one after the analyst's validation has recorded the error.
-- Bad: test code needs a parse call where it used to write a string literal.
+- Bad: a brand is erased at run time, so a type cast can still defeat it; review is what remains. Two casts are left in the sources, one inside the parsing itself and one after the analyst's validation has recorded the error.
+- Bad: test code needs a parsing step where it used to write a string literal.
 
 ### Confirmation
 
-Unit tests of the parser (accepted and refused values, canonical form) and a component test that records an entry on `tck` against a portfolio holding `TCK` and checks one position row and that the next record is accepted. The type checker in the quality gate rejects an unparsed ticker in a domain type.
+Unit tests of the parsing (accepted and refused values, canonical form) and a component test that records an entry on `tck` against a portfolio holding `TCK` and checks one position row and that the next record is accepted. The type checker in the quality gate rejects an unparsed ticker in a domain type.
 
-**Success measure**: the lines that lower-case, upper-case or trim a ticker by hand (`grep -rniE 'ticker.*(toLowerCase|toUpperCase|trim\(\))|(toLowerCase|toUpperCase|trim\(\)).*ticker' src`, tests excluded, the ticker module excluded) fell from 28 to 4 on 2026-10-25 (measured), the 4 left reading a table cell just before it is parsed; and recording an entry on a ticker in another case never creates a second position row (the named component test).
+**Success measure**: the lines that lower-case, upper-case or trim a ticker by hand (a text search over the sources, tests excluded and the parsing itself excluded) fell from 28 to 4 on 2026-10-25 (measured), the 4 left reading a table cell just before it is parsed; and recording an entry on a ticker in another case never creates a second position row (the named component test).
 
 ## Pros and cons of the options
 
@@ -74,8 +74,8 @@ Unit tests of the parser (accepted and refused values, canonical form) and a com
 
 ### Value class
 
-- Good: methods (`equals`, `fileName`) live with the value.
-- Bad: it does not survive JSON, so every read and write needs a conversion; equality is no longer `===`.
+- Good: methods (equality, a file name) live with the value.
+- Bad: it does not survive JSON, so every read and write needs a conversion; equality is no longer plain equality.
 
 ### Do nothing
 
