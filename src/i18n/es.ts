@@ -126,9 +126,9 @@ export const es: Messages = {
     tickersIntro: [
       `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
       ``,
-      `Estas filas tienen un ticker fuera del patrón (letras, dígitos y \`. - ^ =\`) y se omiten. El heartbeat sigue`,
-      `vigilando todo lo demás, pero no vigila estas filas hasta que se corrijan; \`decision:record\` y la`,
-      `evaluación rechazan un ticker de \`Positions\` o de la watchlist que no se lee:`,
+      `Estas filas tienen un ticker fuera del patrón (letras, dígitos y \`. - ^ =\`, con al menos una letra o un dígito, sin dos puntos seguidos ni punto inicial) y se omiten. El heartbeat sigue`,
+      `vigilando todo lo demás, pero no vigila estas filas hasta que se corrijan.`,
+      `Las filas:`,
       ``,
     ],
     tickersOutro: [``, `Corrige el ticker a mano (ver \`docs/input-format.md\`).`],
