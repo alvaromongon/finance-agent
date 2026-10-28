@@ -79,6 +79,5 @@ describe("parseMarkdownMoney", () => {
   it("still reads the largest amount that can be counted in cents", () => {
     const largest = Number.MAX_VALUE / 100;
     assert.equal(parseMarkdownMoney(String(largest)), money(largest));
-    assert.notEqual(parseMarkdownMoney(String(largest)), null);
   });
 });

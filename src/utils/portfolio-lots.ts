@@ -167,7 +167,7 @@ function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, 
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
   const remainder = subtractCounted(total, taken, `the entry costs of ${lotName(t.lot)} left`);
-  const left = remainder > ZERO ? remainder : ZERO;
+  const left = Math.max(remainder, ZERO) as Money;
   if (t.unitsLeft === 0) return left;
   if (!(t.lot.entryUnits > 0)) {
     throw new Error(
@@ -178,7 +178,7 @@ function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, 
     (total * t.unitsSold) / t.lot.entryUnits,
     `the entry costs of ${lotName(t.lot)} taken by the sale`,
   );
-  return share < left ? share : left;
+  return Math.min(share, left) as Money;
 }
 
 /** How a lot is named in a refusal: its entry id and ticker. */

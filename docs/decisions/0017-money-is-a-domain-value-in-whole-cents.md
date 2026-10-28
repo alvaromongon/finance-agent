@@ -23,7 +23,7 @@ Counted on 2026-10-25 over the sources without tests (measured): 35 `toFixed(2)`
 
 ## Considered options
 
-- **Branded number made only by `money()`**, with helpers (add, subtract, sum, `sameCents`, `shareMoney`, `formatMoney`).
+- **Branded number made only by `money()`**, with checked helpers for sums and differences (`addCounted`, `subtractCounted`, `sumCounted`), `shareMoney` and `formatMoney`; two `Money` values are compared with `===`.
 - **Integer cents** stored and passed everywhere: exact, but changes every serialized format and every reader.
 - **A helper module over plain numbers**: no type, so nothing stops a place from forgetting it.
 - **Do nothing**.
@@ -32,8 +32,8 @@ Counted on 2026-10-25 over the sources without tests (measured): 35 `toFixed(2)`
 
 Chosen option: "branded number made only by `money()`", because it is the only one that keeps every serialized number as it is and still makes the compiler reject an unrounded amount.
 
-- `money(n)` rounds to whole cents (never negative zero) and throws on a value that is not finite. Cash, `Position.pl`, a lot's entry costs, a decision's `costs`, `pnl` and `entry_costs` carry `Money`; readers of `portfolio.md` make it from the cell. Sums go through `sumMoney`/`addMoney`, so there is no float noise to clear.
-- `sameCents` is the comparison of two amounts; `withinACent`, `overByMoreThanACent` and `isMoreThanACent` are the tolerances the engine states (an amount against `units x price`; a buy or a sale against its cash or position, compared exactly; a balance worth more than a cent). The units a cent or half a cent of price is worth come from `unitsWorthACent` and `unitsWorthHalfACent`.
+- `money(n)` rounds to whole cents (never negative zero) and throws on a value that is not finite or too large to count in cents. Cash, `Position.pl`, a lot's entry costs, a decision's `costs`, `pnl` and `entry_costs` carry `Money`; readers of `portfolio.md` make it from the cell. Sums and differences go through the checked helpers (`addCounted`, `subtractCounted`, `sumCounted`), which refuse with a message an amount too large to count in cents, so there is no float noise to clear.
+- Two `Money` values are compared with `===`: each is a whole number of cents, so the same cent is the same number. `withinACent`, `overByMoreThanACent` and `isMoreThanACent` are the tolerances the engine states (an amount against `units x price`; a buy or a sale against its cash or position, compared exactly; a balance worth more than a cent). The units a cent or half a cent of price is worth come from `unitsWorthACent` and `unitsWorthHalfACent`.
 - `shareMoney` shares a total over weights in whole cents by the largest-remainder method, in integers (BigInt) over the exact value of each weight (not rounded), so the shares are whole cents, none is negative and they add up to the total exactly, with no correction loop.
 - `formatMoney` writes two decimals and is the only money formatter.
 - The amount of an exit is the exception: it is its exact share of the sale amount and keeps 8 decimals (`shareExactAmount`, `exactAmount`), so a lot of a few units of a low-priced asset does not get 0.00. The dust limit is one rule (`DUST_LIMIT`, tested by `isDust`, which `exactAmount` uses): an amount that rounds to 0 at 8 decimals, under `5e-9` of the silo currency, is 0 and cannot be recorded or sold. The input format states the same value as the code.
