@@ -560,6 +560,16 @@ describe("decision:record (recordOwnerDecision)", () => {
         new RegExp(`entry_costs.*${entry.id}.*too large to count in cents`),
       );
     });
+
+    it("names the entry costs the exits took in the lower case, mid-sentence", async () => {
+      const entry = await record(entryOf);
+      await record(sell);
+      await record(sell);
+      await refused(
+        (log, portfolio) => [log.replaceAll('"type":"exit",', '"type":"exit","entry_costs":9e305,'), portfolio],
+        new RegExp(`^the entry_costs the exits of entry ${entry.id} took together is too large to count in cents`),
+      );
+    });
   });
 
   it("an exit refuses related_id: a sale consumes the lots first in, first out, and nothing is written", async () => {

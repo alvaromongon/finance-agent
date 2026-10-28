@@ -4,7 +4,7 @@
  * portfolio.md. Hand-calculated expectations; the recorder itself is tested in measurable-exits.test.ts
  * and decision-record.test.ts.
  */
-import { addMoney, money, ZERO, type Money } from "../money.js";
+import { addCounted, money, ZERO, type Money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -328,7 +328,7 @@ describe("planSale: what each exit carries", () => {
     for (let i = 0; i < 3; i++) {
       const [share] = planSale([current], sale(1), prior);
       shares.push(share.entryCosts);
-      prior.set("a", addMoney(prior.get("a") ?? ZERO, share.entryCosts ?? ZERO));
+      prior.set("a", addCounted(prior.get("a") ?? ZERO, share.entryCosts ?? ZERO, "x"));
       current = { ...current, units: share.unitsLeft };
     }
     assert.deepEqual(shares, [0.33, 0.33, 0.34]);
@@ -621,7 +621,7 @@ describe("planSale: a lot's entry costs shared across several partial sales", ()
     for (const units of parts) {
       const [share] = planSale([current], sale(units), prior);
       shares.push(share.entryCosts!);
-      prior.set("a", addMoney(prior.get("a") ?? ZERO, share.entryCosts!));
+      prior.set("a", addCounted(prior.get("a") ?? ZERO, share.entryCosts!, "x"));
       current = { ...current, units: share.unitsLeft };
     }
     return shares;

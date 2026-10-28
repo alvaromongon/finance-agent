@@ -44,7 +44,7 @@ import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { portfolioWhere } from "./utils/vault-parser.js";
 import { applyLotChange, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
-import { addCounted, exactAmount, ZERO, type Money } from "./money.js";
+import { addCounted, exactAmount, isCountedRefusal, ZERO, type Money } from "./money.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 import { tickerFileStem, type Ticker } from "./ticker.js";
@@ -398,7 +398,7 @@ function entryCostsTaken(history: readonly Decision[]): Map<string, Money> {
         addCounted(
           taken.get(d.related_id) ?? ZERO,
           d.entry_costs,
-          `The entry_costs the exits of entry ${d.related_id} took together`,
+          `the entry_costs the exits of entry ${d.related_id} took together`,
         ),
       );
     }
@@ -471,19 +471,26 @@ function planOwnerSale(
   const ticker = input.ticker!;
   const amount = input.amount ?? exactAmount(input.units! * input.price!);
   const units = input.units ?? amount / input.price!;
-  const shares = planSale(
-    lots,
-    {
-      ticker,
-      units,
-      unitsFromAmount: input.units == null,
-      price: input.price!,
-      amount,
-      costs: input.costs,
-      pnl: input.pnl,
-    },
-    entryCostsTaken(history),
-  );
+  let shares: SaleShare[];
+  try {
+    shares = planSale(
+      lots,
+      {
+        ticker,
+        units,
+        unitsFromAmount: input.units == null,
+        price: input.price!,
+        amount,
+        costs: input.costs,
+        pnl: input.pnl,
+      },
+      entryCostsTaken(history),
+    );
+  } catch (err) {
+    // The refusal of an amount says what it is; that nothing was recorded is said here, where it is true.
+    if (isCountedRefusal(err)) throw new Error(`${err.message} (nothing was recorded)`, { cause: err });
+    throw err;
+  }
   const later = shares.find((share) => entryAfterExit(share.lot.date, date));
   if (later) {
     throw new Error(

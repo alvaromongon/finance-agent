@@ -3,18 +3,15 @@ import { describe, it } from "node:test";
 import {
   DUST_LIMIT,
   addCounted,
-  addMoney,
   countedInCents,
   exactAmount,
   formatMoney,
+  isCountedRefusal,
   money,
-  sameCents,
   shareExactAmount,
   shareMoney,
   subtractCounted,
-  subtractMoney,
   sumCounted,
-  sumMoney,
   unitsWorthACent,
   unitsWorthHalfACent,
   withinACent,
@@ -40,10 +37,16 @@ describe("money", () => {
   });
 
   it("adds, subtracts and sums without float noise", () => {
-    assert.equal(addMoney(money(0.1), money(0.2)), 0.3);
-    assert.equal(subtractMoney(money(0.3), money(0.1)), 0.2);
-    assert.equal(sumMoney([money(0.1), money(0.2), money(0.3)]), 0.6);
-    assert.equal(sumMoney([]), 0);
+    assert.equal(addCounted(money(0.1), money(0.2), "x"), 0.3);
+    assert.equal(subtractCounted(money(0.3), money(0.1), "x"), 0.2);
+    assert.equal(sumCounted([money(0.1), money(0.2), money(0.3)], "x"), 0.6);
+    assert.equal(sumCounted([], "x"), 0);
+  });
+
+  it("compares two Money with ===, the same cent being the same number", () => {
+    assert.ok(money(0.1 + 0.2) === money(0.3));
+    assert.ok(money(10.001) === money(10));
+    assert.ok(money(10.01) !== money(10));
   });
 });
 
@@ -58,7 +61,9 @@ describe("countedInCents and the counted sums (#87)", () => {
         () => countedInCents(n, "the thing"),
         (err: Error) => {
           assert.equal(err.constructor, Error);
-          assert.match(err.message, /^the thing is too large to count in cents; got: .*\(nothing was recorded\)$/);
+          assert.match(err.message, /^the thing is too large to count in cents; got: [^(]*$/);
+          assert.doesNotMatch(err.message, /nothing was recorded/);
+          assert.ok(isCountedRefusal(err));
           return true;
         },
       );
@@ -93,13 +98,7 @@ describe("countedInCents and the counted sums (#87)", () => {
   });
 });
 
-describe("sameCents and withinACent", () => {
-  it("compares at the cent", () => {
-    assert.ok(sameCents(0.1 + 0.2, 0.3));
-    assert.ok(sameCents(10.001, 10));
-    assert.ok(!sameCents(10.01, 10));
-  });
-
+describe("withinACent", () => {
   it("accepts a difference of one cent and refuses more", () => {
     assert.ok(withinACent(10.01, 10));
     assert.ok(withinACent(10, 10.01));
@@ -157,7 +156,7 @@ describe("shareMoney: whole cents, never negative, adding up exactly", () => {
         assert.equal(money(s), s, `${s} is not whole cents (${total} over ${JSON.stringify(weights)})`);
         assert.ok(total < 0 ? s <= 0 : s >= 0, `${s} has the wrong sign (${total} over ${JSON.stringify(weights)})`);
       }
-      assert.equal(sumMoney(shares), total, `${total} over ${JSON.stringify(weights)}`);
+      assert.equal(sumCounted(shares, "x"), total, `${total} over ${JSON.stringify(weights)}`);
     }
   });
 });

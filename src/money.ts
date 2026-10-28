@@ -17,7 +17,10 @@ const CENTS = 100;
 /** True if `n` is a finite number small enough to count in cents; `money` throws for any other (#83). */
 export const canCountInCents = (n: number): boolean => Number.isFinite(n) && Number.isFinite(n * CENTS);
 
-/** The only way to make a `Money`: rounds to whole cents (half away from zero on the positive side, as `Math.round`). Throws on a value that is not finite. */
+/**
+ * The only way to make a `Money`: rounds to whole cents (half away from zero on the positive side, as
+ * `Math.round`). Throws a `RangeError` for a value that is not finite and for one too large to count in cents.
+ */
 export function money(n: number): Money {
   if (typeof n !== "number" || !Number.isFinite(n)) throw new RangeError(`money must be a finite number; got: ${n}`);
   if (!canCountInCents(n)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
@@ -27,40 +30,41 @@ export function money(n: number): Money {
 
 export const ZERO: Money = money(0);
 
+const countedRefusals = new WeakSet<Error>();
+
+/** True if `err` was thrown by `countedInCents` (or a counted helper): a refusal of an amount, in words. */
+export const isCountedRefusal = (err: unknown): err is Error => err instanceof Error && countedRefusals.has(err);
+
+function countedRefusal(message: string): Error {
+  const err = new Error(message);
+  countedRefusals.add(err);
+  return err;
+}
+
 /**
  * `money(n)`, or an `Error` in words, not a bare `RangeError`, when `n` cannot be counted in cents (#87):
- * `what` names the amount in the message, which says whether it is not a number or too large.
+ * `what` names the amount in the message, which says whether it is not a number or too large. What the
+ * caller did or did not do about it is the caller's to add (`isCountedRefusal` finds these errors).
  */
 export function countedInCents(n: number, what: string): Money {
-  if (Number.isNaN(n)) throw new Error(`${what} is not a number; got: ${n} (nothing was recorded)`);
-  if (!canCountInCents(n)) throw new Error(`${what} is too large to count in cents; got: ${n} (nothing was recorded)`);
+  if (Number.isNaN(n)) throw countedRefusal(`${what} is not a number; got: ${n}`);
+  if (!canCountInCents(n)) throw countedRefusal(`${what} is too large to count in cents; got: ${n}`);
   return money(n);
 }
 
 /** The whole number of cents of an amount, for comparing and sharing without float noise. */
 const centsOf = (n: number): number => Math.round(n * CENTS);
 
-export const addMoney = (a: Money, b: Money): Money => money(a + b);
-export const subtractMoney = (a: Money, b: Money): Money => money(a - b);
-export const sumMoney = (values: Iterable<Money>): Money => {
-  let cents = 0;
-  for (const value of values) cents += centsOf(value);
-  return money(cents / CENTS);
-};
-
-/** `addMoney`, or a refusal naming `what` when the total is too large to count in cents (`countedInCents`). */
+/** The sum of two amounts, or a refusal naming `what` when the total is too large to count in cents (`countedInCents`). */
 export const addCounted = (a: Money, b: Money, what: string): Money => countedInCents(a + b, what);
-/** `subtractMoney`, or a refusal naming `what` when the difference is too large to count in cents. */
+/** The difference of two amounts, or a refusal naming `what` when the difference is too large to count in cents. */
 export const subtractCounted = (a: Money, b: Money, what: string): Money => countedInCents(a - b, what);
-/** `sumMoney`, or a refusal naming `what` when the total is too large to count in cents. */
+/** The sum of amounts, or a refusal naming `what` when the total is too large to count in cents. */
 export const sumCounted = (values: Iterable<Money>, what: string): Money => {
   let cents = 0;
   for (const value of values) cents += centsOf(value);
   return countedInCents(cents / CENTS, what);
 };
-
-/** True if two amounts are the same at the cent: the one comparison of money, whatever the float noise. */
-export const sameCents = (a: number, b: number): boolean => centsOf(a) === centsOf(b);
 
 /** True if two amounts differ by at most one cent (a trade's amount and `units × price` must agree to this). */
 export const withinACent = (a: number, b: number): boolean => Math.abs(a - b) <= 1 / CENTS + 1e-9;
