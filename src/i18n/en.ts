@@ -129,7 +129,7 @@ export const en = {
     tickersIntro: [
       `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,
       ``,
-      `These rows have a ticker outside the pattern (letters, digits and \`. - ^ =\`) and are skipped. The heartbeat keeps`,
+      `These rows have a ticker outside the pattern (letters, digits and \`. - ^ =\`, no two dots in a row, no leading dot) and are skipped. The heartbeat keeps`,
       `watching everything else, but it does not watch these until they are fixed; \`decision:record\` refuses a`,
       `\`Positions\` ticker of the silo it records or a watchlist ticker that does not read, and \`decisions:evaluate\` a`,
       `\`Positions\` one (it never reads the watchlist):`,

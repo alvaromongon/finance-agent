@@ -174,10 +174,11 @@ The symbol of an asset (`TCK`, `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), in the 
 uses. Its canonical form is trimmed and upper case: letters, digits and `. - ^ =`, with at least
 one letter or digit, and no two dots in a row and no leading dot. The engine makes a ticker only
 by parsing, so `tck` and `TCK` are one ticker everywhere and two tickers are equal exactly when
-`===` says so. A value that does not parse (for example `M&M.NS` or `A..B`) is not a ticker: the
-readers skip its row with a warning, except that `decision:record` and `decisions:evaluate` refuse
-a `portfolio.md` with such a `Positions` or `Lots` row (a decision-log line is skipped by every
-reader; see [input-format.md](input-format.md)).
+`===` says so. A value that does not parse (for example `M&M.NS` or `A..B`) is not a ticker. Most
+readers skip what has it and carry on, usually with a warning; `decision:record` (for the silo it
+records) and `decisions:evaluate` instead refuse a `portfolio.md` with such a `Positions` or `Lots`
+row, and `decision:record` also refuses a watchlist entry of either silo. A decision-log line with
+one is skipped by every reader.
 
 ### Money
 

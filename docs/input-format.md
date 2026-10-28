@@ -62,16 +62,21 @@ owner approved it in [#93](https://github.com/alvaromongon/finance-agent/issues/
 accepted, and a typo there must never switch off the stop alerts
 ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)). What happens depends on where it is:
 
-- A `Positions` row or a `Lots` row of `portfolio.md`: `decision:record` and
-  `decisions:evaluate` refuse the file, naming it and the row. Every other reader (the heartbeat,
-  `pending:resolve`, the Monday briefing, the weekly screening) skips the row, warns with the reason
-  and carries on with the rest. A skipped `Positions` row is not watched until it is fixed.
-- A `watchlist.md` entry: `decision:record` refuses it; the other readers (the heartbeat,
+- A `Positions` row of `portfolio.md`: `decision:record` (for the silo it records) and
+  `decisions:evaluate` (for both silos) refuse the file, naming it and the row. Every other reader
+  (the heartbeat, `pending:resolve`, the Monday briefing, the weekly screening) skips the row, warns
+  with the reason and carries on with the rest. A skipped `Positions` row is not watched until it is
+  fixed.
+- A `Lots` row: the same two commands refuse the silo, through the lots check (see below). The other
+  readers skip the row and carry on; only the heartbeat reports it, among its `Lots` problems, and
+  `pending:resolve`, the Monday briefing and the weekly screening drop it without a warning.
+- A `watchlist.md` entry: `decision:record` refuses it, whichever silo the entry is in; the other readers (the heartbeat,
   `pending:resolve`, the Monday briefing, the weekly screening) skip it with a warning.
 - An entry of the screening universe or a row of the screening log: skipped with a warning.
 - A decision-log line (`logs/decisions.jsonl` or an archived quarter) whose ticker does not
   parse: **every** reader skips it with a console warning naming the file and the line, including
-  `decision:record` and `decisions:evaluate`; none refuses.
+  `decision:record` and `decisions:evaluate`; none refuses that line itself, but a lot whose entry
+  was the skipped line is then refused by the lots check.
 
 The heartbeat digest repeats, in every run while it lasts, the warning of a skipped `Positions` row
 and of a skipped `watchlist.md` entry, naming it; a skipped `Lots` row is reported among the digest's
@@ -156,7 +161,7 @@ is an error. Extra columns are ignored.
 | `P/L`           | Rewritten by the engine on each heartbeat                   |
 | `Stop loss`     | Active stop, or `—`                                         |
 
-Rows whose ticker is empty or `—`, or whose `Volume` or `Avg price` is not a
+Rows whose ticker is empty, `—` or `-`, or whose `Volume` or `Avg price` is not a
 number, are skipped.
 
 Lots table: one row per open [lot](glossary.md#lot), the units of one ticker
@@ -206,9 +211,9 @@ The reasons:
 - `Rules version` is empty, `—` or `-` (`TBD` is kept as text and reads as a version).
 
 A skipped row is a problem like any other of the checks below: `decision:record`
-and `decisions:evaluate` refuse the silo, naming it (`decision:record` never keeps
-such a row: it does not rewrite a `Lots` table that has one), and the heartbeat
-warns.
+(for the silo it records) and `decisions:evaluate` refuse the silo, naming it
+(`decision:record` never keeps such a row: it does not rewrite a `Lots` table that has one), and
+the heartbeat warns. The other readers drop the row without a warning.
 A missing column is an error, not a skipped row: a file written before the
 `Ticker` column existed is refused with `add a "Ticker" column, first, to
 "## <CCY> — Lots"`.
@@ -217,8 +222,8 @@ A table can be split by blank lines or notes: the first table line of a section 
 its header and the other table lines are its rows, wherever they are. The engine
 reads it as one table. When `decision:record` writes the `Lots` and `Positions` rows of a silo, the
 rows of that table end up in one block, with a note that sat between them moved under the table
-and the blank lines that split it dropped. The heartbeat, which only writes the `Current price`
-and `P/L` cells of the `Positions` rows it prices, changes those lines where they are: the other
+and the blank lines that split it dropped. The heartbeat rewrites the `Positions` rows it prices where they are: it sets `Current price` and
+`P/L`, writes the ticker in upper case and puts one space around each cell; the other
 rows, the notes and the blank lines stay in place. Every line outside those tables, blank lines and
 line ends (LF or CRLF) included, is written back as it was by both.
 
@@ -234,7 +239,7 @@ Placeholder rows of `Lots` (`—` or empty cells, a repeated header) are dropped
 rebuilt from the lots.
 
 The `Positions` table of the same silo keeps its rows' cells as written, except that each cell has
-one space around it and the placeholder rows (`—`, a repeated header) are dropped; only the row of
+one space around it and the placeholder rows (`—`, `-` or an empty ticker, a repeated header) are dropped; only the row of
 the ticker the trade is about is changed, as described next.
 
 `decision:record` also keeps `Positions`: the first entry of a ticker creates
@@ -256,9 +261,10 @@ share is under the [dust limit](glossary.md#money) gets an `amount` of 0 and can
 (`DUST_LIMIT` in `src/money.ts`).
 Sharing these exact amounts is exact up to about 90 million of the silo currency; beyond
 that the total itself is no longer exact. The engine writes money in reports and emails with two decimals
-(`formatMoney` in `src/money.ts`); a few locale formatters remain for prices, stops and profit and loss:
+(`formatMoney` in `src/money.ts`), except the amounts and risks of the sizing ticket, which write their
+own two decimals; a few locale formatters remain for prices, stops and profit and loss:
 `fmtEU` (`src/vault-io.ts`) for the `Current price` and `P/L` cells the heartbeat writes in
-`portfolio.md`, and `formatNumber` (`src/i18n/index.ts`) for the prices, stops and profit and loss of
+`portfolio.md`, always in German notation (`1.234,56`) whatever the silo's notation, and `formatNumber` (`src/i18n/index.ts`) for the prices, stops and profit and loss of
 the heartbeat digest and for the R multiples of the charts
 ([ADR-0017](decisions/0017-money-is-a-domain-value-in-whole-cents.md)).
 
