@@ -380,9 +380,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      read, the exits' snapshots and the lots, only those of a system entry (origin `sistema`) under
      C v1, so archiving a quarter does not move it. If that date is before the earliest decision
      loaded, part of the log was not read: the board warns "decisions are missing before
-     \<date\>: is `DECISIONS_ARCHIVE_DIR` set?" (and prints it on the console) and goes on. The warning
-     also fires, and is expected, when a hand-written lot is older than every decision in the log
-     (a lot entered by hand before the log existed): no archive is missing then; the
+     \<date\>: is `DECISIONS_ARCHIVE_DIR` set?" (and prints it on the console) and goes on; the
      market data is downloaded back to the counter start. Then
      simulate each proposal's plan and compare it with the silo [benchmark](glossary.md#benchmark)
      and the [shadow portfolio](glossary.md#shadow-portfolio).
