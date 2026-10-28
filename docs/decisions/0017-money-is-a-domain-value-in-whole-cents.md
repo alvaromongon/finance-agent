@@ -4,9 +4,9 @@ date: 2026-10-25
 decision-makers: Repository owner
 ---
 
-# 0017. Money is a domain value in whole cents: one constructor, one comparison, one way to share and format
+# 0017. Money is a domain value in whole cents: one constructor, one way to share and format
 
-**Decision**: an amount of the silo currency (cash, cost, result of a sale, the amount of a buy) is a branded number, `Money`, made only by `money()`, which rounds to whole cents; two amounts are compared at the cent by one function, a total is shared over weights by one function (the largest-remainder method) and an amount is written with two decimals by one function. We expect the defect where two parts of the engine disagree by a float-noise cent, or write their own tolerance, to be impossible by construction. Prices, exchange rates, units and percentages are not money and stay plain numbers.
+**Decision**: an amount of the silo currency (cash, cost, result of a sale, the amount of a buy) is a branded number, `Money`, made only by `money()`, which rounds to whole cents; two amounts are compared with `===` (each is whole cents), a total is shared over weights by one function (the largest-remainder method) and an amount is written with two decimals by one function. We expect the defect where two parts of the engine disagree by a float-noise cent, or write their own tolerance, to be impossible by construction. Prices, exchange rates, units and percentages are not money and stay plain numbers.
 
 ## Context and problem statement
 

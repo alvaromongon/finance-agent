@@ -488,7 +488,7 @@ function planOwnerSale(
     );
   } catch (err) {
     // The refusal of an amount says what it is; that nothing was recorded is said here, where it is true.
-    if (isCountedRefusal(err)) throw new Error(`${(err as Error).message} (nothing was recorded)`, { cause: err });
+    if (isCountedRefusal(err)) throw new Error(`${err.message} (nothing was recorded)`, { cause: err });
     throw err;
   }
   const later = shares.find((share) => entryAfterExit(share.lot.date, date));

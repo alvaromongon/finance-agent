@@ -42,6 +42,12 @@ describe("money", () => {
     assert.equal(sumCounted([money(0.1), money(0.2), money(0.3)], "x"), 0.6);
     assert.equal(sumCounted([], "x"), 0);
   });
+
+  it("compares two Money with ===, the same cent being the same number", () => {
+    assert.ok(money(0.1 + 0.2) === money(0.3));
+    assert.ok(money(10.001) === money(10));
+    assert.ok(money(10.01) !== money(10));
+  });
 });
 
 describe("countedInCents and the counted sums (#87)", () => {
@@ -93,12 +99,6 @@ describe("countedInCents and the counted sums (#87)", () => {
 });
 
 describe("withinACent", () => {
-  it("compares two Money with ===, the same cent being the same number", () => {
-    assert.ok(money(0.1 + 0.2) === money(0.3));
-    assert.ok(money(10.001) === money(10));
-    assert.ok(money(10.01) !== money(10));
-  });
-
   it("accepts a difference of one cent and refuses more", () => {
     assert.ok(withinACent(10.01, 10));
     assert.ok(withinACent(10, 10.01));

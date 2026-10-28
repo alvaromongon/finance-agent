@@ -23,7 +23,7 @@ export const canCountInCents = (n: number): boolean => Number.isFinite(n) && Num
  */
 export function money(n: number): Money {
   if (typeof n !== "number" || !Number.isFinite(n)) throw new RangeError(`money must be a finite number; got: ${n}`);
-  if (!Number.isFinite(n * CENTS)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
+  if (!canCountInCents(n)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
   const cents = Math.round(n * CENTS);
   return (cents === 0 ? 0 : cents / CENTS) as Money;
 }
@@ -33,7 +33,7 @@ export const ZERO: Money = money(0);
 const countedRefusals = new WeakSet<Error>();
 
 /** True if `err` was thrown by `countedInCents` (or a counted helper): a refusal of an amount, in words. */
-export const isCountedRefusal = (err: unknown): boolean => err instanceof Error && countedRefusals.has(err);
+export const isCountedRefusal = (err: unknown): err is Error => err instanceof Error && countedRefusals.has(err);
 
 function countedRefusal(message: string): Error {
   const err = new Error(message);
