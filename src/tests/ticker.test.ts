@@ -9,6 +9,12 @@ describe("parseTicker", () => {
     });
   }
 
+  for (const bad of ["A..B", "..A", ".A", "A...B", " .a "]) {
+    it(`refuses ${JSON.stringify(bad)}: two dots in a row or a leading dot`, () => {
+      assert.throws(() => parseTicker(bad), /two dots in a row|start with a dot/);
+    });
+  }
+
   it("refuses what is not a string", () => {
     assert.throws(() => parseTicker(undefined), /must be a string/);
     assert.throws(() => parseTicker(42), /must be a string/);
@@ -34,6 +40,8 @@ describe("checkTicker", () => {
   it("returns the ticker or the problem", () => {
     assert.deepEqual(checkTicker("tck"), { ticker: "TCK" });
     assert.match((checkTicker("T|K") as { problem: string }).problem, /letters, digits/);
+    assert.match((checkTicker("A..B") as { problem: string }).problem, /two dots in a row/);
+    assert.match((checkTicker(".A") as { problem: string }).problem, /start with a dot/);
   });
 });
 

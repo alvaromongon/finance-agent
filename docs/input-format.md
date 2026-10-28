@@ -55,8 +55,9 @@ A [ticker](glossary.md#ticker) in any file is read case-insensitively and writte
 `tck` in `portfolio.md`, the watchlist, the screening universe or the decision log reads as `TCK`,
 and a file is not rewritten just to change the case (a row the engine writes, or an entry it adds,
 carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
-`EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit. A ticker outside that pattern
-(`TC|K`, `M&M.NS`) is never silently accepted, and a typo there must never switch off the stop alerts
+`EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit, and no two dots in a row and no leading dot (`A..B`, `..A`
+and `.A` are refused). A ticker outside that pattern
+(`TC|K`, `M&M.NS`, `A..B`) is never silently accepted, and a typo there must never switch off the stop alerts
 ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)): only `decision:record` and
 `decisions:evaluate` refuse the file, naming it and the row. Every other reader (the heartbeat,
 `pending:resolve`, the Monday briefing, the weekly screening) skips the row or entry in `Positions`,

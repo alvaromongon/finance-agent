@@ -9,7 +9,10 @@ declare const tickerBrand: unique symbol;
  */
 export type Ticker = string & { readonly [tickerBrand]: "Ticker" };
 
-/** Letters, digits and `. - ^ =` (`BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit. */
+/**
+ * Letters, digits and `. - ^ =` (`BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or
+ * digit. `..` and a leading `.` are refused separately (`problemWith`): a ticker becomes a file name.
+ */
 export const TICKER_PATTERN = /^(?=.*[A-Za-z0-9])[A-Za-z0-9.\-^=]+$/;
 
 /** The reason a value is not a ticker, or `undefined` if it is one (before trimming and upper-casing). */
@@ -19,6 +22,12 @@ function problemWith(raw: unknown): string | undefined {
   if (trimmed === "") return "a ticker must not be empty";
   if (!TICKER_PATTERN.test(trimmed)) {
     return `a ticker has letters, digits and . - ^ = only, with at least one letter or digit; got: ${JSON.stringify(raw)}`;
+  }
+  if (trimmed.includes("..")) {
+    return `a ticker must not have two dots in a row; got: ${JSON.stringify(raw)}`;
+  }
+  if (trimmed.startsWith(".")) {
+    return `a ticker must not start with a dot; got: ${JSON.stringify(raw)}`;
   }
   return undefined;
 }

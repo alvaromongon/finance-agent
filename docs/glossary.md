@@ -172,9 +172,9 @@ units left, is not measured either, and the report names it.
 
 The symbol of an asset (`TCK`, `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), in the form Yahoo Finance
 uses. Its canonical form is trimmed and upper case: letters, digits and `. - ^ =`, with at least
-one letter or digit. The engine makes a ticker only by parsing, so `tck` and `TCK` are one ticker
+one letter or digit, and no two dots in a row and no leading dot. The engine makes a ticker only by parsing, so `tck` and `TCK` are one ticker
 everywhere and two tickers are equal exactly when `===` says so. A value that does not parse
-(for example `M&M.NS`) is not a ticker: the readers skip its row with a warning, and only
+(for example `M&M.NS` or `A..B`) is not a ticker: the readers skip its row with a warning, and only
 `decision:record` and `decisions:evaluate` refuse the file.
 
 ### Money
