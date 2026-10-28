@@ -52,12 +52,14 @@ built-in defaults: a missing prompt fails with the example to copy.
 `decision:record` need no prompt; `heartbeat` needs one only when it escalates.
 
 A [ticker](glossary.md#ticker) in any file is read case-insensitively and written in upper case:
-`tck` in `portfolio.md`, the watchlist, the screening universe or the decision log reads as `TCK`,
-(a row the engine writes, or an entry it adds, carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
-`EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit, and no two dots in a row and no leading dot (`A..B`, `..A` and
+`tck` in `portfolio.md`, the watchlist, the screening universe or the decision log reads as `TCK`
+(a row the engine writes, or an entry it adds, carries the upper-case ticker). A ticker has
+letters, digits and `. - ^ =` only (`BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one
+letter or digit, and no two dots in a row and no leading dot (`A..B`, `..A` and
 `.A` are refused; this narrowing of the pattern shipped without a `schema_version` bump because the
 owner approved it in [#93](https://github.com/alvaromongon/finance-agent/issues/93) on 2026-10-26; the
-`portfolio.md` v2 change, by contrast, bumped the version and shipped without a migration). A ticker outside that pattern (`TC|K`, `M&M.NS`, `A..B`) is never silently
+`portfolio.md` v2 change, by contrast, bumped the version and shipped without a migration). A
+ticker outside that pattern (`TC|K`, `M&M.NS`, `A..B`) is never silently
 accepted, and a typo there must never switch off the stop alerts
 ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)). In general, a row or entry whose
 ticker does not parse is skipped with a warning by the tolerant readers (the heartbeat,
@@ -242,12 +244,13 @@ The amount of a sale is shared across the lots it consumes to 8 decimals, so a l
 share is under the [dust limit](glossary.md#money) gets an `amount` of 0 and cannot be sold
 (`DUST_LIMIT` in `src/money.ts`).
 Sharing these exact amounts is exact up to about 90 million of the silo currency; beyond
-that the total itself is no longer exact. Amounts in reports and emails mostly go through one shared money formatting
-(`formatMoney` in `src/money.ts`), but a few places (the digest P/L, the sizing ticket, the Monday
-briefing) write numbers their own way; locale formatters remain for prices, stops and profit and loss:
-`fmtEU` (`src/vault-io.ts`) for the `Current price` and `P/L` cells the heartbeat writes in
-`portfolio.md`, always in German notation (`1.234,56`) whatever the silo's notation, and `formatNumber` (`src/i18n/index.ts`) for the prices, stops and profit and loss of
-the heartbeat digest and for the R multiples of the charts
+that the total itself is no longer exact. Amounts in reports and emails mostly go through one
+shared money formatting (`formatMoney` in `src/money.ts`), but a few places (the digest P/L, the
+sizing ticket, the Monday briefing) write numbers their own way; locale formatters remain for
+prices, stops and profit and loss: `fmtEU` (`src/vault-io.ts`) for the `Current price` and `P/L`
+cells the heartbeat writes in `portfolio.md`, always in German notation (`1.234,56`) whatever the
+silo's notation, and `formatNumber` (`src/i18n/index.ts`) for the prices, stops and profit and loss
+of the heartbeat digest and for the R multiples of the charts
 ([ADR-0017](decisions/0017-money-is-a-domain-value-in-whole-cents.md)).
 
 The lots must add up to the positions and agree with the decision log
@@ -274,11 +277,10 @@ when:
   no `units` was recorded before the lots existed and is not checked
   (`decision:record` writes `units` on every entry).
 
-Where portfolio and log are both read, some commands, among them `decision:record` and
-`decisions:evaluate`, refuse an inconsistent silo with an error naming the ticker
-and the entry id; fix `Lots` by hand. The heartbeat does not read the decision
-log: it only checks `Volume` against the lots, and it does not refuse the file
-either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises
+Where portfolio and log are both read, `decision:record` and `decisions:evaluate` refuse an
+inconsistent silo with an error naming the ticker and the entry id; fix `Lots` by hand. The
+heartbeat does not read the decision log: it only checks `Volume` against the lots, and it does
+not refuse the file either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises
 a warning in its output and in the digest, because a typo must not switch off
 the stop alerts. That includes a `Lots` table that does not read (a misspelled or
 missing column in its header) and a `Lots` section that is missing (a misspelled

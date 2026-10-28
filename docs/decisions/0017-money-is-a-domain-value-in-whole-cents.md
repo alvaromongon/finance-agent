@@ -51,7 +51,7 @@ Chosen option: "branded number made only by one constructor", because it is the 
 
 - Changed numbers (all on sub-cent input, none on data written in cents): a `costs`, `pnl` or `entry_costs` with more than two decimals, given to `decision:record` or read from a log line, is rounded to the cent (costs of 1.234 are recorded as 1.23, where they were 1.234); for a currency conversion the rate computed from the amount received follows it (1.194695 instead of 1.194743, for 100 sold, 1.234 of costs and 118 received). A cash, profit and loss or entry costs cell of `portfolio.md` with more than two decimals is read to the cent. The `Entry costs` of two lots differing by half a cent with float noise now compare equal. The exact sub-cent shares of a sale share the exact weights (the units sold), as before, but without float noise: on random cases (measured, 100000, totals up to 100000) 11 differed from the old function, all with a total over 1000 and by one unit of `1e-8` in two shares that the old float arithmetic ordered by noise; the cent shares did not differ in any case.
 - Unchanged on purpose: the cap of a sale against its position and of a buy against its cash, and the cash thresholds of the silo performance, keep their exact one-cent tolerance, unrounded, because they are ticket and measurement rules.
-- Good: the inline cent tolerances and the calls that write money with two decimals outside the sizing are gone; the sharing needs no correction loop.
+- Good: the inline cent tolerances are gone; amounts in reports and emails mostly go through one shared money formatting; the sharing needs no correction loop.
 - Bad: the tickets of the sizing still write numbers in their own way until a decision opens them.
 - Bad: a brand is erased at run time.
 
@@ -59,7 +59,7 @@ Chosen option: "branded number made only by one constructor", because it is the 
 
 Unit tests of the money rules including a property test (random totals and weights: every share is whole cents and they add up to the total), a test that compares the sharing with the previous sharing routine (kept as a reference in the test) on weights with more than 8 decimals, a pin test of the numbers `decision:record` writes (written before the refactor, passing on both sides), tests of the changed numbers listed in _Consequences_ and the existing report tests unchanged.
 
-**Success measure**: the calls that write money with two decimals went from 35 to 0 (the ones left format non-money values or belong to the sizing), and the cent tolerances written inline went from 5 to 0, on 2026-10-25 (measured by a text search over the sources).
+**Success measure**: the cent tolerances written inline went from 5 to 0, on 2026-10-25 (measured by a text search over the sources).
 
 ## Pros and cons of the options
 
