@@ -10,9 +10,10 @@ an agent needs on top of it.
 - Local quality gate: the same checks as CI (see README › _Development_). Run it before pushing.
 - Code, comments, docs and issues in English. Engine output is localized with `OUTPUT_LANGUAGE`.
 - The input data format (`docs/input-format.md`) is a public, versioned contract: an
-  incompatible change bumps `schema_version` and ships a migration. The one exception is
-  `portfolio.md` v2, which ships without a migration (owner-approved, #27 › _Not doing_; see
-  [`docs/input-format.md`](docs/input-format.md)).
+  incompatible change bumps `schema_version` and ships a migration. There are two
+  owner-approved exceptions: `portfolio.md` v2 shipped without a migration (#27 › _Not doing_),
+  and the ticker rule narrowed in #93 (`..` and a leading dot refused) shipped without a version
+  bump; see [`docs/input-format.md`](docs/input-format.md).
 
 ## Push and merge policy
 
