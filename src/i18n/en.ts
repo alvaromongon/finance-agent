@@ -129,10 +129,8 @@ export const en = {
     tickersIntro: [
       `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,
       ``,
-      `These rows have a ticker outside the pattern (letters, digits and \`. - ^ =\`, no two dots in a row, no leading dot) and are skipped. The heartbeat keeps`,
-      `watching everything else, but it does not watch these until they are fixed; \`decision:record\` refuses a`,
-      `\`Positions\` ticker of the silo it records or a watchlist ticker that does not read, and \`decisions:evaluate\` a`,
-      `\`Positions\` one (it never reads the watchlist):`,
+      `These rows have a ticker outside the pattern (letters, digits and \`. - ^ =\`, with at least one letter or digit, no two dots in a row, no leading dot) and are skipped. The heartbeat keeps`,
+      `watching everything else, but it does not watch these until they are fixed. Commands that refuse the file say which row:`,
       ``,
     ],
     tickersOutro: [``, `Fix the ticker by hand (see \`docs/input-format.md\`).`],

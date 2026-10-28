@@ -53,37 +53,23 @@ built-in defaults: a missing prompt fails with the example to copy.
 
 A [ticker](glossary.md#ticker) in any file is read case-insensitively and written in upper case:
 `tck` in `portfolio.md`, the watchlist, the screening universe or the decision log reads as `TCK`,
-and a file is not rewritten just to change the case (a row the engine writes, or an entry it adds,
-carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
+(a row the engine writes, or an entry it adds, carries the upper-case ticker). A ticker has letters, digits and `. - ^ =` only (`BRK-B`,
 `EXSA.DE`, `^GSPC`, `EURUSD=X`), with at least one letter or digit, and no two dots in a row and no leading dot (`A..B`, `..A` and
 `.A` are refused; this narrowing of the pattern shipped without a `schema_version` bump because the
 owner approved it in [#93](https://github.com/alvaromongon/finance-agent/issues/93) on 2026-10-26; the
 `portfolio.md` v2 change, by contrast, bumped the version and shipped without a migration). A ticker outside that pattern (`TC|K`, `M&M.NS`, `A..B`) is never silently
 accepted, and a typo there must never switch off the stop alerts
-([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)). What happens depends on where it is:
+([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)). In general, a row or entry whose
+ticker does not parse is skipped with a warning by the tolerant readers (the heartbeat,
+`pending:resolve`, the Monday briefing, the weekly screening), while some commands, those that must
+not act on a file they cannot fully read, refuse it, naming the file and the row.
 
-- A `Positions` row of `portfolio.md`: `decision:record` (for the silo it records) and
-  `decisions:evaluate` (for both silos) refuse the file, naming it and the row. Every other reader
-  (the heartbeat, `pending:resolve`, the Monday briefing, the weekly screening) skips the row, warns
-  with the reason and carries on with the rest. A skipped `Positions` row is not watched until it is
-  fixed.
-- A `Lots` row: the same two commands refuse the silo, through the lots check (see below). The other
-  readers skip the row and carry on; only the heartbeat reports it, among its `Lots` problems, and
-  `pending:resolve`, the Monday briefing and the weekly screening drop it without a warning.
-- A `watchlist.md` entry: `decision:record` refuses it, whichever silo the entry is in; the other readers (the heartbeat,
-  `pending:resolve`, the Monday briefing, the weekly screening) skip it with a warning.
-- An entry of the screening universe or a row of the screening log: skipped with a warning.
-- A decision-log line (`logs/decisions.jsonl` or an archived quarter) whose ticker does not
-  parse: **every** reader skips it with a console warning naming the file and the line, including
-  `decision:record` and `decisions:evaluate`; none refuses that line itself, but a lot whose entry
-  was the skipped line is then refused by the lots check.
+Two cases are the same everywhere:
 
-The heartbeat digest repeats, in every run while it lasts, the warning of a skipped `Positions` row
-and of a skipped `watchlist.md` entry, naming it; a skipped `Lots` row is reported among the digest's
-`Lots` problems, and a skipped decision-log line is not repeated in the digest. A `benchmark` whose
-ticker does not parse is dropped from its decision-log line with a console warning (the decision is
-kept; the heartbeat digest does not repeat it), and a `RETIRE` token that is not a ticker is reported
-and not retired.
+- A decision-log line (`logs/decisions.jsonl` or an archived quarter) whose ticker does not parse is
+  skipped with a console warning by every reader.
+- A `benchmark` whose ticker does not parse is dropped from its decision-log line with a console
+  warning, and the decision is kept.
 
 Numbers in tables accept European (`1.234,56 €`) or US (`$1,234.56`)
 notation. `—`, `-` or `TBD` mean "no value".
@@ -210,10 +196,8 @@ The reasons:
 - `Date` is not `YYYY-MM-DD`;
 - `Rules version` is empty, `—` or `-` (`TBD` is kept as text and reads as a version).
 
-A skipped row is a problem like any other of the checks below: `decision:record`
-(for the silo it records) and `decisions:evaluate` refuse the silo, naming it
-(`decision:record` never keeps such a row: it does not rewrite a `Lots` table that has one), and
-the heartbeat warns. The other readers drop the row without a warning.
+A skipped row is a problem like any other of the checks below: some commands refuse the silo,
+naming it, and the heartbeat warns.
 A missing column is an error, not a skipped row: a file written before the
 `Ticker` column existed is refused with `add a "Ticker" column, first, to
 "## <CCY> — Lots"`.
@@ -222,15 +206,13 @@ A table can be split by blank lines or notes: the first table line of a section 
 its header and the other table lines are its rows, wherever they are. The engine
 reads it as one table. When `decision:record` writes the `Lots` and `Positions` rows of a silo, the
 rows of that table end up in one block, with a note that sat between them moved under the table
-and the blank lines that split it dropped. The heartbeat rewrites the `Positions` rows it prices where they are: it sets `Current price` and
-`P/L`, writes the ticker in upper case and puts one space around each cell; the other
-rows, the notes and the blank lines stay in place. Every line outside those tables, blank lines and
-line ends (LF or CRLF) included, is written back as it was by both.
+and the blank lines that split it dropped. The heartbeat updates the `Current price` and `P/L` cells
+of the `Positions` rows it prices and upper-cases their `Ticker`; the other rows stay in place.
 
 When one lot of a silo changes, `decision:record` rebuilds the whole `Lots` table of that silo from
 the lots it read, so the rows it did not touch come back rewritten: one space around each cell,
 the ticker in upper case, any column you added to the header set to `—`, an `Initial stop` or
-`Entry costs` of `TBD` or `-` written as `—` (`Rules version` and `Rules violations` keep `TBD` as
+`Entry costs` cell that is not a number (`TBD`, `-` or `N/A`, for example) written as `—` (`Rules version` and `Rules violations` keep `TBD` as
 text; only an empty cell, `—` or `-` is a placeholder there, and a `Rules violations` placeholder is
 written as `—`), `Rules violations` joined with `, `, and every number written in the silo's
 notation, with no thousands separator and no currency symbol (`1.234,50 €` in a EUR silo comes back
@@ -260,9 +242,9 @@ The amount of a sale is shared across the lots it consumes to 8 decimals, so a l
 share is under the [dust limit](glossary.md#money) gets an `amount` of 0 and cannot be sold
 (`DUST_LIMIT` in `src/money.ts`).
 Sharing these exact amounts is exact up to about 90 million of the silo currency; beyond
-that the total itself is no longer exact. The engine writes money in reports and emails with two decimals
-(`formatMoney` in `src/money.ts`), except the amounts and risks of the sizing ticket, which write their
-own two decimals; a few locale formatters remain for prices, stops and profit and loss:
+that the total itself is no longer exact. Amounts in reports and emails mostly go through one shared money formatting
+(`formatMoney` in `src/money.ts`), but a few places (the digest P/L, the sizing ticket, the Monday
+briefing) write numbers their own way; locale formatters remain for prices, stops and profit and loss:
 `fmtEU` (`src/vault-io.ts`) for the `Current price` and `P/L` cells the heartbeat writes in
 `portfolio.md`, always in German notation (`1.234,56`) whatever the silo's notation, and `formatNumber` (`src/i18n/index.ts`) for the prices, stops and profit and loss of
 the heartbeat digest and for the R multiples of the charts
@@ -292,8 +274,8 @@ when:
   no `units` was recorded before the lots existed and is not checked
   (`decision:record` writes `units` on every entry).
 
-Where portfolio and log are both read, `decision:record` and
-`decisions:evaluate` refuse an inconsistent silo with an error naming the ticker
+Where portfolio and log are both read, some commands, among them `decision:record` and
+`decisions:evaluate`, refuse an inconsistent silo with an error naming the ticker
 and the entry id; fix `Lots` by hand. The heartbeat does not read the decision
 log: it only checks `Volume` against the lots, and it does not refuse the file
 either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises

@@ -174,11 +174,11 @@ The symbol of an asset (`TCK`, `BRK-B`, `EXSA.DE`, `^GSPC`, `EURUSD=X`), in the 
 uses. Its canonical form is trimmed and upper case: letters, digits and `. - ^ =`, with at least
 one letter or digit, and no two dots in a row and no leading dot. The engine makes a ticker only
 by parsing, so `tck` and `TCK` are one ticker everywhere and two tickers are equal exactly when
-`===` says so. A value that does not parse (for example `M&M.NS` or `A..B`) is not a ticker. Most
-readers skip what has it and carry on, usually with a warning; `decision:record` (for the silo it
-records) and `decisions:evaluate` instead refuse a `portfolio.md` with such a `Positions` or `Lots`
-row, and `decision:record` also refuses a watchlist entry of either silo. A decision-log line with
-one is skipped by every reader.
+they are the same string. A value that does not parse (for example `M&M.NS` or `A..B`) is not a
+ticker. The rule against `..` and a leading dot narrowed the pattern without a `schema_version`
+bump, because the owner approved it on 2026-10-26. A row or entry with such a value is skipped with
+a warning by the tolerant readers, while some commands refuse the file, naming it and the row. A
+decision-log line with one is skipped with a warning by every reader.
 
 ### Money
 

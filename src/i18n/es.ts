@@ -126,10 +126,8 @@ export const es: Messages = {
     tickersIntro: [
       `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
       ``,
-      `Estas filas tienen un ticker fuera del patrón (letras, dígitos y \`. - ^ =\`, sin dos puntos seguidos ni punto inicial) y se omiten. El heartbeat sigue`,
-      `vigilando todo lo demás, pero no vigila estas filas hasta que se corrijan; \`decision:record\` rechaza un`,
-      `ticker de \`Positions\` del silo que registra o de la watchlist que no se lee, y \`decisions:evaluate\` uno de`,
-      `\`Positions\` (nunca lee la watchlist):`,
+      `Estas filas tienen un ticker fuera del patrón (letras, dígitos y \`. - ^ =\`, con al menos una letra o un dígito, sin dos puntos seguidos ni punto inicial) y se omiten. El heartbeat sigue`,
+      `vigilando todo lo demás, pero no vigila estas filas hasta que se corrijan. Los comandos que rechazan el archivo indican qué fila:`,
       ``,
     ],
     tickersOutro: [``, `Corrige el ticker a mano (ver \`docs/input-format.md\`).`],
