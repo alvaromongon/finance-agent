@@ -49,12 +49,12 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@types/nodemailer": "^8.0.2",
-    "eslint": "^10.12.0",
+    "eslint": "^10.13.0",
     "prettier": "^3.9.10",
     "tsx": "^4.23.15",
-    "typescript": "^5.5.0",
-    "typescript-eslint": "^8.71.2"
+    "typescript": "^7.0.2",
+    "typescript-eslint": "^8.72.0"
   }
 }
