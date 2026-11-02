@@ -25,6 +25,7 @@ repository it was extracted from, without the owner's personal data.
 | [0015](0015-open-lots-live-in-the-portfolio.md)                     | Open lots live in the portfolio, written by the engine; every exit carries a snapshot of its lot     | Accepted   |
 | [0016](0016-domain-values-are-branded-types-made-by-parsing.md)     | Domain values are branded types made only by parsing at the boundary, compared with `===`            | Proposed   |
 | [0017](0017-money-is-a-domain-value-in-whole-cents.md)              | Money is a domain value: whole cents, one comparison, one way to share and format                    | Proposed   |
+| [0018](0018-commands-are-the-only-way-to-change-state.md)           | Commands dropped in an inbox are the only way to change the engine's state                           | Proposed   |
 
 ADRs record architecture only: decisions that survive changes to the spec and the code. The rules and
 parameters that change with the code live in [`docs/flows.md`](../flows.md); an ADR whose content is that
