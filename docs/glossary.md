@@ -71,6 +71,18 @@ Markdown files with YAML frontmatter, kept in the user's own repository (`VAULT_
 The engine keeps no database: it reads and writes these files, and they never live in the public
 engine repository. `examples/brain` is a fictitious one.
 
+### Command
+
+A user action on the engine's state, such as a buy, a sale or moving a stop. State changes only
+through commands; each is applied by its own handler, and a batch of them applies whole or not at
+all.
+
+### Inbox
+
+The folder where a person, an AI or a routine drops one file per batch of [commands](#command). The
+engine never edits a file there: it moves it to `applied/`, or to `rejected/` with the line and the
+reason.
+
 ### Silo
 
 A currency account (EUR or USD) managed on its own: its own cash, positions,
