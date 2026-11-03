@@ -10,7 +10,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeEol } from "../utils/parse.js";
+import { normalizeEol } from "../utils/eol.js";
 import {
   extractYamlBlock,
   extractFrontmatter,

@@ -39,7 +39,7 @@ const provider = { getHistorical: async (ticker: string) => history[ticker] ?? [
 
 const portfolio = (positions: PortfolioSnapshot["positions"] = []): PortfolioSnapshot => ({
   currency: "USD",
-  cash: money(1000),
+  cash: money(1000, "USD"),
   positions,
   lots: [],
   syncedAt: "2026-09-24T00:00:00Z",
@@ -50,7 +50,7 @@ const held = {
   volume: 1,
   avgPrice: 200,
   currentPrice: 200,
-  pl: money(0),
+  pl: money(0, "USD"),
   stopLoss: 180,
 };
 

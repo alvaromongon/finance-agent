@@ -247,7 +247,7 @@ Sharing these exact amounts is exact up to about 90 million of the silo currency
 that the total itself is no longer exact. Amounts in reports and emails mostly go through one
 shared money formatting (`formatMoney` in `src/money.ts`), but a few places (the digest P/L, the
 sizing ticket, the Monday briefing) write numbers their own way; locale formatters remain for
-prices, stops and profit and loss: `fmtEU` (`src/vault-io.ts`) for the `Current price` and `P/L`
+prices, stops and profit and loss: `fmtEU` (`src/utils/portfolio-writer.ts`) for the `Current price` and `P/L`
 cells the heartbeat writes in `portfolio.md`, always in German notation (`1.234,56`) whatever the
 silo's notation, and `formatNumber` (`src/i18n/index.ts`) for the prices, stops and profit and loss
 of the heartbeat digest and for the R multiples of the charts

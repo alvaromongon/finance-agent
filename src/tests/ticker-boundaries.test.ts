@@ -134,6 +134,7 @@ const decisionLine = (over: Record<string, unknown>) =>
 describe("tickers at every boundary", () => {
   let vaultDir: string;
   let vaultIo: typeof import("../vault-io.js");
+  let store: typeof import("../portfolio-store.js");
   let weekly: typeof import("../weekly-screening.js");
   const path = (...parts: string[]) => join(vaultDir, ...parts);
   const warnings: string[] = [];
@@ -142,6 +143,7 @@ describe("tickers at every boundary", () => {
     vaultDir = await mkdtemp(join(tmpdir(), "finance-agent-ticker-boundaries-"));
     process.env.VAULT_PROJECT_DIR = vaultDir;
     vaultIo = await import("../vault-io.js");
+    store = await import("../portfolio-store.js");
     weekly = await import("../weekly-screening.js");
   });
 
@@ -183,7 +185,7 @@ describe("tickers at every boundary", () => {
         "utf8",
       );
 
-      const { portfolio, skippedRows } = await vaultIo.readPortfolioTolerantOfLots("USD");
+      const { portfolio, skippedRows } = await store.readPortfolio("USD");
       assert.deepEqual(
         portfolio.positions.map((p) => p.ticker),
         ["AAPL"],
@@ -191,14 +193,17 @@ describe("tickers at every boundary", () => {
       assert.equal(skippedRows.length, 1);
       assert.match(skippedRows[0], /## USD — Positions: Ticker "M&M\.NS"/);
 
-      const ignoring = await vaultIo.readPortfolioIgnoringLots("USD");
+      const ignoring = store.ignoringLots(await store.readPortfolio("USD"));
       assert.deepEqual(
         ignoring.positions.map((p) => p.ticker),
         ["AAPL"],
       );
       assert.ok(warnings.some((w) => w.includes("M&M.NS")));
       quiet();
-      await assert.rejects(() => vaultIo.readPortfolio("USD"), /## USD — Positions: Ticker "M&M\.NS"/);
+      await assert.rejects(
+        () => store.readPortfolio("USD").then(store.requireReadable),
+        /## USD — Positions: Ticker "M&M\.NS"/,
+      );
     });
 
     it("the screening universe: the entry is skipped with a warning, the known pools are read, other keys are ignored", async () => {

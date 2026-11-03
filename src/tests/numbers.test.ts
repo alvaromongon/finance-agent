@@ -65,19 +65,19 @@ describe("parseMarkdownNumber", () => {
 
 describe("parseMarkdownMoney", () => {
   it("rounds a readable amount to the cent", () => {
-    assert.equal(parseMarkdownMoney("$1,234.567"), 1234.57);
+    assert.equal(parseMarkdownMoney("$1,234.567", "EUR"), 1234.57);
   });
   it("is null for a cell that is not a number, as parseMarkdownNumber is", () => {
-    assert.equal(parseMarkdownMoney("TBD"), null);
-    assert.equal(parseMarkdownMoney("—"), null);
+    assert.equal(parseMarkdownMoney("TBD", "EUR"), null);
+    assert.equal(parseMarkdownMoney("—", "EUR"), null);
   });
   it("is null, never a throw, for a number that cannot be counted in cents (#83)", () => {
     for (const cell of ["1e307", "-1e307", "1e308", "-1.8e306"]) {
-      assert.equal(parseMarkdownMoney(cell), null, cell);
+      assert.equal(parseMarkdownMoney(cell, "EUR"), null, cell);
     }
   });
   it("still reads the largest amount that can be counted in cents", () => {
     const largest = Number.MAX_VALUE / 100;
-    assert.equal(parseMarkdownMoney(String(largest)), money(largest));
+    assert.equal(parseMarkdownMoney(String(largest), "EUR"), money(largest, "EUR"));
   });
 });

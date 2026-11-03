@@ -49,16 +49,16 @@ export interface WatchlistEntry {
   asset_class?: AssetClass;
 }
 
-/** Open position synced by hand from the broker. */
-export interface Position {
+/** Open position synced by hand from the broker. Its money is in its silo's currency (`C`, ADR-0017). */
+export interface Position<C extends Currency = Currency> {
   ticker: Ticker;
   /** The `Ticker` cell as the owner wrote it, when that differs from `ticker` (`tck` for `TCK`); absent otherwise. */
   written?: string;
-  currency: Currency;
+  currency: C;
   volume: number;
   avgPrice: number;
   currentPrice: number;
-  pl: Money;
+  pl: Money<C>;
   stopLoss: number | null;
 }
 
@@ -66,7 +66,7 @@ export interface Position {
  * The open units of one entry (ADR-0015), one row of the `Lots` table of portfolio.md. The row names
  * its ticker, so `Volume` can be checked against it without reading the decision log (#52).
  */
-export interface Lot {
+export interface Lot<C extends Currency = Currency> {
   /** Ticker of the position the lot belongs to; it must be the one of its entry in the log. */
   ticker: Ticker;
   /** Id of the `entry` decision that opened the lot. */
@@ -81,7 +81,7 @@ export interface Lot {
   /** Stop at entry, the base of R; `null` if the entry had none. */
   initialStop: number | null;
   /** Entry costs in the silo currency; `null` if none were recorded. */
-  entryCosts: Money | null;
+  entryCosts: Money<C> | null;
   origin: DecisionOrigin;
   rulesVersion: string;
   /** Rules the entry broke; empty for none. */
@@ -100,20 +100,23 @@ export interface SkippedLotRow {
   entryId?: string;
 }
 
-/** Portfolio snapshot per currency. */
-export interface PortfolioSnapshot {
-  currency: Currency;
+/**
+ * Portfolio snapshot of one silo, the model every flow reads (`readPortfolio`): every amount in it is
+ * `Money<C>`, in the silo's currency, so a silo's amount cannot be added to or compared with another's.
+ */
+export interface PortfolioSnapshot<C extends Currency = Currency> {
+  currency: C;
   /** "Available cash": capital free to trade. */
-  cash: Money;
+  cash: Money<C>;
   /**
    * "Total cash", including what pending orders hold: the cash that counts
    * towards the silo value (ADR-0009 §3). Absent if portfolio.md does not tell
    * it apart from the available balance.
    */
-  totalCash?: Money;
-  positions: Position[];
+  totalCash?: Money<C>;
+  positions: Position<C>[];
   /** Open lots of the silo; `Volume` of each position is the sum of its lots' units. */
-  lots: Lot[];
+  lots: Lot<C>[];
   /** The rows of `Lots` the reader skipped because they do not read as a lot; absent if none. */
   skippedLotRows?: SkippedLotRow[];
   syncedAt: string; // ISO timestamp

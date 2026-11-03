@@ -33,7 +33,6 @@ import { fetchHeadlines } from "./providers/news-provider.js";
 import { computeTechnicals } from "./utils/technicals.js";
 import {
   appendDecisions,
-  readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
   readWatchlistSkippingBadTickers,
@@ -54,6 +53,7 @@ import {
   readScreeningRunSelection,
   type ScreeningCandidateMeta,
 } from "./vault-io.js";
+import { ignoringLots, readPortfolio } from "./portfolio-store.js";
 import { assertSchemaVersion, type ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import {
@@ -362,8 +362,8 @@ export async function prepareScreening(
       readScreeningLog(),
       readRoutinePrompt("weekly-screening"),
       readTextFile(join(vaultDir, "watchlist.md")).catch(() => ""),
-      readPortfolioIgnoringLots("EUR"),
-      readPortfolioIgnoringLots("USD"),
+      readPortfolio("EUR").then(ignoringLots),
+      readPortfolio("USD").then(ignoringLots),
     ]);
   const portfolios: Record<Currency, PortfolioSnapshot> = { EUR: eurPortfolio, USD: usdPortfolio };
 

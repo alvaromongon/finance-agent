@@ -10,7 +10,7 @@ import type { Lot, PortfolioSnapshot, Position } from "../types.js";
 import type { Ticker } from "../ticker.js";
 import { unitsWorthHalfACent } from "../money.js";
 import { UNITS_TOLERANCE } from "./units.js";
-import { portfolioWhere } from "./vault-parser.js";
+import { portfolioWhere } from "./portfolio-where.js";
 
 /** Prices and stops are copied from the entry; below this the difference is formatting, not a mismatch. */
 const PRICE_TOLERANCE = 1e-6;

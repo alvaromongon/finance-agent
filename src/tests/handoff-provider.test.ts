@@ -146,7 +146,7 @@ describe("HandoffAnalystProvider.escalate", () => {
           volume: 5,
           avgPrice: 130,
           currentPrice: 138,
-          pl: money(40),
+          pl: money(40, "USD"),
           stopLoss: 120,
         },
       }),

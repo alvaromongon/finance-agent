@@ -178,8 +178,8 @@ describe("decision:record (recordOwnerDecision)", () => {
   });
 
   it("the portfolio is parsed from the one text the recorder read (parsePortfolioText)", async () => {
-    const { parsePortfolioText } = await import("../vault-io.js");
-    const portfolio = parsePortfolioText(PORTFOLIO_MD, "USD");
+    const { parsePortfolioText } = await import("../portfolio-store.js");
+    const { portfolio } = parsePortfolioText(PORTFOLIO_MD, "USD");
     assert.equal(portfolio.currency, "USD");
     assert.deepEqual([portfolio.positions, portfolio.lots], [[], []]);
   });

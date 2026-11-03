@@ -4,7 +4,8 @@
 // once. The provider is the configured one (MARKET_DATA_PROVIDER), so the
 // fixtures provider makes it work offline on examples/brain.
 import { createMarketDataProvider } from "./providers/factory.js";
-import { readDecisionHistory, readPortfolio, readRulesVersion } from "./vault-io.js";
+import { readDecisionHistory, readRulesVersion } from "./vault-io.js";
+import { readPortfolio, requireReadable } from "./portfolio-store.js";
 import { closeOnOrBefore, historyRangeCovering, loadClosedBars } from "./utils/forward-returns.js";
 import { boardWarnings } from "./utils/decisions-evaluation-render.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
@@ -24,8 +25,8 @@ export async function loadEvaluationReport(tag: string, now = new Date()): Promi
 
   const [decisions, eur, usd, rulesVersion] = await Promise.all([
     readDecisionHistory(),
-    readPortfolio("EUR"),
-    readPortfolio("USD"),
+    readPortfolio("EUR").then(requireReadable),
+    readPortfolio("USD").then(requireReadable),
     readRulesVersion(),
   ]);
   const portfolios = { EUR: eur, USD: usd };

@@ -1,6 +1,6 @@
 // Reading vault text with normalized line endings.
 import { readFile } from "node:fs/promises";
-import { normalizeEol } from "./parse.js";
+import { normalizeEol } from "./eol.js";
 
 /**
  * Reads a UTF-8 text file normalizing CRLF → LF.

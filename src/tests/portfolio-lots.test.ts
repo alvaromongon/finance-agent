@@ -4,16 +4,11 @@
  * portfolio.md. Hand-calculated expectations; the recorder itself is tested in measurable-exits.test.ts
  * and decision-record.test.ts.
  */
-import { addCounted, money, ZERO, type Money } from "../money.js";
+import { addCounted, money, zero, type Money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  applyLotChange,
-  lotOfEntry,
-  planSale,
-  type SalePlanInput,
-  type PositionChange,
-} from "../utils/portfolio-lots.js";
+import { lotOfEntry, planSale, type SalePlanInput } from "../utils/portfolio-lots.js";
+import { applyLotChange, type PositionChange } from "../utils/portfolio-writer.js";
 import { parseLots, parsePositions } from "../utils/vault-parser.js";
 import { buildDecision } from "../decisions.js";
 import type { Lot } from "../types.js";
@@ -36,6 +31,7 @@ const lot = (entryId: string, units: number, overrides: Partial<Lot> = {}): Lot 
 
 const sale = (units: number, overrides: Partial<SalePlanInput> = {}): SalePlanInput => ({
   ticker: tk("TCK"),
+  currency: "USD",
   units,
   price: 130,
   amount: Math.round(units * 130 * 100) / 100,
@@ -54,7 +50,7 @@ describe("lotOfEntry", () => {
       type: "entry",
       price: 100,
       amount: 1000,
-      costs: money(2.5),
+      costs: money(2.5, "USD"),
       stop_initial: 90,
       rule_violations: ["no_stop", "overrode_block"],
       rules_version: "1.1",
@@ -207,7 +203,7 @@ describe("planSale: an amount too large to count in cents, or entry units of 0, 
   it("a sale over several lots whose results are too large together is refused with a message, even with pnl 0", () => {
     const lots = [lot("big-a", 1, { entryPrice: 1.5e306 }), lot("big-b", 1, { entryPrice: 1.5e306 })];
     assert.throws(
-      () => planSale(lots, sale(2, { price: 10, pnl: money(0) }), new Map()),
+      () => planSale(lots, sale(2, { price: 10, pnl: money(0, "EUR") }), new Map()),
       (err: Error) => {
         assert.equal(err.constructor, Error);
         assert.match(err.message, /TCK.*too large to count in cents/);
@@ -218,7 +214,7 @@ describe("planSale: an amount too large to count in cents, or entry units of 0, 
 
   it("a partial sale of a lot whose Entry units are 0 is refused, naming the lot and its entry units", () => {
     assert.throws(
-      () => planSale([lot("zero-1", 10, { entryUnits: 0, entryCosts: money(5) })], sale(4), new Map()),
+      () => planSale([lot("zero-1", 10, { entryUnits: 0, entryCosts: money(5, "EUR") })], sale(4), new Map()),
       (err: Error) => {
         assert.equal(err.constructor, Error);
         assert.match(err.message, /lot zero-1 \(TCK\).*Entry units.* 0/);
@@ -229,7 +225,7 @@ describe("planSale: an amount too large to count in cents, or entry units of 0, 
 
   it("a lot whose Entry units are 0 and is used up, or has no entry costs, is sold as before", () => {
     assert.equal(
-      planSale([lot("zero-2", 10, { entryUnits: 0, entryCosts: money(5) })], sale(10), new Map())[0].entryCosts,
+      planSale([lot("zero-2", 10, { entryUnits: 0, entryCosts: money(5, "EUR") })], sale(10), new Map())[0].entryCosts,
       5,
     );
     assert.equal(planSale([lot("zero-3", 10, { entryUnits: 0 })], sale(4), new Map())[0].entryCosts, undefined);
@@ -255,14 +251,18 @@ describe("planSale: what each exit carries", () => {
   });
 
   it("an exit's amount keeps its sub-cent value when the units are tiny and the price low", () => {
-    const shares = planSale([lot("a", 4)], { ticker: tk("TCK"), units: 4, price: 0.001, amount: 0.004 }, new Map());
+    const shares = planSale(
+      [lot("a", 4)],
+      { ticker: tk("TCK"), currency: "USD", units: 4, price: 0.001, amount: 0.004 },
+      new Map(),
+    );
     assert.equal(shares[0].amount, 0.004);
   });
 
   it("the costs of the sale are split the same way and stay absent when there are none", () => {
     const lots = [lot("a", 1), lot("b", 1), lot("c", 1)];
     assert.deepEqual(
-      planSale(lots, sale(3, { costs: money(1) }), new Map()).map((s) => s.costs),
+      planSale(lots, sale(3, { costs: money(1, "EUR") }), new Map()).map((s) => s.costs),
       [0.33, 0.33, 0.34],
     );
     assert.deepEqual(
@@ -281,7 +281,7 @@ describe("planSale: what each exit carries", () => {
   });
 
   it("a pnl the owner gives for the whole sale is split by units, the remainder on the last", () => {
-    const shares = planSale([lot("a", 10), lot("b", 10)], sale(15, { pnl: money(100) }), new Map());
+    const shares = planSale([lot("a", 10), lot("b", 10)], sale(15, { pnl: money(100, "EUR") }), new Map());
     assert.deepEqual(
       shares.map((s) => s.pnl),
       [66.67, 33.33],
@@ -293,7 +293,7 @@ describe("planSale: what each exit carries", () => {
     const gain = [lot("a", 5, { entryPrice: 100 }), lot("b", 5, { entryPrice: 130, date: "2026-06-22" })];
     const loss = [lot("a", 5, { entryPrice: 110 }), lot("b", 5, { entryPrice: 150, date: "2026-06-22" })];
     const pnls = (lots: Lot[], pnl?: number) =>
-      planSale(lots, sale(10, { price: 120, ...(pnl === undefined ? {} : { pnl: money(pnl) }) }), new Map()).map(
+      planSale(lots, sale(10, { price: 120, ...(pnl === undefined ? {} : { pnl: money(pnl, "EUR") }) }), new Map()).map(
         (s) => s.pnl,
       );
 
@@ -313,7 +313,7 @@ describe("planSale: what each exit carries", () => {
       // Lots of 1 and 2 units (entry 100): computed 20 and 40 at 120; +61 given: difference +1 -> 0.33/0.67.
       const lots = [lot("a", 1), lot("b", 2, { date: "2026-06-22" })];
       assert.deepEqual(
-        planSale(lots, sale(3, { price: 120, pnl: money(61) }), new Map()).map((s) => s.pnl),
+        planSale(lots, sale(3, { price: 120, pnl: money(61, "EUR") }), new Map()).map((s) => s.pnl),
         [20.33, 40.67],
       );
     });
@@ -321,14 +321,14 @@ describe("planSale: what each exit carries", () => {
 
   it("the entry costs are shared pro rata to the units sold, the remainder on the last exit of the lot", () => {
     // Entry costs 1 over 3 units: 0.33 + 0.33 + 0.34, so the three exits add up exactly to 1.
-    const l = lot("a", 3, { entryCosts: money(1) });
+    const l = lot("a", 3, { entryCosts: money(1, "EUR") });
     const prior = new Map<string, Money>();
     let current = l;
     const shares: (number | undefined)[] = [];
     for (let i = 0; i < 3; i++) {
       const [share] = planSale([current], sale(1), prior);
       shares.push(share.entryCosts);
-      prior.set("a", addCounted(prior.get("a") ?? ZERO, share.entryCosts ?? ZERO, "x"));
+      prior.set("a", addCounted(prior.get("a") ?? zero("USD"), share.entryCosts ?? zero("USD"), "x"));
       current = { ...current, units: share.unitsLeft };
     }
     assert.deepEqual(shares, [0.33, 0.33, 0.34]);
@@ -434,7 +434,7 @@ last_manual_sync: 2026-10-16T18:00:00Z
 
   it("consuming a lot partly rewrites its Units and keeps the rest of the row", () => {
     const first = lot("a", 10, {
-      entryCosts: money(2.5),
+      entryCosts: money(2.5, "USD"),
       rulesViolations: ["no_stop", "overrode_block"],
       origin: "propietario",
     });
@@ -475,7 +475,7 @@ last_manual_sync: 2026-10-16T18:00:00Z
           ticker: tk("IBE.MC"),
           entryPrice: 12.5,
           initialStop: 11.25,
-          entryCosts: money(1.5),
+          entryCosts: money(1.5, "EUR"),
         }),
       ],
       change({ ticker: tk("IBE.MC"), volume: 0.3, avgPrice: 12.5, newStopLoss: 11.25, currentPrice: 12.5 }),
@@ -571,7 +571,11 @@ last_manual_sync: 2026-10-16T18:00:00Z
 
 describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
   it("a lot of 10 at 0.001 sold 6 units keeps its 4 units when the owner gave the units", () => {
-    const shares = planSale([lot("a", 10)], { ticker: tk("TCK"), units: 6, price: 0.001, amount: 0.01 }, new Map());
+    const shares = planSale(
+      [lot("a", 10)],
+      { ticker: tk("TCK"), currency: "USD", units: 6, price: 0.001, amount: 0.01 },
+      new Map(),
+    );
     assert.deepEqual(
       shares.map((s) => [s.unitsSold, s.unitsLeft]),
       [[6, 4]],
@@ -581,7 +585,7 @@ describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
   it("derived from an amount, the same remainder is dust and the lot is used up", () => {
     const shares = planSale(
       [lot("a", 10)],
-      { ticker: tk("TCK"), units: 6, price: 0.001, amount: 0.01, unitsFromAmount: true },
+      { ticker: tk("TCK"), currency: "USD", units: 6, price: 0.001, amount: 0.01, unitsFromAmount: true },
       new Map(),
     );
     assert.deepEqual(
@@ -592,7 +596,12 @@ describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
 
   it("exact units above the open units are refused even by less than half a cent of price", () => {
     assert.throws(
-      () => planSale([lot("a", 10)], { ticker: tk("TCK"), units: 10.001, price: 1, amount: 10 }, new Map()),
+      () =>
+        planSale(
+          [lot("a", 10)],
+          { ticker: tk("TCK"), currency: "USD", units: 10.001, price: 1, amount: 10 },
+          new Map(),
+        ),
       /Cannot sell 10\.001/,
     );
   });
@@ -601,14 +610,14 @@ describe("planSale: exact units are never snapped (N1 of PR #56)", () => {
 describe("planSale: the costs of a sale never go negative (BLOCKING of the 4th review of PR #56)", () => {
   it("a sale of 100 units over lots of 30/30/30/10 with costs 0.02 gives non-negative shares adding up to 0.02", () => {
     const lots = [lot("a", 30), lot("b", 30), lot("c", 30), lot("d", 10)];
-    const costs = planSale(lots, sale(100, { costs: money(0.02) }), new Map()).map((s) => s.costs);
+    const costs = planSale(lots, sale(100, { costs: money(0.02, "EUR") }), new Map()).map((s) => s.costs);
     assert.deepEqual(costs, [0, 0.01, 0.01, 0]);
   });
 
   it("the difference to an owner-given pnl is split by the same helper: whole cents, adding up to the sale's", () => {
     // Sold at the entry price (computed 0 each), so the whole 0.02 is the difference.
     const lots = [lot("a", 30), lot("b", 30), lot("c", 30), lot("d", 10)];
-    const pnl = planSale(lots, sale(100, { price: 100, pnl: money(0.02) }), new Map()).map((s) => s.pnl);
+    const pnl = planSale(lots, sale(100, { price: 100, pnl: money(0.02, "EUR") }), new Map()).map((s) => s.pnl);
     assert.deepEqual(pnl, [0, 0.01, 0.01, 0]);
   });
 });
@@ -621,7 +630,7 @@ describe("planSale: a lot's entry costs shared across several partial sales", ()
     for (const units of parts) {
       const [share] = planSale([current], sale(units), prior);
       shares.push(share.entryCosts!);
-      prior.set("a", addCounted(prior.get("a") ?? ZERO, share.entryCosts!, "x"));
+      prior.set("a", addCounted(prior.get("a") ?? zero("USD"), share.entryCosts!, "x"));
       current = { ...current, units: share.unitsLeft };
     }
     return shares;
@@ -636,7 +645,7 @@ describe("planSale: a lot's entry costs shared across several partial sales", ()
       [0.05, 9, [2, 2, 2, 2, 1]],
     ];
     for (const [costs, units, parts] of cases) {
-      const shares = sellInParts(money(costs), units, parts);
+      const shares = sellInParts(money(costs, "EUR"), units, parts);
       assert.ok(
         shares.every((x) => x >= 0),
         `${costs} ${JSON.stringify(parts)}: ${JSON.stringify(shares)}`,

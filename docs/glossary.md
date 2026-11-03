@@ -194,8 +194,9 @@ decision-log line with one is skipped with a warning by every reader.
 
 ### Money
 
-An amount of the silo currency, always a whole number of cents (`src/money.ts`). The engine makes a
-money value only through `money()`, compares two at the cent, shares one over weights by the
+An amount of one currency (EUR or USD), always a whole number of cents (`src/money.ts`), with its
+currency in the type, so an amount of one silo cannot be added to or compared with one of the other.
+The engine makes a money value only through `money()`, which says the currency, compares two at the cent, shares one over weights by the
 largest-remainder method (the shares add up exactly to the total, none is negative) and writes it
 with two decimals. Prices, exchange rates, units and percentages are not money and stay plain
 numbers. The one exception is the `amount` of an exit: it is its exact share of the sale amount and

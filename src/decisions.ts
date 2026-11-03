@@ -508,9 +508,9 @@ export function validateDecision(raw: unknown): Decision {
     ...rest,
     ...(decision.ticker != null ? { ticker: parseTicker(decision.ticker) } : {}),
     // Settled money is whole cents from here on, whatever the line or the owner wrote.
-    ...(decision.costs != null ? { costs: money(decision.costs) } : {}),
-    ...(decision.pnl != null ? { pnl: money(decision.pnl) } : {}),
-    ...(decision.entry_costs != null ? { entry_costs: money(decision.entry_costs) } : {}),
+    ...(decision.costs != null ? { costs: money(decision.costs, decision.currency) } : {}),
+    ...(decision.pnl != null ? { pnl: money(decision.pnl, decision.currency) } : {}),
+    ...(decision.entry_costs != null ? { entry_costs: money(decision.entry_costs, decision.currency) } : {}),
     ...(benchmark && benchmarkTicker && "ticker" in benchmarkTicker
       ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
       : {}),
@@ -600,7 +600,7 @@ export function decisionFromRecommendation(
         ...common,
         type: ctx.blocked ? "buy_blocked" : "buy_proposal",
         amount: positive(buy?.amount),
-        costs: buy?.costs == null ? undefined : money(buy.costs),
+        costs: buy?.costs == null ? undefined : money(buy.costs, common.currency),
         stop_initial: buy?.stop,
         target: positive(rec.ticket.target),
         assumptions: rec.assumptions,
@@ -769,8 +769,8 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   return {
     ...input,
     ...(has("ticker") ? { ticker: parseTicker(input.ticker) } : {}),
-    ...(input.costs != null ? { costs: money(input.costs) } : {}),
-    ...(input.pnl != null ? { pnl: money(input.pnl) } : {}),
+    ...(input.costs != null ? { costs: money(input.costs, input.currency) } : {}),
+    ...(input.pnl != null ? { pnl: money(input.pnl, input.currency) } : {}),
   };
 }
 
@@ -780,11 +780,11 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
  * given, is the ADR-0009 §7 one (proportional, no minimum).
  */
 export function resolveFxConversion(
-  input: Pick<OwnerDecisionInput, "amount" | "fx_rate" | "received" | "costs">,
+  input: Pick<OwnerDecisionInput, "amount" | "fx_rate" | "received" | "costs" | "currency">,
   commissionPct: number,
 ): { costs: Money; fx_rate: number } {
   const amount = input.amount!;
-  const costs = input.costs ?? money((amount * commissionPct) / 100);
+  const costs = input.costs ?? money((amount * commissionPct) / 100, input.currency);
   const fx_rate = input.fx_rate ?? round(input.received! / (amount - costs), 6);
   return { costs, fx_rate };
 }

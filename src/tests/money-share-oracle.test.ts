@@ -74,7 +74,7 @@ describe("sharing equals main's allocateByWeight on weights with more than 8 dec
         assert.ok(Math.abs(exact.reduce((a, b) => a + b, 0) - Math.abs(sign * total) * sign) < 1e-6, `sum ${c}`);
       }
       assert.deepEqual(
-        shareMoney(money(sign * total), weights),
+        shareMoney(money(sign * total, "EUR"), weights),
         oracle(sign * total, weights, 2),
         `cents ${c}: ${JSON.stringify({ total, weights })}`,
       );

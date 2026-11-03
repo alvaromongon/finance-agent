@@ -273,11 +273,10 @@ describe("a money cell that cannot be counted in cents (#86): read as unreadable
     ["Total cash", 5, null],
   ] as const) {
     it(`parsePortfolioText with a ${row} of 1e307: Available cash ${cash}, Total cash ${total ?? "absent"}, named`, async () => {
-      const { parsePortfolioText } = await import("../vault-io.js");
+      const { parsePortfolioText } = await import("../portfolio-store.js");
       const other = row === "Available cash" ? "| Total cash | 10 |" : "| Available cash | 5 |";
       const md = `---\nschema_version: 2\nlast_manual_sync: 2099-01-01\n---\n\n## USD — Cash\n\n| Item | Value |\n|---|---|\n| ${row} | 1e307 |\n${other}\n\n## USD — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n\n## USD — Lots\n\n${LOTS_HEADER}\n`;
-      const unreadable: string[] = [];
-      const portfolio = parsePortfolioText(md, "USD", { onUnreadableCell: (m) => unreadable.push(m) });
+      const { portfolio, unreadableCells: unreadable } = parsePortfolioText(md, "USD");
       assert.equal(portfolio.cash, cash);
       assert.equal(portfolio.totalCash, total ?? undefined);
       assert.equal(unreadable.length, 1);

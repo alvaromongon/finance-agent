@@ -105,7 +105,7 @@ describe("buildTechnicalsSection", () => {
 // ── computeAssetClassWeights / formatPortfolioWeights ─────────────────
 
 function emptyPortfolio(currency: "EUR" | "USD"): PortfolioSnapshot {
-  return { currency, cash: money(0), positions: [], lots: [], syncedAt: "2026-07-10T00:00:00Z" };
+  return { currency, cash: money(0, "USD"), positions: [], lots: [], syncedAt: "2026-07-10T00:00:00Z" };
 }
 
 function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {}) {
@@ -115,7 +115,7 @@ function position(overrides: Partial<PortfolioSnapshot["positions"][number]> = {
     volume: 1,
     avgPrice: 100,
     currentPrice: 100,
-    pl: money(0),
+    pl: money(0, "EUR"),
     stopLoss: null,
     ...overrides,
   };

@@ -16,12 +16,11 @@ import {
   listLogFiles,
   readDecisions,
   readHeartbeatSent,
-  readPortfolioTolerantOfLots,
   readRulesVersion,
   readWatchlistSkippingBadTickers,
-  updatePortfolioPrices,
   writeHeartbeatSent,
 } from "./vault-io.js";
+import { readPortfolio, refreshPrices } from "./portfolio-store.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
 import { volumeMismatches } from "./utils/lots-check.js";
@@ -103,7 +102,7 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem, skippedRows, unreadableCells } = await readPortfolioTolerantOfLots(currency);
+  const { portfolio, lotsProblem, skippedRows, unreadableCells } = await readPortfolio(currency);
   digest.syncedAt = portfolio.syncedAt;
   // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
   // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
@@ -147,10 +146,10 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   //
   // It goes BEFORE the session guard on purpose: if the market turns out to be
   // closed, these are the last close prices and refreshing them is harmless
-  // (if they do not change, updatePortfolioPrices rewrites nothing). The other
+  // (if they do not change, refreshPrices rewrites nothing). The other
   // way round —aborting before writing— is how the portfolio stayed four days
   // stale in August 2026 while the runs came out green.
-  await updatePortfolioPrices(currency, prices);
+  await refreshPrices(currency, prices);
 
   // 2b. Crossed-stop warning: a state question, not an analysis one — only the
   // broker account knows whether the stop filled. It goes before the session
