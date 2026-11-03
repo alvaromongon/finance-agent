@@ -177,13 +177,6 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.equal((await readLines()).filter((d) => d.type === "exit").length, 2);
   });
 
-  it("the portfolio is parsed from the one text the recorder read (parsePortfolioText)", async () => {
-    const { parsePortfolioText } = await import("../portfolio-store.js");
-    const { portfolio } = parsePortfolioText(PORTFOLIO_MD, "USD");
-    assert.equal(portfolio.currency, "USD");
-    assert.deepEqual([portfolio.positions, portfolio.lots], [[], []]);
-  });
-
   describe("portfolio.md is read again right before the record writes it (R1-E of #67)", () => {
     const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 };
     /** A provider that changes portfolio.md while the recorder waits on it for the ATR. */
@@ -218,6 +211,14 @@ describe("decision:record (recordOwnerDecision)", () => {
         /Lots changed while the trade was being recorded.*nothing was recorded/,
       );
       assert.equal((await readLines()).length, 2, "the log has the proposal and the first entry, nothing else");
+    });
+
+    it("a Volume edited meanwhile (the Lots untouched) is refused on the very read that would be written, nothing recorded", async () => {
+      await record({ ...entryOf, units: 2 });
+      const provider = providerThatWrites((text) => text.replace(/(\| ADBE \| )2( \|)/, "$15$2"));
+      await assert.rejects(recordOwnerDecision({ ...entryOf, ticker: "CAT", stop: 440 }, provider, TODAY), /Volume/);
+      assert.equal((await readLines()).length, 2, "the log has the proposal and the first entry, nothing else");
+      assert.ok(!(await readFile(join(vaultDir, "portfolio.md"), "utf8")).includes("CAT"), "no CAT row over the edit");
     });
   });
 

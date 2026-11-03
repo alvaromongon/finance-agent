@@ -65,9 +65,9 @@ export async function readPortfolio<C extends Currency>(currency: C): Promise<Po
 
 /**
  * The silo's model from a `portfolio.md` text already read, with the checks and warnings of
- * `readPortfolio`: a caller that also rewrites the text parses the very text it will rewrite.
+ * `readPortfolio`: `changeLots` parses the very text it will rewrite. Not exported: the text is the store's.
  */
-export function parsePortfolioText<C extends Currency>(raw: string, currency: C): PortfolioRead<C> {
+function parsePortfolioText<C extends Currency>(raw: string, currency: C, warnStale = true): PortfolioRead<C> {
   assertSchemaVersion(raw, "portfolio.md");
   assertPortfolioSections(raw, currency);
 
@@ -80,7 +80,9 @@ export function parsePortfolioText<C extends Currency>(raw: string, currency: C)
   const frontmatter = extractFrontmatter(raw);
   const rawSync = frontmatter?.last_manual_sync as string | Date | null | undefined;
   const lastSync = rawSync instanceof Date ? rawSync.toISOString() : rawSync;
-  if (lastSync) {
+  if (!warnStale) {
+    // The caller warned of this file already.
+  } else if (lastSync) {
     const diffDays = (Date.now() - new Date(lastSync).getTime()) / 86_400_000;
     if (diffDays > config.marketData.portfolioStaleDays) {
       console.warn(
@@ -166,22 +168,29 @@ const lotsKey = (lots: readonly Lot[]): string => JSON.stringify(lots);
 /**
  * Writes `lots` as the silo's open lots and updates the `Positions` row of `change.ticker` (created,
  * changed or deleted), if the lots on disk are still `expected` (`decision:record`, ADR-0015). Refuses with a
- * `LotsMovedError`, writing nothing, if they are not: the plan is stale. With `dryRun` nothing is written
- * but every refusal comes: a `Lots` table with a row that does not read is refused too, since that is not
- * the recorder's to guess. The file is replaced atomically, so a crash never leaves it truncated.
+ * `LotsMovedError`, writing nothing, if they are not: the plan is stale. The file is read once per call and
+ * that one read is both checked and edited, so a change of the owner's between the check and the write cannot
+ * be overwritten. In order, on that read: the `Lots` guard; `check`, which receives the portfolio of the read and
+ * refuses by throwing (the recorder checks the lots against the decision history there); the edit, which
+ * refuses a `Lots` table with a row that does not read, since that is not the recorder's to guess; and, unless
+ * `dryRun`, the write, which replaces the file atomically so a crash never leaves it truncated. With `dryRun`
+ * every refusal comes and nothing is written: the recorder tries the change before it appends its log line, then
+ * applies it, in a second call, after.
  */
 export async function changeLots<C extends Currency>(
   currency: C,
   expected: readonly Lot<C>[],
   lots: readonly Lot<C>[],
   change: PositionChange,
-  { dryRun = false }: { dryRun?: boolean } = {},
+  { check, dryRun = false }: { check?: (read: PortfolioSnapshot<C>) => void; dryRun?: boolean } = {},
 ): Promise<void> {
   const text = await readFile(portfolioPath(), "utf8");
-  const now = requireReadable(parsePortfolioText(text, currency)).lots;
-  if (lotsKey(now) !== lotsKey(expected)) {
+  // The run read and warned of the file already: this read stays quiet.
+  const portfolio = requireReadable(parsePortfolioText(text, currency, false));
+  if (lotsKey(portfolio.lots) !== lotsKey(expected)) {
     throw new LotsMovedError(`${portfolioWhere(currency)}: Lots changed meanwhile`);
   }
+  check?.(portfolio);
   const edited = applyLotChange(text, currency, lots, change);
   if (!dryRun) await writeAtomically(edited);
 }

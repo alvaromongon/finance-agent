@@ -62,7 +62,8 @@ export function stateOffences(source: string): string[] {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const modules = [
     ...[...code.matchAll(/^\s*(?:import|export)\s+(?!type\b)[^;]*?from\s+["']([^"']+)["']/gm)].map((m) => m[1]),
-    ...[...code.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]),
+    ...[...code.matchAll(/^\s*import\s+["']([^"']+)["']/gm)].map((m) => m[1]), // side-effect import
+    ...[...code.matchAll(/\b(?:import|require)\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]),
   ];
   return modules.filter(
     (module) =>
@@ -115,11 +116,18 @@ describe("the state boundary: only the storage layer reads or writes state or pa
   it("the flows do not parse the portfolio: nothing outside the storage layer imports its text API", () => {
     // `portfolio-store.ts` is the only door to portfolio.md; its text-level parts are not exported.
     const store = readFileSync(join(SRC, "portfolio-store.ts"), "utf8");
-    assert.doesNotMatch(store, /export (async )?function (readPortfolioText|writePortfolioText)/);
+    assert.doesNotMatch(store, /export (async )?function (readPortfolioText|writePortfolioText|parsePortfolioText)/);
+    const TEXT_API = ["portfolio-writer", "portfolio-codec"];
     for (const file of sources(SRC).filter((f) => !STORAGE_LAYER.includes(f))) {
+      const source = readFileSync(join(SRC, file), "utf8");
+      assert.deepEqual(
+        stateOffences(source).filter((module) => TEXT_API.some((api) => module.endsWith(`${api}.js`))),
+        [],
+        `${file} imports the portfolio's text API`,
+      );
       assert.doesNotMatch(
-        readFileSync(join(SRC, file), "utf8"),
-        /\b(applyLotChange|applyPrices|parseLotRows|parsePositions)\b/,
+        source,
+        /\b(applyLotChange|applyPrices|parseLotRows|parsePositions|parsePortfolioText)\b/,
         file,
       );
     }
@@ -137,6 +145,9 @@ describe("the state boundary: only the storage layer reads or writes state or pa
       assert.equal(stateOffences(`import {\n  a,\n  b,\n} from "../utils/vault-parser.js";`).length, 1);
       assert.equal(stateOffences(`export { x } from "./portfolio-codec.js";`).length, 1);
       assert.equal(stateOffences(`const fs = await import("node:fs");`).length, 1);
+      assert.equal(stateOffences(`import "node:fs";`).length, 1);
+      assert.equal(stateOffences(`const fs = require("node:fs/promises");`).length, 1);
+      assert.equal(stateOffences(`export * from "./portfolio-codec.js";`).length, 1);
     });
 
     it("does not flag a type-only import, a comment, a module that only has a similar name or other modules", () => {

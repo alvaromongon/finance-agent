@@ -88,6 +88,13 @@ reason.
 A currency account (EUR or USD) managed on its own: its own cash, positions,
 [benchmark](#benchmark) and risk sizing. Each trade risks 1% of its silo's value.
 
+### State port
+
+The one module through which every flow reads and writes a piece of the engine's state, in the engine's own
+model and never as text: today `src/portfolio-store.ts` for the portfolio (cash, positions, lots), whose
+amounts are [money](#money) of the silo's currency. The file format behind it (`portfolio.md`) is known only to
+the storage layer, and a test fails when another module reads or writes a state file.
+
 ### Heartbeat
 
 The daily run, after each market's close: it refreshes prices, checks stops, looks for

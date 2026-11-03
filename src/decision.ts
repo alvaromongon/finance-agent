@@ -308,38 +308,38 @@ export async function recordOwnerDecision(
       break;
   }
 
-  if (lotChange) {
-    // The network calls are over: another writer of this checkout (the heartbeat's prices, the owner's
-    // editor) may have written portfolio.md meanwhile. The change goes onto the portfolio as it is now,
-    // not the one planned on; it is tried here (`dryRun`) so a refusal comes before anything is written. If
-    // the lots themselves moved, the plan is stale: refuse it.
-    const stale = () =>
-      new Error(
-        `${portfolioWhere(input.currency)}: Lots changed while the trade was being recorded (nothing was recorded); run it again`,
-      );
-    if (!(await readLotBook(input.currency, history))) throw stale();
-    try {
-      await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { dryRun: true });
-    } catch (err) {
-      throw err instanceof LotsMovedError ? stale() : err;
-    }
+  if (!lotChange) {
+    await appendDecisions(decisions);
+    return decisions;
   }
-  // Log first, portfolio second (ADR-0015): a stop in between leaves an exit whose lot did not
-  // shrink, which the owner fixes by hand; the other way round would leave a lot the log cannot explain.
+  // The network calls are over: another writer of this checkout (the heartbeat's prices, the owner's editor)
+  // may have written portfolio.md meanwhile. The store reads it, checks that read against the history and edits
+  // that very read; it is tried here (`dryRun`) so a refusal comes before anything is written. If the lots
+  // themselves moved, the plan is stale: refuse it.
+  const check = (portfolio: PortfolioSnapshot) => assertLotsMatch(portfolio, history);
+  try {
+    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { check, dryRun: true });
+  } catch (err) {
+    throw err instanceof LotsMovedError
+      ? new Error(
+          `${portfolioWhere(input.currency)}: Lots changed while the trade was being recorded (nothing was recorded); run it again`,
+        )
+      : err;
+  }
+  // Log first, portfolio second (ADR-0015): a stop in between leaves an exit whose lot did not shrink, which the
+  // owner fixes by hand; the other way round would leave a lot the log cannot explain.
   await appendDecisions(decisions);
-  // The store reads the portfolio again, right before writing: only the log append lies between the checked
-  // read and this one. The entry is in the log now, so whatever stops the write is reported as that, never as
-  // "nothing was recorded".
-  if (lotChange) {
-    try {
-      await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change);
-    } catch (err) {
-      throw new Error(
-        `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
-          `(${(err as Error).message.replace(/\s*\(nothing was recorded\)/g, "")}); apply the lot change by hand (ADR-0015)`,
-        { cause: err },
-      );
-    }
+  // The store reads, checks and edits the portfolio again, right before writing: only the log append lies between
+  // the tried read and this one. The entry is in the log now, so whatever stops the write is reported as that,
+  // never as "nothing was recorded".
+  try {
+    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { check });
+  } catch (err) {
+    throw new Error(
+      `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
+        `(${(err as Error).message.replace(/\s*\(nothing was recorded\)/g, "")}); apply the lot change by hand (ADR-0015)`,
+      { cause: err },
+    );
   }
   return decisions;
 }

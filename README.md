@@ -236,7 +236,7 @@ src/
   providers/                  # market data (yahoo-finance, fixtures)
   utils/                      # pure rules: sizing, stops, eligibility, setups, regime…
   i18n/                       # output catalogs (en, es)
-  portfolio-store.ts          # the portfolio state port: the one way flows read and write it
+  portfolio-store.ts          # the portfolio [state port](docs/glossary.md#state-port): the one way flows read and write it
   vault-io.ts                 # reads and writes the rest of the brain
   tests/                      # node:test suites
 examples/brain/               # fictitious brain in the v1 format

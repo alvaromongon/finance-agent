@@ -249,7 +249,31 @@ describe("the portfolio state port", () => {
       );
     });
 
-    it("with dryRun refuses what it would refuse, and writes nothing", async () => {
+    it("checks the very read it writes: `check` sees the portfolio of that read, and a refusal writes nothing", async () => {
+      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
+      const before = await readFile(file(), "utf8");
+      const { portfolio } = await store.readPortfolio("USD");
+      const seen: number[] = [];
+
+      await store.changeLots("USD", portfolio.lots, [lotOf(1)], change, {
+        check: (read) => void seen.push(read.positions[0].volume),
+      });
+      assert.deepEqual(seen, [2]);
+
+      await put(before);
+      await assert.rejects(
+        () =>
+          store.changeLots("USD", portfolio.lots, [lotOf(1)], change, {
+            check: () => {
+              throw new Error("does not match the log");
+            },
+          }),
+        /does not match the log/,
+      );
+      assert.equal(await readFile(file(), "utf8"), before);
+    });
+
+    it("with dryRun refuses what it would refuse (the guard, `check`, the edit), and writes nothing", async () => {
       await put(portfolioMd([TCK_ROW], [TCK_LOT]));
       const before = await readFile(file(), "utf8");
       const { portfolio } = await store.readPortfolio("USD");
@@ -261,7 +285,29 @@ describe("the portfolio state port", () => {
         () => store.changeLots("USD", [lotOf(99)], [lotOf(1)], change, { dryRun: true }),
         store.LotsMovedError,
       );
+      await assert.rejects(
+        () =>
+          store.changeLots("USD", portfolio.lots, [lotOf(1)], change, { check: () => assert.fail("no"), dryRun: true }),
+        /no/,
+      );
       assert.equal(await readFile(file(), "utf8"), before);
+    });
+
+    it("checks and edits one read: a Volume the owner edited is refused by `check`, not overwritten", async () => {
+      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
+      const { portfolio } = await store.readPortfolio("USD");
+      // The Lots are as planned; only the Positions Volume moved. A check on another read than the edit would pass.
+      await put(portfolioMd([TCK_ROW.replace("| 2 |", "| 5 |")], [TCK_LOT]));
+      const edited = await readFile(file(), "utf8");
+
+      await assert.rejects(
+        () =>
+          store.changeLots("USD", portfolio.lots, [lotOf(1)], change, {
+            check: (read) => assert.equal(read.positions[0].volume, 2, "Volume does not match its lots"),
+          }),
+        /Volume does not match its lots/,
+      );
+      assert.equal(await readFile(file(), "utf8"), edited);
     });
 
     it("refuses, writing nothing, when the lots moved since the plan was made", async () => {
