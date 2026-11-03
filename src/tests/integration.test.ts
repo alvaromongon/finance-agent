@@ -153,8 +153,9 @@ describe("Integration — engine", () => {
     const risk = await import("../risk.js");
 
     readWatchlist = vaultIo.readWatchlist;
-    readPortfolio = vaultIo.readPortfolio;
-    updatePortfolioPrices = vaultIo.updatePortfolioPrices;
+    const store = await import("../portfolio-store.js");
+    readPortfolio = async (currency) => store.requireReadable(await store.readPortfolio(currency));
+    updatePortfolioPrices = store.refreshPrices;
     writeDecisionLog = vaultIo.writeDecisionLog;
     getLastLogForTicker = vaultIo.getLastLogForTicker;
     listLogFiles = vaultIo.listLogFiles;

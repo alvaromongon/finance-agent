@@ -88,6 +88,13 @@ reason.
 A currency account (EUR or USD) managed on its own: its own cash, positions,
 [benchmark](#benchmark) and risk sizing. Each trade risks 1% of its silo's value.
 
+### State port
+
+The one module through which every flow reads and writes a piece of the engine's state, in the engine's own
+model and never as text: today `src/portfolio-store.ts` for the portfolio (cash, positions, lots), whose
+amounts are [money](#money) of the silo's currency. The file format behind it (`portfolio.md`) is known only to
+the storage layer, and a test fails when another module reads or writes a state file.
+
 ### Heartbeat
 
 The daily run, after each market's close: it refreshes prices, checks stops, looks for
@@ -194,8 +201,9 @@ decision-log line with one is skipped with a warning by every reader.
 
 ### Money
 
-An amount of the silo currency, always a whole number of cents (`src/money.ts`). The engine makes a
-money value only through `money()`, compares two at the cent, shares one over weights by the
+An amount of one currency (EUR or USD), always a whole number of cents (`src/money.ts`), with its
+currency in the type, so an amount of one silo cannot be added to or compared with one of the other.
+The engine makes a money value only through `money()`, which says the currency, compares two at the cent, shares one over weights by the
 largest-remainder method (the shares add up exactly to the total, none is negative) and writes it
 with two decimals. Prices, exchange rates, units and percentages are not money and stay plain
 numbers. The one exception is the `amount` of an exit: it is its exact share of the sale amount and

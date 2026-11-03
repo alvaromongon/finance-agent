@@ -83,6 +83,7 @@ describe("a ticker written in another case is the same ticker", () => {
   let vaultDir: string;
   let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision[]>;
   let vaultIo: typeof import("../vault-io.js");
+  let store: typeof import("../portfolio-store.js");
   let lotsMismatches: typeof import("../utils/lots-check.js").lotsMismatches;
 
   const path = (...parts: string[]) => join(vaultDir, ...parts);
@@ -101,6 +102,7 @@ describe("a ticker written in another case is the same ticker", () => {
     process.env.VAULT_PROJECT_DIR = vaultDir;
     ({ recordOwnerDecision } = await import("../decision.js"));
     vaultIo = await import("../vault-io.js");
+    store = await import("../portfolio-store.js");
     ({ lotsMismatches } = await import("../utils/lots-check.js"));
   });
 
@@ -122,7 +124,7 @@ describe("a ticker written in another case is the same ticker", () => {
     const [entry] = await record({ type: "entry", ticker: "tck", currency: "USD", price: 110, units: 1, stop: 90 });
     assert.equal(entry.ticker, "TCK");
 
-    const portfolio = await vaultIo.readPortfolio("USD");
+    const portfolio = store.requireReadable(await store.readPortfolio("USD"));
     assert.deepEqual(
       portfolio.positions.map((p) => [p.ticker, p.volume]),
       [["TCK", 3]],
@@ -180,7 +182,7 @@ describe("a ticker written in another case is the same ticker", () => {
     await writeFile(path("portfolio.md"), text, "utf8");
     await writeFile(path("logs", "decisions.jsonl"), entryLines("USD", [TCK_LOT]), "utf8");
 
-    const portfolio = await vaultIo.readPortfolio("USD");
+    const portfolio = store.requireReadable(await store.readPortfolio("USD"));
     const history = await vaultIo.readDecisionHistory();
 
     assert.equal(portfolio.lots[0].ticker, "TCK");
@@ -209,14 +211,17 @@ describe("a ticker written in another case is the same ticker", () => {
 
   it("a Positions row that is not a ticker is refused, naming the section", async () => {
     await writeFile(path("portfolio.md"), portfolioMd(["| TC;K | 2 | 100 | 100 | 0 | 80 |"], []), "utf8");
-    await assert.rejects(() => vaultIo.readPortfolio("USD"), /## USD — Positions: Ticker "TC;K"/);
+    await assert.rejects(
+      () => store.readPortfolio("USD").then(store.requireReadable),
+      /## USD — Positions: Ticker "TC;K"/,
+    );
   });
 
   it("a Positions row with two dots in a row or a leading dot is refused like any other non-ticker", async () => {
     for (const bad of ["A..B", ".A"]) {
       await writeFile(path("portfolio.md"), portfolioMd([`| ${bad} | 2 | 100 | 100 | 0 | 80 |`], []), "utf8");
       await assert.rejects(
-        () => vaultIo.readPortfolio("USD"),
+        () => store.readPortfolio("USD").then(store.requireReadable),
         (error: Error) => {
           assert.ok(error.message.includes(`## USD — Positions: Ticker "${bad}"`), error.message);
           assert.match(error.message, /two dots in a row|start with a dot/);
@@ -245,7 +250,7 @@ describe("a ticker written in another case is the same ticker", () => {
 
   it("a Lots row that is not a ticker is skipped with its reason", async () => {
     await writeFile(path("portfolio.md"), portfolioMd([], [{ ticker: "TC;K", units: 1, price: 10 }]), "utf8");
-    const portfolio = await vaultIo.readPortfolio("USD");
+    const portfolio = store.requireReadable(await store.readPortfolio("USD"));
     assert.deepEqual(portfolio.lots, []);
     assert.match(portfolio.skippedLotRows?.[0]?.message ?? "", /Ticker "TC;K" does not read/);
   });

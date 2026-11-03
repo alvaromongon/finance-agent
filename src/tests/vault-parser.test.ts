@@ -272,14 +272,13 @@ describe("a money cell that cannot be counted in cents (#86): read as unreadable
     ["Available cash", 0, 10],
     ["Total cash", 5, null],
   ] as const) {
-    it(`parsePortfolioText with a ${row} of 1e307: Available cash ${cash}, Total cash ${total ?? "absent"}, named`, async () => {
-      const { parsePortfolioText } = await import("../vault-io.js");
+    it(`a ${row} of 1e307: Available cash ${cash}, Total cash ${total ?? "absent"}, named`, () => {
       const other = row === "Available cash" ? "| Total cash | 10 |" : "| Available cash | 5 |";
       const md = `---\nschema_version: 2\nlast_manual_sync: 2099-01-01\n---\n\n## USD — Cash\n\n| Item | Value |\n|---|---|\n| ${row} | 1e307 |\n${other}\n\n## USD — Positions\n\n| Ticker | Volume | Avg price | Current price | P/L | Stop loss |\n|---|---|---|---|---|---|\n\n## USD — Lots\n\n${LOTS_HEADER}\n`;
       const unreadable: string[] = [];
-      const portfolio = parsePortfolioText(md, "USD", { onUnreadableCell: (m) => unreadable.push(m) });
-      assert.equal(portfolio.cash, cash);
-      assert.equal(portfolio.totalCash, total ?? undefined);
+      const onUnreadable = (message: string): void => void unreadable.push(message);
+      assert.equal(parseCash(md, "USD", onUnreadable), cash);
+      assert.equal(parseTotalCash(md, "USD", onUnreadable) ?? null, total);
       assert.equal(unreadable.length, 1);
       assert.match(unreadable[0], new RegExp(`Cash: ${row}.*too large to count in cents`));
     });

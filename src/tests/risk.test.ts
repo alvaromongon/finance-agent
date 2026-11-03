@@ -35,7 +35,7 @@ const position = (overrides: Partial<Position> = {}): Position => ({
   volume: 10,
   avgPrice: 130,
   currentPrice: 138,
-  pl: money(80),
+  pl: money(80, "USD"),
   stopLoss: 125,
   ...overrides,
 });

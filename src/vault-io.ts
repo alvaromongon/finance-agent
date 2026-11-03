@@ -1,28 +1,18 @@
 // Reading/writing of the vault Markdown "brain".
 import { messages } from "./i18n/index.js";
-import { readFile, writeFile, readdir, mkdir, unlink, appendFile, rename, stat } from "node:fs/promises";
+import { writeFile, readdir, mkdir, unlink, appendFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { config } from "./config.js";
 import { validateDecision, type Decision, type ScreeningSelection } from "./decisions.js";
 import { describeTicket } from "./utils/sizing.js";
 import { describeConviction } from "./utils/conviction.js";
-import { parseMarkdownNumber } from "./utils/parse.js";
-import { mapTableRows, parsePortfolio, readTable, serializePortfolio } from "./utils/portfolio-codec.js";
 import { parseLastLog, type LastLog } from "./utils/cooldown.js";
 import {
-  assertPortfolioSections,
-  LotsTableError,
   assertSchemaVersion,
   extractYamlBlock,
   extractFrontmatter,
   isBlockedLog,
-  isPositionPlaceholder,
-  parseCash,
-  parseLotRows,
-  parseTotalCash,
-  parsePositions,
   parseScreeningLog,
-  positionColumns,
   SCHEMA_VERSION,
   applyAddWatchlistEntry,
   applyRetireWatchlistEntry,
@@ -46,7 +36,6 @@ import type {
   EngineConviction,
   EngineTicket,
   MarketRegime,
-  PortfolioSnapshot,
   Recommendation,
   Setup,
   Signal,
@@ -114,200 +103,6 @@ async function readWatchlistEntries(currency: Currency, onSkip?: (message: strin
   assertSchemaVersion(raw, "watchlist.md");
   const block = extractYamlBlock(raw);
   return parseWatchlistBlock(block, onSkip).filter((e) => e.currency === currency);
-}
-
-// ─── Portfolio ────────────────────────────────────────────────────────────────
-
-/**
- * Reads portfolio.md and warns if it has gone more than PORTFOLIO_STALE_DAYS
- * without a manual update. It does not block the run, it only warns.
- */
-export async function readPortfolio(currency: Currency): Promise<PortfolioSnapshot> {
-  return parsePortfolioText(await readPortfolioText(), currency);
-}
-
-/**
- * `readPortfolio` for the heartbeat: a `Lots` table that does not read (ADR-0015) does not refuse the
- * file, so a typo there never switches off the stop alerts: a header that does not read, a misspelled
- * or deleted `Lots` heading. The portfolio then has no lots and `lotsProblem` says why (file and
- * section); it is null when the lots read. Neither does a `Positions` row whose ticker does not parse
- * (ADR-0016): it is skipped and `skippedRows` says which, so the other positions are still watched.
- * Every other problem of the file (`Cash`, the `Positions` columns) still throws.
- */
-export async function readPortfolioTolerantOfLots(currency: Currency): Promise<{
-  portfolio: PortfolioSnapshot;
-  lotsProblem: string | null;
-  skippedRows: string[];
-  unreadableCells: string[];
-}> {
-  let lotsProblem: string | null = null;
-  const skippedRows: string[] = [];
-  const unreadableCells: string[] = [];
-  const portfolio = parsePortfolioText(await readPortfolioText(), currency, {
-    onLotsError: (err) => {
-      lotsProblem = err.message;
-    },
-    onSkippedPosition: (message) => skippedRows.push(message),
-    onUnreadableCell: (message) => unreadableCells.push(message),
-  });
-  return { portfolio, lotsProblem, skippedRows, unreadableCells };
-}
-
-/**
- * `readPortfolio` for the readers that use positions, cash and silo value but not the lots
- * (`pending:resolve`, the Monday briefing, the weekly screening): a `Lots` table that does not read
- * does not stop them. `decision:record` (every decision type) and `decisions:evaluate` keep the
- * strict `readPortfolio` and refuse; the heartbeat reports the problem on every run. A `Positions` row
- * whose ticker does not parse is skipped with a warning (ADR-0016).
- */
-export async function readPortfolioIgnoringLots(currency: Currency): Promise<PortfolioSnapshot> {
-  const { portfolio, skippedRows, unreadableCells } = await readPortfolioTolerantOfLots(currency);
-  skippedRows.forEach(warnSkipped);
-  unreadableCells.forEach(warnSkipped);
-  return portfolio;
-}
-
-/**
- * The silo's snapshot of a `portfolio.md` text already read, with the checks and warnings of
- * `readPortfolio`: a caller that also rewrites the text parses the very text it will rewrite.
- */
-export function parsePortfolioText(
-  raw: string,
-  currency: Currency,
-  tolerance: {
-    /** Given, a `Lots` table that does not read is reported here and read as empty instead of throwing. */
-    onLotsError?: (err: Error) => void;
-    /** Given, a `Positions` row whose ticker does not parse is reported here and skipped instead of throwing. */
-    onSkippedPosition?: (message: string) => void;
-    /** Given, a `Positions` P/L or `Cash` cell too large to count in cents is reported here; it reads as 0 or absent (#86). */
-    onUnreadableCell?: (message: string) => void;
-  } = {},
-): PortfolioSnapshot {
-  assertSchemaVersion(raw, "portfolio.md");
-  assertPortfolioSections(raw, currency);
-
-  // Check staleness with the `last_manual_sync` frontmatter field.
-  // js-yaml returns a Date when the timestamp is unquoted
-  // (`last_manual_sync: 2026-08-27T20:46:00Z`) and a string when quoted: it is
-  // normalized to ISO here so `syncedAt` is always what its type says.
-  // Without this, any consumer treating it as a string breaks only with the
-  // real portfolio, never with the quoted fixtures.
-  const frontmatter = extractFrontmatter(raw);
-  const rawSync = frontmatter?.last_manual_sync as string | Date | null | undefined;
-  const lastSync = rawSync instanceof Date ? rawSync.toISOString() : rawSync;
-  if (lastSync) {
-    const diffDays = (Date.now() - new Date(lastSync).getTime()) / 86_400_000;
-    if (diffDays > config.marketData.portfolioStaleDays) {
-      console.warn(
-        `[vault-io] WARNING: portfolio.md has not been updated for ${Math.floor(diffDays)} days.` +
-          ` See the guide: routines/portfolio-sync.md`,
-      );
-    }
-  } else {
-    console.warn("[vault-io] portfolio.md has no last_manual_sync field. Update it by hand.");
-  }
-
-  // Parse the Markdown tables of the given currency's silo. Placeholder rows
-  // ("—") and non-numeric values ("TBD") are safely ignored → empty snapshot
-  // instead of an error.
-  const totalCash = parseTotalCash(raw, currency, tolerance.onUnreadableCell);
-  return {
-    currency,
-    cash: parseCash(raw, currency, tolerance.onUnreadableCell),
-    ...(totalCash != null ? { totalCash } : {}),
-    positions: parsePositions(raw, currency, tolerance.onSkippedPosition, tolerance.onUnreadableCell),
-    ...readLots(raw, currency, tolerance.onLotsError),
-    syncedAt: lastSync ?? new Date().toISOString(),
-  };
-}
-
-/** The silo's lots and the rows of `Lots` the reader skipped; a table that does not read is `onError`'s, or throws. */
-function readLots(
-  raw: string,
-  currency: Currency,
-  onError?: (err: Error) => void,
-): Pick<PortfolioSnapshot, "lots" | "skippedLotRows"> {
-  try {
-    const { lots, skipped } = parseLotRows(raw, currency);
-    return skipped.length > 0 ? { lots, skippedLotRows: skipped } : { lots };
-  } catch (err) {
-    // Only the parser's own verdict on the table; anything else is a bug and must crash.
-    if (!onError || !(err instanceof LotsTableError)) throw err;
-    onError(err);
-    return { lots: [] };
-  }
-}
-
-/**
- * `portfolio.md` as it is, line ends included, for the writer of the lots; throws `ENOENT` if the file
- * does not exist.
- */
-export async function readPortfolioText(): Promise<string> {
-  return readFile(join(projectDir(), "portfolio.md"), "utf8");
-}
-
-/** Replaces `portfolio.md` with `text`: `decision:record` rewrites the `Lots` and `Positions` tables (ADR-0015). */
-export async function writePortfolioText(text: string): Promise<void> {
-  // Atomic: a temp file in the same directory, renamed over the file, so a crash never leaves it truncated.
-  const target = join(projectDir(), "portfolio.md");
-  const temp = `${target}.${process.pid}.tmp`;
-  try {
-    await writeFile(temp, text, "utf8");
-    await rename(temp, target);
-  } catch (err) {
-    await unlink(temp).catch(() => undefined);
-    throw err;
-  }
-}
-
-// ─── Portfolio auto-update ────────────────────────────────────────────────────
-
-/**
- * Updates the `Current price` and `P/L` columns of the positions in portfolio.md.
- * It only touches rows whose ticker has a price available; it does not change
- * `last_manual_sync` or any other field of the file.
- */
-export async function updatePortfolioPrices(currency: Currency, prices: Map<Ticker, number>): Promise<void> {
-  const filePath = join(projectDir(), "portfolio.md");
-  // As the file is, line ends included: the codec writes back every line it did not change.
-  const raw = await readFile(filePath, "utf8").catch(() => null);
-  if (!raw) return;
-  assertSchemaVersion(raw, "portfolio.md");
-
-  const model = parsePortfolio(raw);
-  const table = readTable(model, currency, "Positions");
-  if (!table?.header) return;
-  // Columns are read by their header, as in parsePositions. Every row of a ticker is priced, the way
-  // the Volume check reads them (it sums all of them).
-  const col = positionColumns(table.header, currency);
-  const updated = mapTableRows(model, currency, "Positions", (cells) => {
-    if (isPositionPlaceholder(cells[col.ticker] ?? "")) return null;
-    // The map is keyed by the parsed ticker, so the cell is parsed to look it up. A cell that does not
-    // parse, or a ticker without a price, leaves the row alone; a priced row carries the canonical (upper-case) ticker.
-    const checked = checkTicker(cells[col.ticker]);
-    if (!("ticker" in checked)) return null;
-    const current = prices.get(checked.ticker);
-    if (current == null) return null; // ticker without a price: leave the row alone
-
-    const avgPrice = parseMarkdownNumber(cells[col.avgPrice]);
-    const volume = parseMarkdownNumber(cells[col.volume]);
-    if (avgPrice == null || volume == null) return null;
-
-    const next = [...cells];
-    next[col.ticker] = checked.ticker;
-    next[col.currentPrice] = fmtEU(current);
-    next[col.pl] = fmtEU((current - avgPrice) * volume);
-    return next;
-  });
-  if (!updated || updated === model) return; // nothing changed
-
-  await writeFile(filePath, serializePortfolio(updated), "utf8");
-  console.log(`[vault-io] portfolio.md: prices updated (${currency})`);
-}
-
-/** Formats a number European-style with 2 decimals (46,80 / 1.234,56). */
-function fmtEU(n: number): string {
-  return n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────

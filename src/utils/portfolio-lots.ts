@@ -1,24 +1,13 @@
-// Lot keeping for `decision:record` (ADR-0015, #42). Pure: no I/O, no config. The recorder reads the
-// portfolio and the log, plans with these functions, then writes the log and the portfolio.
+// Lot keeping for `decision:record` (ADR-0015, #42). Pure: no I/O, no config, no text of any file. The
+// recorder reads the portfolio and the log, plans with these functions, then writes the log and hands the
+// new lots to the portfolio store.
 //
 // - `lotOfEntry`: the lot an entry opens.
 // - `planSale`: which lots a sale consumes (first in, first out) and what each exit carries.
-// - `applyLotChange`: the new `portfolio.md` text, with the silo's `Lots` and its `Positions` row edited.
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
 import { UNITS_TOLERANCE } from "./units.js";
-import { parsePortfolio, serializePortfolio, setTableRows } from "./portfolio-codec.js";
-import {
-  isPositionPlaceholder,
-  lotColumns,
-  parseLotRows,
-  portfolioWhere,
-  positionColumns,
-  missingLotsSection,
-  LotsTableError,
-  type LotColumn,
-} from "./vault-parser.js";
-import { namesTicker, type Ticker } from "../ticker.js";
+import type { Ticker } from "../ticker.js";
 import {
   addCounted,
   countedInCents,
@@ -27,12 +16,12 @@ import {
   subtractCounted,
   sumCounted,
   unitsWorthHalfACent,
-  ZERO,
+  zero,
   type Money,
 } from "../money.js";
 
 /** The lot an entry opens: all the units it bought, with the entry's own data as its snapshot. */
-export function lotOfEntry(entry: Decision, units: number): Lot {
+export function lotOfEntry<C extends Currency>(entry: Decision & { currency: C }, units: number): Lot<C> {
   return {
     ticker: entry.ticker!,
     entryId: entry.id,
@@ -41,7 +30,7 @@ export function lotOfEntry(entry: Decision, units: number): Lot {
     entryUnits: units,
     entryPrice: entry.price!,
     initialStop: entry.stop_initial ?? null,
-    entryCosts: entry.costs ?? null,
+    entryCosts: (entry.costs as Money<C> | undefined) ?? null,
     origin: entry.origin,
     rulesVersion: entry.rules_version,
     rulesViolations: entry.rule_violations ?? [],
@@ -50,8 +39,10 @@ export function lotOfEntry(entry: Decision, units: number): Lot {
 
 // ─── Sale: first in, first out ────────────────────────────────────────────────
 
-export interface SalePlanInput {
+export interface SalePlanInput<C extends Currency = Currency> {
   ticker: Ticker;
+  /** Currency of the silo the sale is in: the one of its lots and of every amount it shares. */
+  currency: C;
   /** Units sold. */
   units: number;
   /**
@@ -64,26 +55,26 @@ export interface SalePlanInput {
   /** Amount of the whole sale, in the silo currency. */
   amount: number;
   /** Costs of the whole sale; absent if none were given. */
-  costs?: Money;
+  costs?: Money<C>;
   /**
    * Realized result of the whole sale if the owner gave it: each lot keeps its own computed result and
    * the difference to the owner's total is shared by units. Otherwise each lot's own is computed.
    */
-  pnl?: Money;
+  pnl?: Money<C>;
 }
 
 /** What one lot gives to a sale: one `exit` line. */
-export interface SaleShare {
-  lot: Lot;
+export interface SaleShare<C extends Currency = Currency> {
+  lot: Lot<C>;
   unitsSold: number;
   /** The lot's `Units` after the sale; exactly 0 when it is used up. */
   unitsLeft: number;
   /** This exit's share of the sale amount; the shares add up to it. */
   amount: number;
-  costs: Money | undefined;
-  pnl: Money;
+  costs: Money<C> | undefined;
+  pnl: Money<C>;
   /** This exit's share of the lot's entry costs; absent if the lot has none. */
-  entryCosts: Money | undefined;
+  entryCosts: Money<C> | undefined;
 }
 
 /**
@@ -98,11 +89,11 @@ export interface SaleShare {
  * (`priorEntryCosts`: what earlier exits of each lot already took), so the exits of one lot add up
  * to its `Entry costs`. Throws if the ticker has no lots or fewer units than the sale.
  */
-export function planSale(
-  lots: readonly Lot[],
-  sale: SalePlanInput,
-  priorEntryCosts: ReadonlyMap<string, Money>,
-): SaleShare[] {
+export function planSale<C extends Currency>(
+  lots: readonly Lot<C>[],
+  sale: SalePlanInput<C>,
+  priorEntryCosts: ReadonlyMap<string, Money<C>>,
+): SaleShare<C>[] {
   const ordered = lots
     .map((lot, index) => ({ lot, index }))
     .filter(({ lot }) => lot.ticker === sale.ticker && lot.units > 0)
@@ -119,7 +110,7 @@ export function planSale(
     throw new Error(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
   }
 
-  const taken: { lot: Lot; unitsSold: number; unitsLeft: number }[] = [];
+  const taken: { lot: Lot<C>; unitsSold: number; unitsLeft: number }[] = [];
   let remaining = sale.units;
   for (const lot of ordered) {
     if (remaining < UNITS_TOLERANCE || (taken.length > 0 && remaining <= tolerance)) break;
@@ -134,7 +125,7 @@ export function planSale(
   // the sale amount (`shareExactAmount`), so that a lot of a few units of a low-priced asset does not get
   // 0.00 (the 8 decimals only clear float noise, as the file's number format does).
   const weights = taken.map((t) => t.unitsSold);
-  const shareOf = (total: Money | undefined): (Money | undefined)[] =>
+  const shareOf = (total: Money<C> | undefined): (Money<C> | undefined)[] =>
     total === undefined ? taken.map(() => undefined) : shareMoney(total, weights);
   const amounts = shareExactAmount(sale.amount, weights);
   const costs = shareOf(sale.costs);
@@ -142,14 +133,18 @@ export function planSale(
   // sale only moves them by the difference to the computed sum (costs, FX), shared by units in whole cents,
   // so a losing lot stays a loss when the sale as a whole is a gain.
   const computed = taken.map((t) =>
-    countedInCents((sale.price - t.lot.entryPrice) * t.unitsSold, `the result of ${lotName(t.lot)} (its Entry price)`),
+    countedInCents(
+      (sale.price - t.lot.entryPrice) * t.unitsSold,
+      `the result of ${lotName(t.lot)} (its Entry price)`,
+      sale.currency,
+    ),
   );
   const difference =
     sale.pnl === undefined
       ? undefined
       : subtractCounted(
           sale.pnl,
-          sumCounted(computed, `the results of the lots of ${sale.ticker} sold together`),
+          sumCounted(computed, `the results of the lots of ${sale.ticker} sold together`, sale.currency),
           `the difference between the pnl and the results of the lots of ${sale.ticker}`,
         );
   const adjustments = shareOf(difference);
@@ -158,16 +153,20 @@ export function planSale(
     ...t,
     amount: amounts[i],
     costs: costs[i],
-    pnl: addCounted(computed[i], adjustments[i] ?? ZERO, `the result of ${lotName(t.lot)}`),
-    entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? ZERO),
+    pnl: addCounted(computed[i], adjustments[i] ?? zero(sale.currency), `the result of ${lotName(t.lot)}`),
+    entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? zero(sale.currency), sale.currency),
   }));
 }
 
-function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, taken: Money): Money | undefined {
+function entryCostsShare<C extends Currency>(
+  t: { lot: Lot<C>; unitsSold: number; unitsLeft: number },
+  taken: Money<C>,
+  currency: C,
+): Money<C> | undefined {
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
   const remainder = subtractCounted(total, taken, `the entry costs of ${lotName(t.lot)} left`);
-  const left = Math.max(remainder, ZERO) as Money;
+  const left = Math.max(remainder, zero(currency)) as Money<C>;
   if (t.unitsLeft === 0) return left;
   if (!(t.lot.entryUnits > 0)) {
     throw new Error(
@@ -177,127 +176,10 @@ function entryCostsShare(t: { lot: Lot; unitsSold: number; unitsLeft: number }, 
   const share = countedInCents(
     (total * t.unitsSold) / t.lot.entryUnits,
     `the entry costs of ${lotName(t.lot)} taken by the sale`,
+    currency,
   );
-  return Math.min(share, left) as Money;
+  return Math.min(share, left) as Money<C>;
 }
 
 /** How a lot is named in a refusal: its entry id and ticker. */
-const lotName = (lot: Lot): string => `lot ${lot.entryId} (${lot.ticker})`;
-
-// ─── portfolio.md ─────────────────────────────────────────────────────────────
-
-/** What a lot change does to the ticker's row in `Positions`. */
-export interface PositionChange {
-  ticker: Ticker;
-  /** New `Volume`, the sum of the ticker's lots' units; 0 or less deletes the row. */
-  volume: number;
-  /** New `Avg price`; the row keeps its own if absent. */
-  avgPrice?: number;
-  /** `Stop loss` of a row created by this change (the first lot's initial stop); `null` for none. */
-  newStopLoss?: number | null;
-  /** `Current price` of a row created by this change; the average price if absent. */
-  currentPrice?: number;
-}
-
-const LOT_HEADER: Record<LotColumn, string> = {
-  ticker: "Ticker",
-  entryId: "Entry id",
-  date: "Date",
-  units: "Units",
-  entryUnits: "Entry units",
-  entryPrice: "Entry price",
-  initialStop: "Initial stop",
-  entryCosts: "Entry costs",
-  origin: "Origin",
-  rulesVersion: "Rules version",
-  rulesViolations: "Rules violations",
-};
-const POSITION_HEADER = ["Ticker", "Volume", "Avg price", "Current price", "P/L", "Stop loss"];
-const NONE = "—";
-
-/**
- * `md` with the silo's `Lots` table holding exactly `lots` and the `Positions` row of `change.ticker`
- * updated, created or deleted. The cells keep the file's column order; the rest of the file, line ends
- * included, is the codec's to keep. Refuses (nothing is rewritten) a `Lots` table with a row that does not
- * read as a lot: that is not the recorder's to guess. A ticker on several `Positions` rows is refused by the
- * lots check before the recorder plans anything (`volumeMismatches`), so here it is a broken invariant.
- */
-export function applyLotChange(md: string, currency: Currency, lots: readonly Lot[], change: PositionChange): string {
-  const num = numberFormat(currency);
-  const { skipped } = parseLotRows(md, currency);
-  if (skipped.length > 0) {
-    throw new Error(
-      `${portfolioWhere(currency)}: ${skipped.map((row) => row.message).join("; ")} - the Lots table is not rewritten while a row does not read (nothing was recorded)`,
-    );
-  }
-
-  const withLots = setTableRows(parsePortfolio(md), currency, "Lots", Object.values(LOT_HEADER), (header) => {
-    const col = lotColumns(header, currency);
-    return lots.map((lot) => {
-      const cells = header.map(() => NONE);
-      const set = (key: LotColumn, value: string) => (cells[col[key]] = value);
-      set("ticker", lot.ticker);
-      set("entryId", lot.entryId);
-      set("date", lot.date);
-      set("units", num(lot.units, 0));
-      set("entryUnits", num(lot.entryUnits, 0));
-      set("entryPrice", num(lot.entryPrice, 2));
-      set("initialStop", lot.initialStop == null ? NONE : num(lot.initialStop, 2));
-      set("entryCosts", lot.entryCosts == null ? NONE : num(lot.entryCosts, 2));
-      set("origin", lot.origin);
-      set("rulesVersion", lot.rulesVersion);
-      set("rulesViolations", lot.rulesViolations.length > 0 ? lot.rulesViolations.join(", ") : NONE);
-      return cells;
-    });
-  });
-  if (!withLots) throw new LotsTableError(missingLotsSection(currency));
-
-  const withPositions = setTableRows(withLots, currency, "Positions", POSITION_HEADER, (header, rows) => {
-    const col = positionColumns(header, currency);
-    const kept = rows.filter((cells) => !isPositionPlaceholder((cells[col.ticker] ?? "").trim()));
-    // The row names the ticker in any case; the one the engine writes carries the canonical value.
-    const at = kept.flatMap((cells, i) => {
-      return namesTicker(cells[col.ticker], change.ticker) ? [i] : [];
-    });
-    if (at.length > 1) {
-      throw new Error(
-        `${portfolioWhere(currency)}: internal error: ${change.ticker} is on ${at.length} rows of Positions; the lots check should have refused it (nothing was recorded)`,
-      );
-    }
-    if (change.volume <= UNITS_TOLERANCE) return at.length === 0 ? kept : kept.filter((_, i) => i !== at[0]);
-    if (at.length === 1) {
-      kept[at[0]][col.ticker] = change.ticker;
-      kept[at[0]][col.volume] = num(change.volume, 0);
-      if (change.avgPrice != null) kept[at[0]][col.avgPrice] = num(change.avgPrice, 2);
-      return kept;
-    }
-    const cells = header.map(() => NONE);
-    cells[col.ticker] = change.ticker;
-    cells[col.volume] = num(change.volume, 0);
-    cells[col.avgPrice] = num(change.avgPrice ?? 0, 2);
-    cells[col.currentPrice] = num(change.currentPrice ?? change.avgPrice ?? 0, 2);
-    cells[col.pl] = num(0, 2);
-    cells[col.stopLoss] = change.newStopLoss == null ? NONE : num(change.newStopLoss, 2);
-    return [...kept, cells];
-  });
-  if (!withPositions) {
-    throw new Error(
-      `${portfolioWhere(currency)}: missing section "## ${currency} — Positions" (see docs/input-format.md)`,
-    );
-  }
-  return serializePortfolio(withPositions);
-}
-
-/**
- * Number as the file's silo writes it (decimal comma in EUR, point in USD, no thousands separator,
- * which would be ambiguous), at least `minDecimals` and at most 8 decimals so a low price keeps its
- * precision and float noise does not show.
- */
-function numberFormat(currency: Currency): (n: number, minDecimals: number) => string {
-  const separator = currency === "EUR" ? "," : ".";
-  return (n, minDecimals) => {
-    const [integer, fraction = ""] = n.toFixed(8).split(".");
-    const trimmed = fraction.replace(/0+$/, "").padEnd(minDecimals, "0");
-    return trimmed ? `${integer}${separator}${trimmed}` : integer;
-  };
-}
+const lotName = (lot: Lot<Currency>): string => `lot ${lot.entryId} (${lot.ticker})`;

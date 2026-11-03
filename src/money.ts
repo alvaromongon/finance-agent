@@ -1,16 +1,28 @@
-// Money, a domain value (ADR-0017): a number in units of the silo currency that is always a whole
-// number of cents, made only by `money`, compared at the cent, shared by the largest-remainder method
-// and formatted by one function. No other code writes its own cent tolerance or `toFixed(2)`.
+// Money, a domain value (ADR-0017): a number in units of one currency (EUR or USD) that is always a
+// whole number of cents, made only by `money` (which says the currency), compared at the cent, shared by
+// the largest-remainder method and formatted by one function. No other code writes its own cent
+// tolerance or `toFixed(2)`. The currency is in the type: `Money<"EUR">` and `Money<"USD">` are two
+// types, so the checked helpers and `===` refuse to mix them at compile time.
 //
 // Prices, exchange rates, units and percentages are not money and stay plain numbers. The amount of a
 // trade is the one exception: an exit's `amount` is its exact share of the sale amount and may have
 // sub-cent decimals (owner decision of 2026-10-22 in #27), so it is a plain number kept to
 // `EXACT_AMOUNT_DECIMALS` decimals (`exactAmount`, `shareExactAmount`).
 
-declare const moneyBrand: unique symbol;
+import { CURRENCIES, type Currency } from "./types.js";
 
-/** An amount of the silo currency, a whole number of cents. A branded number, so it survives JSON. */
-export type Money = number & { readonly [moneyBrand]: "Money" };
+declare const moneyBrand: unique symbol;
+declare const currencyBrand: unique symbol;
+
+/**
+ * An amount of one currency, a whole number of cents. A branded number, so it survives JSON; the brand
+ * names the currency. `Money<"EUR">` is an amount known to be in euro; a bare `Money` is one of a currency
+ * only known at run time (`Money<Currency>`), as in a decision read from the log.
+ */
+export type Money<C extends Currency = Currency> = number & {
+  readonly [moneyBrand]: "Money";
+  readonly [currencyBrand]: C;
+};
 
 const CENTS = 100;
 
@@ -19,16 +31,24 @@ export const canCountInCents = (n: number): boolean => Number.isFinite(n) && Num
 
 /**
  * The only way to make a `Money`: rounds to whole cents (half away from zero on the positive side, as
- * `Math.round`). Throws a `RangeError` for a value that is not finite and for one too large to count in cents.
+ * `Math.round`) and says the currency. Throws a `RangeError` for a value that is not finite and for one
+ * too large to count in cents.
  */
-export function money(n: number): Money {
+export function money<C extends Currency>(n: number, currency: C): Money<C> {
+  if (!CURRENCIES.includes(currency)) throw new RangeError(`money needs a currency (EUR or USD); got: ${currency}`);
+  return inCents(n);
+}
+
+/** `money` for a currency the types already carry (the operands of a sum): the number rounded to the cent. */
+function inCents<C extends Currency>(n: number): Money<C> {
   if (typeof n !== "number" || !Number.isFinite(n)) throw new RangeError(`money must be a finite number; got: ${n}`);
   if (!canCountInCents(n)) throw new RangeError(`money is too large to count in cents; got: ${n}`);
   const cents = Math.round(n * CENTS);
-  return (cents === 0 ? 0 : cents / CENTS) as Money;
+  return (cents === 0 ? 0 : cents / CENTS) as Money<C>;
 }
 
-export const ZERO: Money = money(0);
+/** No money in `currency`. */
+export const zero = <C extends Currency>(currency: C): Money<C> => money(0, currency);
 
 const countedRefusals = new WeakSet<Error>();
 
@@ -46,24 +66,38 @@ function countedRefusal(message: string): Error {
  * `what` names the amount in the message, which says whether it is not a number or too large. What the
  * caller did or did not do about it is the caller's to add (`isCountedRefusal` finds these errors).
  */
-export function countedInCents(n: number, what: string): Money {
+export function countedInCents<C extends Currency>(n: number, what: string, currency: C): Money<C> {
+  return counted(n, what, currency);
+}
+
+/** `countedInCents` for the helpers whose operands carry the currency (`currency` is only checked when given). */
+function counted<C extends Currency>(n: number, what: string, currency?: C): Money<C> {
   if (Number.isNaN(n)) throw countedRefusal(`${what} is not a number; got: ${n}`);
   if (!canCountInCents(n)) throw countedRefusal(`${what} is too large to count in cents; got: ${n}`);
-  return money(n);
+  return currency === undefined ? inCents<C>(n) : money(n, currency);
 }
 
 /** The whole number of cents of an amount, for comparing and sharing without float noise. */
 const centsOf = (n: number): number => Math.round(n * CENTS);
 
-/** The sum of two amounts, or a refusal naming `what` when the total is too large to count in cents (`countedInCents`). */
-export const addCounted = (a: Money, b: Money, what: string): Money => countedInCents(a + b, what);
-/** The difference of two amounts, or a refusal naming `what` when the difference is too large to count in cents. */
-export const subtractCounted = (a: Money, b: Money, what: string): Money => countedInCents(a - b, what);
-/** The sum of amounts, or a refusal naming `what` when the total is too large to count in cents. */
-export const sumCounted = (values: Iterable<Money>, what: string): Money => {
+/**
+ * The sum of two amounts of the same currency (two currencies do not compile), or a refusal naming `what`
+ * when the total is too large to count in cents (`countedInCents`).
+ */
+export const addCounted = <C extends Currency>(a: Money<C>, b: Money<NoInfer<C>>, what: string): Money<C> =>
+  counted(a + b, what);
+/** The difference of two amounts of the same currency, or a refusal naming `what` when it is too large to count in cents. */
+export const subtractCounted = <C extends Currency>(a: Money<C>, b: Money<NoInfer<C>>, what: string): Money<C> =>
+  counted(a - b, what);
+/** The sum of amounts of one currency, or a refusal naming `what` when the total is too large to count in cents. */
+export const sumCounted = <C extends Currency>(
+  values: Iterable<Money<NoInfer<C>>>,
+  what: string,
+  currency: C,
+): Money<C> => {
   let cents = 0;
   for (const value of values) cents += centsOf(value);
-  return countedInCents(cents / CENTS, what);
+  return counted(cents / CENTS, what, currency);
 };
 
 /** True if two amounts differ by at most one cent (a trade's amount and `units × price` must agree to this). */
@@ -136,8 +170,8 @@ function share(total: number, weights: readonly number[], decimals: number): num
 }
 
 /** Shares an amount over weights in whole cents (`share`): the shares add up exactly to the total. */
-export function shareMoney(total: Money, weights: readonly number[]): Money[] {
-  return share(total, weights, 2) as Money[];
+export function shareMoney<C extends Currency>(total: Money<C>, weights: readonly number[]): Money<C>[] {
+  return share(total, weights, 2) as Money<C>[];
 }
 
 // ─── The amount of a trade ────────────────────────────────────────────────────
@@ -157,7 +191,7 @@ export const isDust = (value: number): boolean => Math.abs(value) < DUST_LIMIT;
 
 /** The amount of a trade from a value: to the cent, unless that rounds to 0 and the value is not dust, then exact. */
 export function exactAmount(value: number): number {
-  const cents = money(value);
+  const cents = inCents<Currency>(value);
   if (cents !== 0 || isDust(value)) return cents;
   const f = 10 ** EXACT_AMOUNT_DECIMALS;
   return Math.round(value * f) / f;

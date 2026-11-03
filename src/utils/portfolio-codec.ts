@@ -9,7 +9,7 @@
 // first table line is the header, the others are its rows (a separator line is never a row). A
 // write turns it into one contiguous block.
 import type { Currency } from "../types.js";
-import { normalizeEol } from "./parse.js";
+import { normalizeEol } from "./eol.js";
 
 export type PortfolioSection = "Cash" | "Positions" | "Lots";
 

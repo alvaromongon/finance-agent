@@ -1,11 +1,13 @@
 // Pure parsing functions for the vault Markdown. No I/O, no config.
 // Exported so they can be unit-tested.
 import yaml from "js-yaml";
-import { normalizeEol, parseMarkdownMoney, parseMarkdownNumber } from "./parse.js";
-import { ZERO, canCountInCents, money, type Money } from "../money.js";
+import { normalizeEol } from "./eol.js";
+import { parseMarkdownMoney, parseMarkdownNumber } from "./parse.js";
+import { zero, canCountInCents, money, type Money } from "../money.js";
 import { DECISION_ORIGINS } from "../decisions.js";
 import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
+import { missingLotsSection, portfolioWhere } from "./portfolio-where.js";
 import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
 
 // `portfolio.md`'s grammar lives in the codec; these are re-exported for the readers of other files.
@@ -18,6 +20,7 @@ export {
   splitTableRow,
 } from "./portfolio-codec.js";
 export type { PortfolioSection } from "./portfolio-codec.js";
+export { missingLotsSection, portfolioWhere } from "./portfolio-where.js";
 
 export function extractYamlBlock(md: string): string {
   const match = /```ya?ml\n([\s\S]*?)```/.exec(normalizeEol(md));
@@ -95,17 +98,18 @@ function tableRows(md: string, currency: Currency, kind: PortfolioSection): stri
   return table?.header ? [table.header, ...table.rows] : [];
 }
 
-/** `portfolio.md (USD)`: file and silo, the prefix of every message about the lots of one silo. */
-export const portfolioWhere = (currency: Currency): string => `portfolio.md (${currency})`;
-
 /**
  * Reads "Available cash" from the `## <CURRENCY> — Cash` section: the capital
  * free to trade. Returns 0 if there is no parseable number (e.g. "TBD").
  */
 const AVAILABLE_CASH_RE = /^available\s+cash$/i;
 
-export function parseCash(md: string, currency: Currency, onUnreadable?: (message: string) => void): Money {
-  return cashRow(md, currency, AVAILABLE_CASH_RE, "Available cash", onUnreadable) ?? ZERO;
+export function parseCash<C extends Currency>(
+  md: string,
+  currency: C,
+  onUnreadable?: (message: string) => void,
+): Money<C> {
+  return cashRow(md, currency, AVAILABLE_CASH_RE, "Available cash", onUnreadable) ?? zero(currency);
 }
 
 /**
@@ -114,21 +118,25 @@ export function parseCash(md: string, currency: Currency, onUnreadable?: (messag
  * only differs from the available balance while there are pending orders;
  * `null` if missing or not a number.
  */
-export function parseTotalCash(md: string, currency: Currency, onUnreadable?: (message: string) => void): Money | null {
+export function parseTotalCash<C extends Currency>(
+  md: string,
+  currency: C,
+  onUnreadable?: (message: string) => void,
+): Money<C> | null {
   return cashRow(md, currency, /^total\s+cash$/i, "Total cash", onUnreadable);
 }
 
-function cashRow(
+function cashRow<C extends Currency>(
   md: string,
-  currency: Currency,
+  currency: C,
   label: RegExp,
   name: string,
   onUnreadable?: (message: string) => void,
-): Money | null {
+): Money<C> | null {
   const rows = tableRows(md, currency, "Cash");
   const row = rows.find((cells) => label.test(cells[0] ?? ""));
   if (!row) return null;
-  const value = parseMarkdownMoney(row[1]);
+  const value = parseMarkdownMoney(row[1], currency);
   if (value === null) {
     reportTooLarge(row[1], `## ${currency} — Cash: ${name}`, name === "Total cash" ? "absent" : "0", onUnreadable);
   }
@@ -311,6 +319,9 @@ const POSITION_COLUMNS = {
 
 export type PositionColumn = keyof typeof POSITION_COLUMNS;
 
+/** What the message of a skipped `Positions` row adds to the reason (a reader that refuses leaves it out). */
+export const POSITION_ROW_SKIPPED = " (row skipped: it is not watched until fixed)";
+
 /**
  * Index of each column of a table from its header row, by name (case-insensitive); `missing` lists the
  * labels the header lacks. Shared by the `Positions` and `Lots` readers.
@@ -358,16 +369,16 @@ export function isPositionPlaceholder(ticker: string): boolean {
  * readers that refuse), or, given `onSkip`, is skipped and reported to it (ADR-0016). A P/L too large to
  * count in cents reads as 0 and, given `onUnreadable`, is reported to it; the row is kept (#86).
  */
-export function parsePositions(
+export function parsePositions<C extends Currency>(
   md: string,
-  currency: Currency,
+  currency: C,
   onSkip?: (message: string) => void,
   onUnreadable?: (message: string) => void,
-): Position[] {
+): Position<C>[] {
   const [header, ...rows] = tableRows(md, currency, "Positions");
   if (!header) return [];
   const col = positionColumns(header, currency);
-  const positions: Position[] = [];
+  const positions: Position<C>[] = [];
 
   for (const cells of rows) {
     const rawTicker = (cells[col.ticker] ?? "").trim();
@@ -381,7 +392,7 @@ export function parsePositions(
     if ("problem" in checked) {
       const message = `## ${currency} — Positions: Ticker ${JSON.stringify(rawTicker)}: ${checked.problem}`;
       if (!onSkip) throw new Error(message);
-      onSkip(`${message} (row skipped: it is not watched until fixed)`);
+      onSkip(`${message}${POSITION_ROW_SKIPPED}`);
       continue;
     }
     positions.push({
@@ -391,7 +402,7 @@ export function parsePositions(
       volume,
       avgPrice,
       currentPrice: parseMarkdownNumber(cells[col.currentPrice]) ?? 0,
-      pl: positionPl(cells[col.pl], `## ${currency} — Positions: ${checked.ticker} P/L`, onUnreadable),
+      pl: positionPl(cells[col.pl], currency, `## ${currency} — Positions: ${checked.ticker} P/L`, onUnreadable),
       stopLoss: parseMarkdownNumber(cells[col.stopLoss]),
     });
   }
@@ -400,10 +411,15 @@ export function parsePositions(
 }
 
 /** The row's P/L, display-only: 0 when it does not read; a number too large to count in cents is named (#86). */
-function positionPl(cell: string | undefined, where: string, onUnreadable?: (message: string) => void): Money {
-  const pl = parseMarkdownMoney(cell);
+function positionPl<C extends Currency>(
+  cell: string | undefined,
+  currency: C,
+  where: string,
+  onUnreadable?: (message: string) => void,
+): Money<C> {
+  const pl = parseMarkdownMoney(cell, currency);
   if (pl === null) reportTooLarge(cell, where, "0", onUnreadable);
-  return pl ?? ZERO;
+  return pl ?? zero(currency);
 }
 
 // ─── Lots (ADR-0015) ──────────────────────────────────────────────────────────
@@ -437,10 +453,6 @@ export class LotsTableError extends Error {
   }
 }
 
-/** The message for a silo without its `## <CURRENCY> — Lots` section: the one place it is worded. */
-export const missingLotsSection = (currency: Currency): string =>
-  `${portfolioWhere(currency)}: missing section "## ${currency} — Lots" (see docs/input-format.md)`;
-
 export function lotColumns(header: readonly string[], currency: Currency): Record<LotColumn, number> {
   const { indexes, missing } = columnIndexes(header, LOT_COLUMNS);
   if (missing.length > 0) {
@@ -460,8 +472,8 @@ function lotsTable(md: string, currency: Currency): string[][] {
 }
 
 /** What the `Lots` table of a silo reads as: the lots, and one message per row it skipped. */
-export interface LotRows {
-  lots: Lot[];
+export interface LotRows<C extends Currency = Currency> {
+  lots: Lot<C>[];
   /** The skipped rows, one message each (`Lots row 2 (AAPL, id): <reason>; the row is skipped`, without the file prefix). */
   skipped: SkippedLotRow[];
 }
@@ -474,13 +486,13 @@ export interface LotRows {
  * instead of only reporting the mismatch. A silo without the section throws a `LotsTableError`.
  * Cross-checks with the log are not made here: this parser is pure.
  */
-export function parseLotRows(md: string, currency: Currency): LotRows {
+export function parseLotRows<C extends Currency>(md: string, currency: C): LotRows<C> {
   const [header, ...rows] = lotsTable(md, currency);
-  const result: LotRows = { lots: [], skipped: [] };
+  const result: LotRows<C> = { lots: [], skipped: [] };
   if (!header) return result;
   const col = lotColumns(header, currency);
   rows.forEach((cells, i) => {
-    const reading = readLotRow(cells, col);
+    const reading = readLotRow(cells, col, currency);
     if (reading === null) return;
     if ("lot" in reading) {
       result.lots.push(reading.lot);
@@ -500,7 +512,7 @@ export function parseLotRows(md: string, currency: Currency): LotRows {
 }
 
 /** The lots of the silo's `Lots` table; see `parseLotRows` for the rows it skips. */
-export function parseLots(md: string, currency: Currency): Lot[] {
+export function parseLots<C extends Currency>(md: string, currency: C): Lot<C>[] {
   return parseLotRows(md, currency).lots;
 }
 
@@ -509,10 +521,11 @@ export function parseLots(md: string, currency: Currency): Lot[] {
  * `lot`, or the `reason` it does not read as one. Origin matches exactly (it is compared with the
  * log's, which writes it in lower case); the headers are the owner's to type and match any case.
  */
-function readLotRow(
+function readLotRow<C extends Currency>(
   cells: readonly string[],
   col: Record<LotColumn, number>,
-): { lot: Lot } | { reason: string } | null {
+  currency: C,
+): { lot: Lot<C> } | { reason: string } | null {
   const cell = (key: LotColumn) => (cells[col[key]] ?? "").trim();
   if (cells.every((c) => isPlaceholder(c.trim())) || /^entry id$/i.test(cell("entryId"))) return null;
   if (isPlaceholder(cell("entryId"))) return { reason: "no Entry id" };
@@ -532,7 +545,7 @@ function readLotRow(
   if (costsNumber !== null && !canCountInCents(costsNumber)) {
     return { reason: `${LOT_COLUMNS.entryCosts} "${costs}" is too large to count in cents` };
   }
-  const entryCosts = costsNumber === null ? null : money(costsNumber);
+  const entryCosts = costsNumber === null ? null : money(costsNumber, currency);
   const origin = cell("origin");
   if (!(DECISION_ORIGINS as readonly string[]).includes(origin)) {
     const right = DECISION_ORIGINS.find((o) => o === origin.toLowerCase());

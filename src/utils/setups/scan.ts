@@ -119,7 +119,7 @@ export async function scanSetups(input: SetupScanInput): Promise<SetupScanResult
           target: setup.target,
           stop_initial: ticket?.stop,
           amount: ticket && ticket.amount > 0 ? ticket.amount : undefined,
-          costs: ticket?.costs == null ? undefined : money(ticket.costs),
+          costs: ticket?.costs == null ? undefined : money(ticket.costs, entry.currency),
           eligibility:
             ev.reasons.length === 0
               ? { verdict: "eligible", reasons: [] }

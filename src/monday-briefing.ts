@@ -27,13 +27,12 @@ import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import {
   appendDecisions,
   readDecisions,
-  readPortfolioIgnoringLots,
   readRoutinePrompt,
   readRulesVersion,
   readWatchlistSkippingBadTickers,
   retireWatchlistEntry,
-  updatePortfolioPrices,
 } from "./vault-io.js";
+import { ignoringLots, readPortfolio, refreshPrices } from "./portfolio-store.js";
 import { buildBriefingDecisions, extractProposals, formatEngineTicketsSection } from "./utils/briefing-decisions.js";
 import { CUT_BOARD_HEADING, extractCutBoard } from "./utils/decisions-evaluation-render.js";
 import { siloValue } from "./utils/sizing.js";
@@ -96,8 +95,8 @@ export async function prepareBriefing(
   // Cash and positions/watchlist of both silos (portfolio.md/watchlist.md are
   // single files with EUR/USD sections, but vault-io exposes them per currency).
   const [initialEur, initialUsd] = await Promise.all([
-    readPortfolioIgnoringLots("EUR"),
-    readPortfolioIgnoringLots("USD"),
+    readPortfolio("EUR").then(ignoringLots),
+    readPortfolio("USD").then(ignoringLots),
   ]);
   const [eurWatchlist, usdWatchlist] = await Promise.all([
     readWatchlistSkippingBadTickers("EUR"),
@@ -121,15 +120,15 @@ export async function prepareBriefing(
   // is 1–2 requests that also warm the cache for buildTechnicalsSection.
   console.error("[monday-briefing] Refreshing portfolio.md prices...");
   const refreshedPrices = await provider.getPrices(allTickers);
-  await updatePortfolioPrices("EUR", refreshedPrices);
-  await updatePortfolioPrices("USD", refreshedPrices);
+  await refreshPrices("EUR", refreshedPrices);
+  await refreshPrices("USD", refreshedPrices);
 
   // Re-read with the prices already written: the prompt, the weight breakdown
   // and the USD buffer must all describe the same state.
   const portfolioMd = await safeRead(join(vaultDir, "portfolio.md"));
   const [eurPortfolio, usdPortfolio] = await Promise.all([
-    readPortfolioIgnoringLots("EUR"),
-    readPortfolioIgnoringLots("USD"),
+    readPortfolio("EUR").then(ignoringLots),
+    readPortfolio("USD").then(ignoringLots),
   ]);
 
   console.error(`[monday-briefing] Computing technicals for ${allTickers.length} assets...`);
@@ -289,8 +288,8 @@ export async function finalizeBriefing(
   const m = messages();
 
   const [eurPortfolio, usdPortfolio, eurWatchlist, usdWatchlist, rulesVersion, history] = await Promise.all([
-    readPortfolioIgnoringLots("EUR"),
-    readPortfolioIgnoringLots("USD"),
+    readPortfolio("EUR").then(ignoringLots),
+    readPortfolio("USD").then(ignoringLots),
     readWatchlistSkippingBadTickers("EUR"),
     readWatchlistSkippingBadTickers("USD"),
     readRulesVersion(),

@@ -18,7 +18,7 @@ import {
   type DecisionEvaluation,
   type EvaluationReport,
 } from "./decisions-evaluation.js";
-import { normalizeEol } from "./parse.js";
+import { normalizeEol } from "./eol.js";
 import type { SiloWarning } from "./silo-performance.js";
 
 // Format, not output: monday-briefing:prepare finds the board by this heading, so

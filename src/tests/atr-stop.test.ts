@@ -25,7 +25,7 @@ function position(overrides: Partial<Position> = {}): Position {
     volume: 1,
     avgPrice: 492.01,
     currentPrice: 501.02,
-    pl: money(9.01),
+    pl: money(9.01, "USD"),
     stopLoss: 500,
     ...overrides,
   };

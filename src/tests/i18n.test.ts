@@ -31,7 +31,7 @@ function position(overrides: Partial<Position> = {}): Position {
     volume: 1,
     avgPrice: 492.01,
     currentPrice: 501.02,
-    pl: money(9.01),
+    pl: money(9.01, "USD"),
     stopLoss: 500,
     ...overrides,
   };
@@ -67,7 +67,7 @@ const firstArmed = Array.from({ length: 16 }, (_, i) => base.slice(0, run.length
 )!;
 const { notices: armed } = await scanSetups({
   watchlist: [{ ticker: tk("BO"), name: "BO", market: "NYSE", currency: "USD", horizon: "medium", thesis: "t" }],
-  portfolio: { currency: "USD", cash: money(1000), positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
+  portfolio: { currency: "USD", cash: money(1000, "USD"), positions: [], lots: [], syncedAt: "2026-09-24T00:00:00Z" },
   provider: { getHistorical: async () => firstArmed },
   date: "2026-09-24",
   rulesVersion: "0.7",

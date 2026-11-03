@@ -45,8 +45,8 @@ parentheses so a code comment that cites it can be found here.
      briefing and the screening log the same warning.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
      (current price and P/L). This happens before the market-session guard on purpose. The write
-     goes through the file's one codec and edits the priced cells in place, so every other line
-     stays where it was (notes and spacing included); every `Positions` row of a ticker that has a
+     goes through the file's one codec and edits the priced cells in place, then replaces the file
+     atomically (a temporary file renamed over it), so every other line stays where it was (notes and spacing included); every `Positions` row of a ticker that has a
      price and a readable `Volume` and `Avg price` is updated, its ticker written in upper case.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
@@ -244,30 +244,31 @@ them. It needs one history request per position with a stop; without ATR the pos
   `Positions` tables of `portfolio.md` and email. The decision log is appended first and
   `portfolio.md` rewritten second, atomically (a temporary file in the same directory renamed over
   it), so a stop never leaves `portfolio.md` cut short. Every writer of the file (this one and
-  the price update that the heartbeat and the Monday briefing run) shares one codec, so reading and
-  writing back unchanged is identical. The price update edits cells in place; this writer rewrites
-  the `Lots` and `Positions` rows as one block per table: blank lines that split the table are
-  dropped, a note between its rows moves under it (as [the format](input-format.md#portfoliomd)
-  says) and the placeholder (`—`) rows of `Positions` are dropped; every line outside those tables
-  is kept. Only this writer re-reads the file and
-  writes atomically; the price update has no re-read and no lots check and writes the file in place,
-  so a price update that read the file before a record and writes after it (a short window: it
-  receives prices already fetched, then reads, edits and writes) overwrites the new `Lots` and
-  `Positions` rows (see _Bad_ in the ADR). The portfolio is read again after the
-  market-data calls, right before the decision is appended, and if the lots moved meanwhile the
-  record is refused with nothing written. It is read once more after the append, and if the lots
-  moved in that short window the decision is already in the log: the error says so, and the trade
-  must not be recorded again (apply the lot change by hand).
+  the price update that the heartbeat and the Monday briefing run) goes through the portfolio
+  [state port](glossary.md#state-port) (`src/portfolio-store.ts`), shares one codec and replaces the
+  file atomically, so reading and writing back unchanged is identical. The price update edits cells in
+  place; this writer rewrites the `Lots` and `Positions` rows as one block per table: blank lines that
+  split the table are dropped, a note between its rows moves under it (as
+  [the format](input-format.md#portfoliomd) says) and the placeholder (`—`) rows of `Positions` are
+  dropped; every line outside those tables is kept. Only this writer checks the lots: the price
+  update has no lots check and re-reads nothing between its read and its write, so a price update
+  that read the file before a record and writes after it (a short window: it receives prices already
+  fetched, then reads, edits and writes) overwrites the new `Lots` and `Positions` rows (see _Bad_
+  in the ADR). The portfolio is read at the start for the plan, and again after the market-data
+  calls: that read is checked (the lots are still the planned ones and still match the decision
+  history) and the change is tried on that same read, right before the decision is appended; if the
+  lots moved or no longer match, the record is refused with nothing written. It is read, checked
+  and edited once more after the append, and if the lots moved in that short window the decision is
+  already in the log: the error says so, and the trade must not be recorded again (apply the lot
+  change by hand).
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the
   record, because a Markdown log without its decision line would mean measuring halfway. If the
   process stops between the log and the portfolio, an exit exists whose lot did not shrink; the
   owner corrects `Lots` by hand. A partial sale that reached the log but not the portfolio is not
   caught on read (a split correction looks the same); the owner finds it when reconciling `Volume`
-  with the broker, and a failure of the check or the edit after the log append says the decision is recorded
-  and the lot change has to be applied by hand. A failure of the final atomic rewrite (no permission,
-  disk full) does not say so today: it surfaces as a raw error although the decision is already in the
-  log, and the owner then applies the lot change by hand and does not record the trade again
-  ([#91](https://github.com/alvaromongon/finance-agent/issues/91) will make every such failure say so).
+  with the broker, and a failure of the check, the edit or the final atomic rewrite (no permission,
+  disk full) after the log append says the decision is recorded and the lot change has to be applied
+  by hand; the trade must not be recorded again.
 - **Why**: [ADR-0006](decisions/0006-single-append-only-decision-log.md),
   [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md),
   [ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md) (lots), and for the lot design

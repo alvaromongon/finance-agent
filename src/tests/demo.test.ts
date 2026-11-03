@@ -55,8 +55,10 @@ describe("demo against examples/brain", () => {
     // Read the example itself, not a copy a demo run already changed.
     process.env.VAULT_PROJECT_DIR = join(import.meta.dirname, "..", "..", "examples", "brain");
     const io = await import("../vault-io.js");
+    const store = await import("../portfolio-store.js");
+    const readSilo = async (currency: "EUR" | "USD") => store.requireReadable(await store.readPortfolio(currency));
     for (const currency of ["EUR", "USD"] as const) {
-      const portfolio = await io.readPortfolio(currency);
+      const portfolio = await readSilo(currency);
       assert.equal(portfolio.positions.length, 1);
       assert.equal(portfolio.lots.length, 1);
       assert.equal((await io.readWatchlist(currency)).length, 1);
@@ -64,7 +66,7 @@ describe("demo against examples/brain", () => {
     const { assertLotsMatch } = await import("../utils/lots-check.js");
     const decisions = await io.readDecisionHistory();
     for (const currency of ["EUR", "USD"] as const) {
-      assertLotsMatch(await io.readPortfolio(currency), decisions);
+      assertLotsMatch(await readSilo(currency), decisions);
     }
     assert.equal((await io.readScreeningLog()).length, 2);
     const { readUniverse } = await import("../weekly-screening.js");

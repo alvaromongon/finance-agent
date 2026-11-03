@@ -15,12 +15,9 @@ import {
   readAccountEnv,
   readDecisionHistory,
   readDecisions,
-  parsePortfolioText,
-  readPortfolioText,
   readRulesVersion,
   readWatchlist,
   writeDecisionLog,
-  writePortfolioText,
 } from "./vault-io.js";
 import { blockCodes, evaluateRecommendation } from "./utils/sizing.js";
 import { sendAlert } from "./mailer.js";
@@ -42,9 +39,10 @@ import {
 } from "./decisions.js";
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
-import { portfolioWhere } from "./utils/vault-parser.js";
-import { applyLotChange, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
-import { addCounted, exactAmount, isCountedRefusal, ZERO, type Money } from "./money.js";
+import { portfolioWhere } from "./utils/portfolio-where.js";
+import { lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
+import { changeLots, LotsMovedError, readPortfolio, requireReadable, type PositionChange } from "./portfolio-store.js";
+import { addCounted, exactAmount, isCountedRefusal, zero, type Money } from "./money.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 import { tickerFileStem, type Ticker } from "./ticker.js";
@@ -181,8 +179,8 @@ export async function recordOwnerDecision(
   const originFrom = (related: Decision | undefined): DecisionOrigin => input.origin ?? originOf(related);
 
   let decisions: Decision[];
-  /** The change to the silo's lots as an edit of the `portfolio.md` text, applied to the text read last. */
-  let editPortfolio: ((text: string) => string) | undefined;
+  /** The change to the silo's lots and its position, handed to the portfolio store once the log is written. */
+  let lotChange: { lots: readonly Lot[]; change: PositionChange } | undefined;
   switch (input.type) {
     case "entry": {
       const ticker = input.ticker!;
@@ -221,12 +219,11 @@ export async function recordOwnerDecision(
       });
       decisions = [entry];
       const lots = [...book!.portfolio.lots, lotOfEntry(entry, units)];
-      editPortfolio = (text) =>
-        withLots(text, input.currency, lots, {
-          ticker,
-          newStopLoss: entry.stop_initial ?? null,
-          currentPrice: entry.price,
-        });
+      lotChange = withLots(lots, {
+        ticker,
+        newStopLoss: entry.stop_initial ?? null,
+        currentPrice: entry.price,
+      });
       break;
     }
     case "exit": {
@@ -263,7 +260,7 @@ export async function recordOwnerDecision(
       const remaining = book!.portfolio.lots
         .map((lot) => ({ ...lot, units: left.get(lot.entryId) ?? lot.units }))
         .filter((lot) => lot.units > 0);
-      editPortfolio = (text) => withLots(text, input.currency, remaining, { ticker });
+      lotChange = withLots(remaining, { ticker });
       break;
     }
     case "adjust_stop": {
@@ -311,48 +308,44 @@ export async function recordOwnerDecision(
       break;
   }
 
-  if (editPortfolio) {
-    // The network calls are over: another writer of this checkout (the heartbeat's prices, the owner's
-    // editor) may have written portfolio.md meanwhile. The change goes onto the text read now, not the
-    // one planned on; it is tried here so a refusal comes before anything is written. If the lots
-    // themselves moved, the plan is stale: refuse it.
-    const latest = await readLotBook(input.currency, history);
-    if (!latest || JSON.stringify(latest.portfolio.lots) !== JSON.stringify(book!.portfolio.lots)) {
-      throw new Error(
-        `${portfolioWhere(input.currency)}: Lots changed while the trade was being recorded (nothing was recorded); run it again`,
-      );
-    }
-    editPortfolio(latest.text);
+  if (!lotChange) {
+    await appendDecisions(decisions);
+    return decisions;
   }
-  // Log first, portfolio second (ADR-0015): a stop in between leaves an exit whose lot did not
-  // shrink, which the owner fixes by hand; the other way round would leave a lot the log cannot explain.
+  // The network calls are over: another writer of this checkout (the heartbeat's prices, the owner's editor)
+  // may have written portfolio.md meanwhile. The store reads it, checks that read against the history and edits
+  // that very read; it is tried here (`dryRun`) so a refusal comes before anything is written. If the lots
+  // themselves moved, the plan is stale: refuse it.
+  const check = (portfolio: PortfolioSnapshot) => assertLotsMatch(portfolio, history);
+  try {
+    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { check, dryRun: true });
+  } catch (err) {
+    throw err instanceof LotsMovedError
+      ? new Error(
+          `${portfolioWhere(input.currency)}: Lots changed while the trade was being recorded (nothing was recorded); run it again`,
+        )
+      : err;
+  }
+  // Log first, portfolio second (ADR-0015): a stop in between leaves an exit whose lot did not shrink, which the
+  // owner fixes by hand; the other way round would leave a lot the log cannot explain.
   await appendDecisions(decisions);
-  // Read again, right before writing: only the log append lies between the checked read and this one.
-  // The entry is in the log now, so whatever stops the write is reported as that, never as "nothing
-  // was recorded".
-  if (editPortfolio) {
-    let edited: string;
-    try {
-      const text = await readPortfolioText();
-      if (JSON.stringify(parsePortfolioText(text, input.currency).lots) !== JSON.stringify(book!.portfolio.lots)) {
-        throw new Error("Lots changed meanwhile");
-      }
-      edited = editPortfolio(text);
-    } catch (err) {
-      throw new Error(
-        `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
-          `(${(err as Error).message.replace(/\s*\(nothing was recorded\)/g, "")}); apply the lot change by hand (ADR-0015)`,
-        { cause: err },
-      );
-    }
-    await writePortfolioText(edited);
+  // The store reads, checks and edits the portfolio again, right before writing: only the log append lies between
+  // the tried read and this one. The entry is in the log now, so whatever stops the write is reported as that,
+  // never as "nothing was recorded".
+  try {
+    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { check });
+  } catch (err) {
+    throw new Error(
+      `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
+        `(${(err as Error).message.replace(/\s*\(nothing was recorded\)/g, "")}); apply the lot change by hand (ADR-0015)`,
+      { cause: err },
+    );
   }
   return decisions;
 }
 
-/** The silo's `portfolio.md` as it was read, with its lots already checked against the decision history. */
+/** The silo's portfolio as it was read, with its lots already checked against the decision history. */
 interface LotBook {
-  text: string;
   portfolio: PortfolioSnapshot;
 }
 
@@ -363,40 +356,38 @@ interface LotBook {
  * needs it. An unreadable one (e.g. the previous format) is refused as everywhere else.
  */
 async function readLotBook(currency: Currency, history: readonly Decision[]): Promise<LotBook | null> {
-  let text: string;
+  let read;
   try {
-    text = await readPortfolioText();
+    read = await readPortfolio(currency);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
-  const portfolio = parsePortfolioText(text, currency);
+  const portfolio = requireReadable(read);
   assertLotsMatch(portfolio, history);
-  return { text, portfolio };
+  return { portfolio };
 }
 
-/** The portfolio text with the silo's `lots` and the position of `change.ticker` recomputed from them. */
+/** The silo's `lots` and the change to the position of `change.ticker` that follows from them. */
 function withLots(
-  text: string,
-  currency: Currency,
   lots: readonly Lot[],
   change: { ticker: Ticker; newStopLoss?: number | null; currentPrice?: number },
-): string {
+): { lots: readonly Lot[]; change: PositionChange } {
   const own = lots.filter((lot) => lot.ticker === change.ticker);
   const volume = own.reduce((sum, lot) => sum + lot.units, 0);
   const avgPrice = volume > 0 ? own.reduce((sum, lot) => sum + lot.units * lot.entryPrice, 0) / volume : undefined;
-  return applyLotChange(text, currency, lots, { ...change, volume, avgPrice });
+  return { lots, change: { ...change, volume, avgPrice } };
 }
 
 /** What the exits already written took of each lot's entry costs, by entry id. */
-function entryCostsTaken(history: readonly Decision[]): Map<string, Money> {
+function entryCostsTaken(history: readonly Decision[], currency: Currency): Map<string, Money> {
   const taken = new Map<string, Money>();
   for (const d of history) {
     if (d.type === "exit" && d.related_id && d.entry_costs != null) {
       taken.set(
         d.related_id,
         addCounted(
-          taken.get(d.related_id) ?? ZERO,
+          taken.get(d.related_id) ?? zero(currency),
           d.entry_costs,
           `the entry_costs the exits of entry ${d.related_id} took together`,
         ),
@@ -477,6 +468,7 @@ function planOwnerSale(
       lots,
       {
         ticker,
+        currency: input.currency,
         units,
         unitsFromAmount: input.units == null,
         price: input.price!,
@@ -484,7 +476,7 @@ function planOwnerSale(
         costs: input.costs,
         pnl: input.pnl,
       },
-      entryCostsTaken(history),
+      entryCostsTaken(history, input.currency),
     );
   } catch (err) {
     // The refusal of an amount says what it is; that nothing was recorded is said here, where it is true.

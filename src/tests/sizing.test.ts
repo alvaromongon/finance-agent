@@ -42,7 +42,7 @@ const input = (overrides: Partial<SizingInput> = {}): SizingInput => ({
 describe("siloValue", () => {
   const portfolio: PortfolioSnapshot = {
     currency: "USD",
-    cash: money(500),
+    cash: money(500, "USD"),
     lots: [],
     syncedAt: "2026-09-14",
     positions: [
@@ -52,7 +52,7 @@ describe("siloValue", () => {
         volume: 2,
         avgPrice: 480,
         currentPrice: 500,
-        pl: money(40),
+        pl: money(40, "USD"),
         stopLoss: 450,
       },
     ],
@@ -64,7 +64,7 @@ describe("siloValue", () => {
   });
 
   it("counts cash held by pending orders: uses total cash if present", () => {
-    assert.equal(siloValue({ ...portfolio, cash: money(28), totalCash: money(595) }), 1595);
+    assert.equal(siloValue({ ...portfolio, cash: money(28, "EUR"), totalCash: money(595, "EUR") }), 1595);
   });
 });
 
@@ -230,7 +230,7 @@ describe("evaluateRecommendation", () => {
       volume: 1,
       avgPrice: 90,
       currentPrice: 100,
-      pl: money(10),
+      pl: money(10, "USD"),
       stopLoss: 85,
     };
     const sell = evaluateRecommendation(
@@ -269,7 +269,7 @@ describe("evaluateRecommendation", () => {
       volume: 1,
       avgPrice: 90,
       currentPrice: 100,
-      pl: money(10),
+      pl: money(10, "USD"),
       stopLoss: 80,
     };
     const sellEv = evaluateRecommendation(

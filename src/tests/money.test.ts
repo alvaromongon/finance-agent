@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { Currency } from "../types.js";
 import {
   DUST_LIMIT,
   addCounted,
@@ -12,6 +13,7 @@ import {
   shareMoney,
   subtractCounted,
   sumCounted,
+  type Money,
   unitsWorthACent,
   unitsWorthHalfACent,
   withinACent,
@@ -19,46 +21,88 @@ import {
 
 describe("money", () => {
   it("rounds to whole cents", () => {
-    assert.equal(money(1.234), 1.23);
-    assert.equal(money(1.236), 1.24);
-    assert.equal(money(-1.236), -1.24);
-    assert.equal(money(100), 100);
+    assert.equal(money(1.234, "EUR"), 1.23);
+    assert.equal(money(1.236, "EUR"), 1.24);
+    assert.equal(money(-1.236, "EUR"), -1.24);
+    assert.equal(money(100, "EUR"), 100);
   });
 
   it("is never negative zero", () => {
-    assert.ok(Object.is(money(-0.001), 0));
-    assert.equal(JSON.stringify(money(-0.001)), "0");
+    assert.ok(Object.is(money(-0.001, "EUR"), 0));
+    assert.equal(JSON.stringify(money(-0.001, "EUR")), "0");
   });
 
   it("refuses what is not a finite number", () => {
-    assert.throws(() => money(NaN), /finite/);
-    assert.throws(() => money(Infinity), /finite/);
-    assert.throws(() => money("1" as unknown as number), /finite/);
+    assert.throws(() => money(NaN, "EUR"), /finite/);
+    assert.throws(() => money(Infinity, "EUR"), /finite/);
+    assert.throws(() => money("1" as unknown as number, "EUR"), /finite/);
   });
 
   it("adds, subtracts and sums without float noise", () => {
-    assert.equal(addCounted(money(0.1), money(0.2), "x"), 0.3);
-    assert.equal(subtractCounted(money(0.3), money(0.1), "x"), 0.2);
-    assert.equal(sumCounted([money(0.1), money(0.2), money(0.3)], "x"), 0.6);
-    assert.equal(sumCounted([], "x"), 0);
+    assert.equal(addCounted(money(0.1, "EUR"), money(0.2, "EUR"), "x"), 0.3);
+    assert.equal(subtractCounted(money(0.3, "EUR"), money(0.1, "EUR"), "x"), 0.2);
+    assert.equal(sumCounted([money(0.1, "EUR"), money(0.2, "EUR"), money(0.3, "EUR")], "x", "EUR"), 0.6);
+    assert.equal(sumCounted([], "x", "EUR"), 0);
   });
 
   it("compares two Money with ===, the same cent being the same number", () => {
-    assert.ok(money(0.1 + 0.2) === money(0.3));
-    assert.ok(money(10.001) === money(10));
-    assert.ok(money(10.01) !== money(10));
+    assert.ok(money(0.1 + 0.2, "EUR") === money(0.3, "EUR"));
+    assert.ok(money(10.001, "EUR") === money(10, "EUR"));
+    assert.ok(money(10.01, "EUR") !== money(10, "EUR"));
+  });
+});
+
+describe("money carries its currency (#130, ADR-0017)", () => {
+  it("is made in a currency, and refuses to be made without one", () => {
+    assert.equal(money(1.234, "USD"), 1.23);
+    assert.throws(() => money(1, undefined as unknown as Currency), /needs a currency/);
+    assert.throws(() => money(1, "GBP" as unknown as Currency), /needs a currency/);
+  });
+
+  it("keeps the currency through the checked helpers: one currency in, the same one out", () => {
+    const sum: Money<"USD"> = addCounted(money(0.1, "USD"), money(0.2, "USD"), "x");
+    const difference: Money<"USD"> = subtractCounted(sum, money(0.1, "USD"), "x");
+    const total: Money<"USD"> = sumCounted([sum, difference], "x", "USD");
+    const shares: Money<"USD">[] = shareMoney(total, [1, 1]);
+    assert.deepEqual([sum, difference, total, shares], [0.3, 0.2, 0.5, [0.25, 0.25]]);
+  });
+
+  // The currency is only in the type: these lines are checked by `npm run typecheck`, and `@ts-expect-error`
+  // itself fails it if the line ever compiles.
+  it("does not compile an amount in one currency added to, subtracted from, summed with or compared to another", () => {
+    const eur = money(10, "EUR");
+    const usd = money(10, "USD");
+    // @ts-expect-error EUR and USD amounts cannot be added
+    addCounted(eur, usd, "x");
+    // @ts-expect-error EUR and USD amounts cannot be subtracted
+    subtractCounted(usd, eur, "x");
+    // @ts-expect-error a sum of EUR amounts is not a USD amount
+    sumCounted([eur], "x", "USD");
+    // @ts-expect-error EUR and USD amounts cannot be compared
+    const same = eur === usd;
+    assert.equal(same, true, "the brand is erased at run time: only the type tells them apart");
+    // @ts-expect-error a USD amount is not a EUR amount
+    const asEur: Money<"EUR"> = usd;
+    assert.equal(asEur, 10);
+  });
+
+  it("is an amount of a currency known only at run time when the currency is a Currency", () => {
+    const silo: Currency = "EUR";
+    const amount: Money = money(5, silo);
+    const eur: Money<"EUR"> = money(5, "EUR");
+    assert.equal(addCounted(amount, eur, "x"), 10);
   });
 });
 
 describe("countedInCents and the counted sums (#87)", () => {
   it("is money(n) for a value that counts in cents", () => {
-    assert.equal(countedInCents(1.234, "the thing"), 1.23);
+    assert.equal(countedInCents(1.234, "the thing", "EUR"), 1.23);
   });
 
   it("refuses a value too large to count in cents with an Error naming it, not a RangeError", () => {
     for (const n of [5e306, Infinity, -Infinity]) {
       assert.throws(
-        () => countedInCents(n, "the thing"),
+        () => countedInCents(n, "the thing", "EUR"),
         (err: Error) => {
           assert.equal(err.constructor, Error);
           assert.match(err.message, /^the thing is too large to count in cents; got: [^(]*$/);
@@ -72,7 +116,7 @@ describe("countedInCents and the counted sums (#87)", () => {
 
   it("calls NaN not a number, not too large", () => {
     assert.throws(
-      () => countedInCents(NaN, "the thing"),
+      () => countedInCents(NaN, "the thing", "EUR"),
       (err: Error) => {
         assert.equal(err.constructor, Error);
         assert.match(err.message, /the thing is not a number; got: NaN/);
@@ -83,18 +127,18 @@ describe("countedInCents and the counted sums (#87)", () => {
   });
 
   it("adds, subtracts and sums like the plain helpers when the result counts", () => {
-    assert.equal(addCounted(money(0.1), money(0.2), "x"), 0.3);
-    assert.equal(subtractCounted(money(0.3), money(0.1), "x"), 0.2);
-    assert.equal(sumCounted([money(0.1), money(0.2), money(0.3)], "x"), 0.6);
+    assert.equal(addCounted(money(0.1, "EUR"), money(0.2, "EUR"), "x"), 0.3);
+    assert.equal(subtractCounted(money(0.3, "EUR"), money(0.1, "EUR"), "x"), 0.2);
+    assert.equal(sumCounted([money(0.1, "EUR"), money(0.2, "EUR"), money(0.3, "EUR")], "x", "EUR"), 0.6);
   });
 
   it("refuses a total too large to count with the named message", () => {
-    const big = money(1e306);
+    const big = money(1e306, "EUR");
     const refusal = (err: Error) =>
       err.constructor === Error && err.message.startsWith("x is too large to count in cents");
-    assert.throws(() => addCounted(big, money(1e306), "x"), refusal);
-    assert.throws(() => subtractCounted(big, money(-1e306), "x"), refusal);
-    assert.throws(() => sumCounted([big, big], "x"), refusal);
+    assert.throws(() => addCounted(big, money(1e306, "EUR"), "x"), refusal);
+    assert.throws(() => subtractCounted(big, money(-1e306, "EUR"), "x"), refusal);
+    assert.throws(() => sumCounted([big, big], "x", "EUR"), refusal);
   });
 });
 
@@ -113,30 +157,30 @@ describe("withinACent", () => {
 
 describe("formatMoney", () => {
   it("writes two decimals", () => {
-    assert.equal(formatMoney(money(1.5)), "1.50");
-    assert.equal(formatMoney(money(-0.004)), "0.00");
-    assert.equal(formatMoney(money(1234.567)), "1234.57");
+    assert.equal(formatMoney(money(1.5, "EUR")), "1.50");
+    assert.equal(formatMoney(money(-0.004, "EUR")), "0.00");
+    assert.equal(formatMoney(money(1234.567, "EUR")), "1234.57");
   });
 });
 
 describe("shareMoney: whole cents, never negative, adding up exactly", () => {
   it("shares 0.02 over lots of 30/30/30/10 as 0, 0.01, 0.01, 0", () => {
-    assert.deepEqual(shareMoney(money(0.02), [30, 30, 30, 10]), [0, 0.01, 0.01, 0]);
+    assert.deepEqual(shareMoney(money(0.02, "EUR"), [30, 30, 30, 10]), [0, 0.01, 0.01, 0]);
   });
 
   it("gives the leftover cents to the largest remainders, the later one on a tie", () => {
-    assert.deepEqual(shareMoney(money(1), [1, 1, 1]), [0.33, 0.33, 0.34]);
-    assert.deepEqual(shareMoney(money(100), [10, 5]), [66.67, 33.33]);
+    assert.deepEqual(shareMoney(money(1, "EUR"), [1, 1, 1]), [0.33, 0.33, 0.34]);
+    assert.deepEqual(shareMoney(money(100, "EUR"), [10, 5]), [66.67, 33.33]);
   });
 
   it("a negative total gives shares that are all <= 0 and add up to it", () => {
-    assert.deepEqual(shareMoney(money(-100), [10, 5]), [-66.67, -33.33]);
-    assert.deepEqual(shareMoney(money(-0.02), [30, 30, 30, 10]), [0, -0.01, -0.01, 0]);
+    assert.deepEqual(shareMoney(money(-100, "EUR"), [10, 5]), [-66.67, -33.33]);
+    assert.deepEqual(shareMoney(money(-0.02, "EUR"), [30, 30, 30, 10]), [0, -0.01, -0.01, 0]);
   });
 
   it("refuses weights that are all 0, and shares nothing over no weights", () => {
-    assert.throws(() => shareMoney(money(1), [0, 0]), /weights/);
-    assert.deepEqual(shareMoney(money(1), []), []);
+    assert.throws(() => shareMoney(money(1, "EUR"), [0, 0]), /weights/);
+    assert.deepEqual(shareMoney(money(1, "EUR"), []), []);
   });
 
   it("property: for random totals and weights every share is whole cents and the shares add up to the total", () => {
@@ -146,17 +190,17 @@ describe("shareMoney: whole cents, never negative, adding up exactly", () => {
       return seed / 4294967296;
     };
     for (let run = 0; run < 2000; run++) {
-      const total = money((random() - 0.3) * 10 ** Math.floor(random() * 7));
+      const total = money((random() - 0.3) * 10 ** Math.floor(random() * 7), "EUR");
       const weights = Array.from({ length: 1 + Math.floor(random() * 8) }, () =>
         random() < 0.2 ? Math.round(random() * 1e8) / 1e8 + 1e-8 : Math.round(random() * 100000) / 1000 + 0.001,
       );
       const shares = shareMoney(total, weights);
       assert.equal(shares.length, weights.length);
       for (const s of shares) {
-        assert.equal(money(s), s, `${s} is not whole cents (${total} over ${JSON.stringify(weights)})`);
+        assert.equal(money(s, "EUR"), s, `${s} is not whole cents (${total} over ${JSON.stringify(weights)})`);
         assert.ok(total < 0 ? s <= 0 : s >= 0, `${s} has the wrong sign (${total} over ${JSON.stringify(weights)})`);
       }
-      assert.equal(sumCounted(shares, "x"), total, `${total} over ${JSON.stringify(weights)}`);
+      assert.equal(sumCounted(shares, "x", "EUR"), total, `${total} over ${JSON.stringify(weights)}`);
     }
   });
 });
@@ -184,7 +228,7 @@ describe("the amount of a trade and the dust limit", () => {
 
 describe("money() contract", () => {
   it("throws when the cents overflow, not only on a non-finite input", () => {
-    assert.throws(() => money(1.8e307), RangeError);
-    assert.throws(() => money(Infinity), RangeError);
+    assert.throws(() => money(1.8e307, "EUR"), RangeError);
+    assert.throws(() => money(Infinity, "EUR"), RangeError);
   });
 });
