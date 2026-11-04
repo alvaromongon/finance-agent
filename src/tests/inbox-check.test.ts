@@ -3,7 +3,7 @@
  * state port, changing nothing. Temporary vault, no network. VAULT_PROJECT_DIR is set before the first import
  * of the engine.
  */
-import { describe, it, before, after, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -55,6 +55,24 @@ describe("inbox:check", () => {
     assert.deepEqual(await checkInbox(), { lines: ["Inbox is empty: nothing to check."], exitCode: 0 });
     await rm(inbox(), { recursive: true });
     assert.equal((await checkInbox()).exitCode, 0);
+  });
+
+  it("reads a batch saved with CRLF line endings like any other", async () => {
+    await drop("a.yaml", batch("command: deposit\namount: 5 EUR").replace(/\n/g, "\r\n"));
+    assert.equal((await checkInbox()).exitCode, 0);
+  });
+
+  it("reads portfolio.md once: a stale portfolio warns once, not once per currency", async () => {
+    const stale = portfolioMd({ usd: [SAP] }).replace("2099-01-01T00:00:00Z", "2020-01-01T00:00:00Z");
+    await writeFile(join(vaultDir, "portfolio.md"), stale, "utf8");
+    await drop("a.yaml", batch("command: deposit\namount: 5 EUR"));
+    const warn = mock.method(console, "warn", () => {});
+    try {
+      await checkInbox();
+      assert.equal(warn.mock.calls.filter((c) => String(c.arguments[0]).includes("has not been updated")).length, 1);
+    } finally {
+      warn.mock.restore();
+    }
   });
 
   it("exits 0 for a clean batch, and a buy and its sale in one batch are valid", async () => {

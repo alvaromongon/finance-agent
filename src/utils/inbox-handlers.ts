@@ -7,7 +7,15 @@
 // touches a silo (`siloOf`).
 import type { Currency, Lot, PortfolioSnapshot, Position } from "../types.js";
 import { tickerIdPart, type Ticker } from "../ticker.js";
-import { addCounted, countedInCents, isCountedRefusal, subtractCounted, type Money, zero } from "../money.js";
+import {
+  addCounted,
+  formatMoney,
+  countedInCents,
+  isCountedRefusal,
+  subtractCounted,
+  type Money,
+  zero,
+} from "../money.js";
 import { planSale } from "./portfolio-lots.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
@@ -99,7 +107,7 @@ function movedCash<C extends Currency>(
   };
 }
 
-const show = (amount: number, currency: Currency): string => `${amount.toFixed(2)} ${currency}`;
+const show = (amount: number, currency: Currency): string => `${formatMoney(amount)} ${currency}`;
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 

@@ -1,13 +1,13 @@
 // CLI of the inbox (#131, spec #124): `inbox:check` validates the batches in `inbox/` against the current
 // portfolio and changes nothing. `inbox:ingest` (#132) will apply them.
 import { readInbox } from "./inbox-store.js";
-import { readPortfolio, requireReadable } from "./portfolio-store.js";
+import { readBothPortfolios, requireReadable } from "./portfolio-store.js";
 import { checkFiles, renderIssues } from "./utils/inbox-check.js";
 import type { InboxState } from "./utils/inbox-handlers.js";
 
 /** The state the batches are checked against: both silos, read through the portfolio port. */
 async function currentState(): Promise<InboxState> {
-  const [eur, usd] = await Promise.all([readPortfolio("EUR"), readPortfolio("USD")]);
+  const { EUR: eur, USD: usd } = await readBothPortfolios();
   return { EUR: requireReadable(eur), USD: requireReadable(usd) };
 }
 

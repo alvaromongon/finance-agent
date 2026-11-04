@@ -148,7 +148,16 @@ describe("inbox format", () => {
 
     it("reports a field that is a list or empty", () => {
       assert.match(problem("command: deposit\namount: [1, EUR]"), /field "amount" must be a value/);
-      assert.match(problem('command: deposit\namount: ""'), /field "amount" must be a value/);
+      assert.match(problem('command: deposit\namount: ""'), /field "amount" is empty/);
+    });
+
+    it("says an empty field is empty, and refuses zero costs", () => {
+      assert.match(problem('command: deposit\namount: ""'), /field "amount" is empty/);
+      assert.match(problem("command: deposit\namount: [1, EUR]"), /must be a value, not a list or a mapping/);
+      const buy = (costs: string) =>
+        `command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 10 USD\ncosts: ${costs}`;
+      assert.match(problem(buy("0 USD")), /"costs" must be greater than zero/);
+      assert.equal(parseBatch(batch(buy("0.5 USD"))).issues.length, 0);
     });
 
     it("reads a date as text and checks that it is a calendar date", () => {
@@ -213,6 +222,27 @@ describe("inbox format", () => {
       assert.match(
         issuesOf("schema_version: 1\nreplaces: x\ncommands:\n  - command: deposit\n    amount: 1 EUR\n")[0][2],
         /unknown field "replaces"/,
+      );
+    });
+
+    it("reads no further than a wrong or missing schema_version: one error", () => {
+      const bad = "command: deposit\n    amount: 0 EUR\n  - nonsense";
+      assert.equal(issuesOf(`commands:\n  - ${bad}\n`).length, 1);
+      assert.equal(issuesOf(`schema_version: 2\nreplaces: x\ncommands:\n  - ${bad}\n`).length, 1);
+      assert.deepEqual(
+        parseBatch(`schema_version: 2\ncommands:\n  - command: deposit\n    amount: 1 EUR\n`).commands,
+        [],
+      );
+    });
+
+    it("points a scalar or null command at its own line", () => {
+      const text = "schema_version: 1\ncommands:\n  - command: deposit\n    amount: 1 EUR\n  - just text\n  -\n";
+      assert.deepEqual(
+        issuesOf(text).map(([c, l]) => [c, l]),
+        [
+          [2, 5],
+          [3, 6],
+        ],
       );
     });
 

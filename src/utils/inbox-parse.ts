@@ -111,7 +111,9 @@ function readCommand(raw: unknown): Command | string[] {
     }
     if (typeof value !== "string" || value.trim() === "") {
       problems.push(
-        `field "${name}" must be a value, not ${typeof value === "string" ? "empty" : "a list or a mapping"}`,
+        typeof value === "string"
+          ? `field "${name}" is empty`
+          : `field "${name}" must be a value, not a list or a mapping`,
       );
       return undefined;
     }
@@ -187,7 +189,7 @@ function readCommand(raw: unknown): Command | string[] {
   const when = date();
   const n = units();
   const price = positive(amount("price", true, false), "price");
-  const costs = amount("costs", false, true);
+  const costs = positive(amount("costs", false, true), "costs");
   const stop = kind === "buy" ? positive(amount("stop", false, false), "stop") : undefined;
   const currency = sameCurrency({ price, costs, stop });
   if (kind === "buy") {
@@ -220,6 +222,27 @@ function readCommand(raw: unknown): Command | string[] {
     ...(lot ? { lot } : {}),
     stopExecuted: executed === "true",
   };
+}
+
+/**
+ * The 1-based line of each `- ` item of the block list under `commands:`, for the items the YAML listener
+ * gives no line (a text or an empty item). Empty when the list is not written in block style.
+ */
+function blockItemLines(text: string): number[] {
+  const rows = text.split(/\r?\n/);
+  const start = rows.findIndex((row) => /^commands\s*:/.test(row));
+  const found: number[] = [];
+  let indent: number | undefined;
+  for (let i = start + 1; start >= 0 && i < rows.length; i++) {
+    const item = /^(\s*)-(\s|$)/.exec(rows[i]);
+    if (item === null) {
+      if (/^\S/.test(rows[i])) break;
+      continue;
+    }
+    indent ??= item[1].length;
+    if (item[1].length === indent) found.push(i + 1);
+  }
+  return found;
 }
 
 /**
@@ -266,10 +289,12 @@ export function parseBatch(text: string): ParsedBatch {
   const top = doc as Record<string, unknown>;
   if (top.schema_version === undefined) {
     fileIssue(`missing schema_version: the inbox format is version ${INBOX_SCHEMA_VERSION}`);
+    return { commands: [], issues };
   } else if (top.schema_version !== INBOX_SCHEMA_VERSION) {
     fileIssue(
       `schema_version ${JSON.stringify(top.schema_version)} is not the version this engine reads (${INBOX_SCHEMA_VERSION})`,
     );
+    return { commands: [], issues };
   }
   for (const name of Object.keys(top)) {
     if (name !== "schema_version" && name !== "commands") fileIssue(`unknown field "${name}"`);
@@ -279,10 +304,14 @@ export function parseBatch(text: string): ParsedBatch {
     return { commands: [], issues };
   }
 
+  let itemLines: number[] | undefined;
   const commands: ParsedCommand[] = [];
   top.commands.forEach((raw: unknown, index: number) => {
     const position = index + 1;
-    const line = (typeof raw === "object" && raw !== null ? lines.get(raw) : undefined) ?? 1;
+    const line =
+      (typeof raw === "object" && raw !== null ? lines.get(raw) : undefined) ??
+      (itemLines ??= blockItemLines(text))[index] ??
+      1;
     const read = readCommand(raw);
     if (Array.isArray(read)) {
       for (const reason of read) issues.push({ command: position, line, reason });

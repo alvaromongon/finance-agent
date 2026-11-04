@@ -63,6 +63,12 @@ export async function readPortfolio<C extends Currency>(currency: C): Promise<Po
   return parsePortfolioText(await readFile(portfolioPath(), "utf8"), currency);
 }
 
+/** Both silos from one read of `portfolio.md`; a stale file warns once. */
+export async function readBothPortfolios(): Promise<{ EUR: PortfolioRead<"EUR">; USD: PortfolioRead<"USD"> }> {
+  const raw = await readFile(portfolioPath(), "utf8");
+  return { EUR: parsePortfolioText(raw, "EUR"), USD: parsePortfolioText(raw, "USD", false) };
+}
+
 /**
  * The silo's model from a `portfolio.md` text already read, with the checks and warnings of
  * `readPortfolio`: `changeLots` parses the very text it will rewrite. Not exported: the text is the store's.
