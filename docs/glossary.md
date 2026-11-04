@@ -77,9 +77,15 @@ A user action on the engine's state, such as a buy, a sale or moving a stop. Sta
 through commands; each is applied by its own handler, and a batch of them applies whole or not at
 all.
 
+### Batch
+
+An ordered list of [commands](#command) in one file of the [inbox](#inbox), applied whole or not at
+all. Each command is checked against the state the ones before it would produce, so a buy and its
+sale can share a batch.
+
 ### Inbox
 
-The folder where a person, an AI or a routine drops one file per batch of [commands](#command). The
+The folder where a person, an AI or a routine drops one file per [batch](#batch) of [commands](#command). The
 engine never edits a file there: it moves it to `applied/`, or to `rejected/` with the line and the
 reason.
 

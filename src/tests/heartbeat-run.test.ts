@@ -484,6 +484,28 @@ describe("runHeartbeat", () => {
     });
   });
 
+  it("a batch with errors in inbox/ does not touch the stop check: the crossed stop goes out (#131)", async () => {
+    await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+    await mkdir(join(vaultDir, "inbox"), { recursive: true });
+    await writeFile(
+      join(vaultDir, "inbox", "bad.yaml"),
+      "schema_version: 1\ncommands:\n  - command: withdrawal\n    amount: 99999\n",
+      "utf8",
+    );
+    await writeFile(join(vaultDir, "inbox", "broken.yaml"), "{ not yaml", "utf8");
+
+    const warnings = await heartbeat();
+
+    const [email] = await outbox();
+    assert.match(email.subject, /stop cruzado: CAT/);
+    assert.deepEqual(
+      warnings.filter((w) => /inbox/i.test(w)),
+      [],
+      "the heartbeat says nothing of the inbox",
+    );
+    await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
+  });
+
   it("a second run with the same state sends nothing (no crossed stops)", async () => {
     await heartbeat();
     await heartbeat();
