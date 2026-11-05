@@ -99,9 +99,9 @@ describe("inbox:check", () => {
       batch(
         "command: withdrawal\namount: 9999 USD", // 1: over the cash
         "command: sale\nticker: SAP.DE\ndate: 2026-09-20\nunits: 9\nprice: 1 USD", // 2: more than held
-        "command: deposit\namount: 10 GBP", // 3: unknown currency
-        "command: deposit\namount: 10 USD", // 4: fine
-        "command: sale\nticker: ZZZ\ndate: 2026-09-20\nunits: 1\nprice: 1 USD", // 5: not held
+        "command: deposit\namount: 10 USD", // 3: fine
+        "command: sale\nticker: ZZZ\ndate: 2026-09-20\nunits: 1\nprice: 1 USD", // 4: not held
+        "command: deposit\namount: 10 GBP", // 5: unknown currency
         "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1e2\nprice: 1 USD", // 6: notation
       ),
     );
@@ -112,8 +112,8 @@ describe("inbox:check", () => {
       [
         "inbox/a.yaml command 1, line 3",
         "inbox/a.yaml command 2, line 5",
-        "inbox/a.yaml command 3, line 10",
-        "inbox/a.yaml command 5, line 14",
+        "inbox/a.yaml command 4, line 12",
+        "inbox/a.yaml command 5, line 17",
         "inbox/a.yaml command 6, line 19",
         lines[5],
       ],
@@ -161,6 +161,98 @@ describe("inbox:check", () => {
     await writeFile(join(vaultDir, "portfolio.md"), "---\nschema_version: 1\n---\n", "utf8");
     await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
     await assert.rejects(checkInbox(), /portfolio\.md/);
+  });
+
+  describe("a portfolio it cannot read whole is refused, as decision:record refuses it (B1)", () => {
+    const refusedWith = async (portfolio: string, pattern: RegExp) => {
+      await writeFile(join(vaultDir, "portfolio.md"), portfolio, "utf8");
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
+      await assert.rejects(checkInbox(), pattern);
+    };
+    const sap = portfolioMd({ usd: [SAP] });
+
+    it("a Lots row that does not read", async () => {
+      await refusedWith(sap.replace("| SAP.DE | lot-sapde |", "| ??? | lot-sapde |"), /USD.*Lots|lot-sapde|row/i);
+    });
+
+    it("a Cash cell too large to count", async () => {
+      await refusedWith(sap.replace("| Available cash | 500.00 |", "| Available cash | 1e307 |"), /too large to count/);
+    });
+
+    it("a P/L cell too large to count", async () => {
+      await refusedWith(sap.replace("| 180 | 180 | 0 | — |", "| 180 | 180 | 1e307 | — |"), /too large to count/);
+    });
+
+    it("a Volume that is not the sum of the Units of its lots", async () => {
+      await refusedWith(sap.replace("| SAP.DE | 5 | 180 |", "| SAP.DE | 7 | 180 |"), /Volume 7 is not the sum/);
+    });
+
+    it("leaves the inbox untouched when it refuses", async () => {
+      await writeFile(join(vaultDir, "portfolio.md"), sap.replace("| SAP.DE | 5 | 180 |", "| SAP.DE | 7 | 180 |"));
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
+      const before = await snapshot();
+      await assert.rejects(checkInbox());
+      assert.deepEqual(await snapshot(), before);
+    });
+  });
+
+  it("a portfolio with only an EUR section gives a reason for each USD command, not a crash (N7)", async () => {
+    const eurOnly = portfolioMd().split("## USD — Cash")[0];
+    await writeFile(join(vaultDir, "portfolio.md"), eurOnly, "utf8");
+    await drop("a.yaml", batch("command: deposit\namount: 5 EUR", "command: deposit\namount: 5 USD", BUY));
+    const { lines, exitCode } = await checkInbox();
+    assert.equal(exitCode, 1);
+    assert.match(lines[0], /^inbox\/a\.yaml: command 2, line 5: there is no USD silo in the portfolio$/);
+    assert.match(lines[1], /^inbox\/a\.yaml: command 3, line 7: there is no USD silo/);
+    assert.equal(lines.length, 3);
+  });
+
+  it("a portfolio with no silo at all is refused, not checked", async () => {
+    await writeFile(
+      join(vaultDir, "portfolio.md"),
+      "---\nschema_version: 2\nlast_manual_sync: 2099-01-01T00:00:00Z\n---\n",
+    );
+    await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
+    await assert.rejects(checkInbox(), /missing section/);
+  });
+
+  describe("a command that does not parse leaves what it would have done unknown (N8)", () => {
+    it("does not check the later commands of its currency against cash and lots", async () => {
+      // 1 does not parse (ticker): the buy it stands for would have opened TCK, so selling it is not an error of 2.
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: ???\ndate: 2026-09-15\nunits: 2\nprice: 100 USD",
+          "command: sale\nticker: ???2\ndate: 2026-09-20\nunits: 2\nprice: 110 USD",
+          "command: sale\nticker: TCK\ndate: 2026-09-20\nunits: 2\nprice: 110 USD",
+          "command: withdrawal\namount: 99999 EUR",
+        ),
+      );
+      const { lines } = await checkInbox();
+      const commands = lines.filter((l) => /command \d/.test(l)).map((l) => /command (\d)/.exec(l)![1]);
+      assert.deepEqual(commands, ["1", "2", "4"], lines.join("\n"));
+      assert.doesNotMatch(lines.join("\n"), /no open lot of TCK/);
+    });
+
+    it("does not check any silo after a command whose currency is unknown", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 5", "command: withdrawal\namount: 99999 EUR"));
+      const { lines } = await checkInbox();
+      assert.equal(lines.filter((l) => /command \d/.test(l)).length, 1, lines.join("\n"));
+    });
+
+    it("still checks the later commands of the other currency", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 0 USD", "command: withdrawal\namount: 99999 EUR"));
+      const { lines } = await checkInbox();
+      assert.match(lines.join("\n"), /command 2.*exceeds the available cash/);
+    });
+  });
+
+  it("prints a file name without raw control characters (S4)", async () => {
+    await drop("a\u001b[31mb.yaml", batch("command: deposit\namount: 5 GBP"));
+    const { lines } = await checkInbox();
+    // eslint-disable-next-line no-control-regex
+    assert.doesNotMatch(lines.join("\n"), /[\u0000-\u0009\u000b-\u001f]/);
+    assert.match(lines[0], /^inbox\/a\\u001b\[31mb\.yaml: command 1/);
   });
 
   it("writes nothing: the inbox and the state are byte-identical afterwards, clean batch or not", async () => {

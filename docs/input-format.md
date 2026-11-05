@@ -367,12 +367,12 @@ without a currency. A `date` is a calendar date, `YYYY-MM-DD`. A [ticker](glossa
 under _Versioning_ above, as narrowed in #93: it is checked once, when the batch is read, and read
 case-insensitively.
 
-| Command      | Required fields                    | Optional fields                 | What it checks and does                                                                                                                                                                        |
-| ------------ | ---------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deposit`    | `amount`                           |                                 | Adds to the cash of the amount's currency.                                                                                                                                                     |
-| `withdrawal` | `amount`                           |                                 | Refused if it exceeds the available cash of its currency.                                                                                                                                      |
-| `buy`        | `ticker`, `date`, `units`, `price` | `costs`, `stop` (initial stop)  | Refused if `units × price + costs` exceeds the available cash of its currency. Opens a lot; buying a ticker already held is a scale-in.                                                        |
-| `sale`       | `ticker`, `date`, `units`, `price` | `costs`, `lot`, `stop_executed` | Refused if the ticker has no open lot, or fewer open units than sold. Sells oldest lot first, or only the lot whose entry id is `lot`. `stop_executed: true` marks a stop the broker executed. |
+| Command      | Required fields                    | Optional fields                 | What it checks and does                                                                                                                                                                                                                                                    |
+| ------------ | ---------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deposit`    | `amount`                           |                                 | Adds to the cash of the amount's currency.                                                                                                                                                                                                                                 |
+| `withdrawal` | `amount`                           |                                 | Refused if it exceeds the available cash of its currency.                                                                                                                                                                                                                  |
+| `buy`        | `ticker`, `date`, `units`, `price` | `costs`, `stop` (initial stop)  | Refused if `units × price + costs` exceeds the available cash of its currency. Also refused if it costs less than one cent or has fewer units than 1e-8. Opens a lot; buying a ticker already held is a scale-in.                                                          |
+| `sale`       | `ticker`, `date`, `units`, `price` | `costs`, `lot`, `stop_executed` | Refused if the ticker has no open lot, or fewer open units than sold, if its costs exceed its proceeds, or if it would leave the cash below zero. Sells oldest lot first, or only the lot whose entry id is `lot`. `stop_executed: true` marks a stop the broker executed. |
 
 All the amounts of one command are in the same currency, and the command acts on that currency's silo only.
 An unknown field is an error, so a misspelt optional field is never silently ignored.
@@ -383,7 +383,7 @@ against the state the clean batches before it would produce; a batch with errors
 `inbox:check` reports every error of every batch, not only the first, each as the file, the command (its
 position in the batch, from 1), the line in the file where the command starts and the reason. The exit code is
 non-zero when there is any error and zero when the inbox is clean or empty. A file that is not valid YAML is
-reported as one error, with the line the YAML reader gives.
+reported as one error, with the line the YAML reader gives. A command that does not read leaves the cash and lots of its currency unknown, so the later commands of that currency are not checked against them. Names and reasons taken from the file are printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
 
 ## `watchlist.md`
 

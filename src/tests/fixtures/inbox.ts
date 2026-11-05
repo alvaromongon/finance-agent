@@ -52,7 +52,7 @@ const silo = <C extends Currency>(currency: C, cash: number, lots: Lot<C>[]): Po
 export function stateOf(
   { eurCash = 1000, usdCash = 500 } = {},
   lots: { EUR?: Lot<"EUR">[]; USD?: Lot<"USD">[] } = {},
-): InboxState {
+): Required<InboxState> {
   return { EUR: silo("EUR", eurCash, lots.EUR ?? []), USD: silo("USD", usdCash, lots.USD ?? []) };
 }
 
@@ -97,4 +97,5 @@ ${lotsSection("USD", usd)}`;
 }
 
 /** A state whose USD silo is the EUR one: the type cannot tell, only a check of the currency at run time can (#145). */
-export const crossedState = (state: InboxState): InboxState => ({ ...state, USD: state.EUR }) as unknown as InboxState;
+export const crossedState = (state: Required<InboxState>): Required<InboxState> =>
+  ({ ...state, USD: state.EUR }) as unknown as Required<InboxState>;

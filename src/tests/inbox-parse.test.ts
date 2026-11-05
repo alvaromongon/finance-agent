@@ -266,5 +266,91 @@ describe("inbox format", () => {
       assert.equal(issues.length, 1);
       assert.match(issues[0][2], /^not valid YAML/);
     });
+
+    it("says an empty or missing value is empty, not a list or a mapping (N3)", () => {
+      assert.match(problem("command: deposit\namount:"), /field "amount" is empty/);
+      assert.match(problem("command: deposit\namount: ~ "), /must be a plain decimal number and its currency/);
+      assert.match(
+        problem("command: buy\nticker:\ndate: 2026-09-15\nunits: 1\nprice: 1 USD"),
+        /field "ticker" is empty/,
+      );
+    });
+
+    it("finds the line of every command item, also after a comment at column 0 (N4)", () => {
+      const text =
+        "schema_version: 1\ncommands:\n  - command: deposit\n    amount: 1 EUR\n# a note at column 0\n  - just text\n\n# another\n  -\n  - 5\n";
+      assert.deepEqual(
+        issuesOf(text).map(([c, l]) => [c, l]),
+        [
+          [2, 6],
+          [3, 9],
+          [4, 10],
+        ],
+      );
+    });
+
+    it("reads the list written at the indentation of `commands:` too", () => {
+      const text = "schema_version: 1\ncommands:\n- command: deposit\n  amount: 1 EUR\n- just text\n";
+      assert.deepEqual(
+        issuesOf(text).map(([c, l]) => [c, l]),
+        [[2, 5]],
+      );
+    });
+  });
+
+  describe("what did not read, for the commands after it (N8)", () => {
+    it("names the commands that did not parse, with the currency they were written in when it is known", () => {
+      const { unread, commands } = parseBatch(
+        batch(
+          "command: deposit\namount: 1 EUR",
+          "command: buy\nticker: ???\ndate: 2026-09-15\nunits: 1\nprice: 10 USD", // currency known
+          "command: withdrawal\namount: 5", // no currency written
+          "just text",
+          "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 10 USD\ncosts: 1 EUR", // two currencies
+        ),
+      );
+      assert.deepEqual(
+        commands.map((c) => c.position),
+        [1],
+      );
+      assert.deepEqual(unread, [
+        { position: 2, currencies: ["USD"] },
+        { position: 3, currencies: [] },
+        { position: 4, currencies: [] },
+        { position: 5, currencies: ["USD", "EUR"] },
+      ]);
+    });
+  });
+
+  describe("what the YAML reader is pinned to (S3)", () => {
+    it("reads every scalar as text: 1e3, a date, true and a number are the notation rules' to judge, not YAML's", () => {
+      // With the default YAML schema these would arrive as a float, a Date, a boolean and an int.
+      const { commands, issues } = parseBatch(
+        batch(
+          "command: sale\nticker: TCK\ndate: 2026-09-15\nunits: 2\nprice: 10 USD\nstop_executed: true",
+          "command: deposit\namount: 0x10 USD",
+        ),
+      );
+      assert.equal(commands.length, 1);
+      assert.equal(commands[0].command.kind === "sale" && commands[0].command.stopExecuted, true);
+      assert.match(issues[0].reason, /"amount" must be a plain decimal number/);
+      assert.match(problem("command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1e3\nprice: 1 USD"), /"units"/);
+      assert.equal(parseBatch("schema_version: 1\ncommands: []\n").issues[0].reason.includes("schema"), false);
+    });
+  });
+
+  describe("what is printed of the file is escaped (S4)", () => {
+    it("prints an unknown field name, in a command or at the top, without raw control characters", () => {
+      assert.match(problem('command: deposit\namount: 1 EUR\n"x\\e[31my": 1'), /unknown field "x\\u001b\[31my"/);
+      const top = parseBatch('schema_version: 1\n"a\\tb": 1\ncommands:\n  - command: deposit\n    amount: 1 EUR\n');
+      assert.match(top.issues[0].reason, /unknown field "a\\tb"/);
+    });
+
+    it("prints the reason of the YAML reader as a quoted string", () => {
+      const { reason } = parseBatch("schema_version: 1\ncommands: [oops\n").issues[0];
+      assert.match(reason, /^not valid YAML: ".*"$/);
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(parseBatch("a: \u001b[31m\n").issues[0].reason, /[\u0000-\u001f]/);
+    });
   });
 });

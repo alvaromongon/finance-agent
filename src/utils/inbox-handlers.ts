@@ -16,7 +16,7 @@ import {
   type Money,
   zero,
 } from "../money.js";
-import { planSale } from "./portfolio-lots.js";
+import { planSale, SaleRefusal } from "./portfolio-lots.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -68,8 +68,8 @@ export type Command<C extends Currency = Currency> = Deposit<C> | Withdrawal<C> 
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
-/** What the handlers work on: each silo's portfolio, in its own currency. */
-export type InboxState = { readonly [C in Currency]: PortfolioSnapshot<C> };
+/** What the handlers work on: each silo's portfolio, in its own currency; a silo the portfolio does not have is absent. */
+export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
 
 export type HandlerResult = { state: InboxState } | { reason: string };
 
@@ -77,7 +77,7 @@ const refused = (reason: string): { reason: string } => ({ reason });
 
 /** The silo of `currency`, or why the command cannot be applied to it. */
 function siloOf<C extends Currency>(state: InboxState, currency: C): PortfolioSnapshot<C> | { reason: string } {
-  const silo = state[currency] as PortfolioSnapshot<C> | undefined;
+  const silo = state[currency];
   if (silo?.currency !== currency) {
     return refused(`there is no ${currency} silo in the portfolio`);
   }
@@ -106,6 +106,10 @@ function movedCash<C extends Currency>(
       : {}),
   };
 }
+
+/** The reason for units no lot could be closed with: `planSale` takes less than this as nothing left to sell. */
+const tooFewUnits = (units: number): string =>
+  `${units} units is below the units tolerance (${UNITS_TOLERANCE}): a lot of that size could never be sold`;
 
 const show = (amount: number, currency: Currency): string => `${formatMoney(amount)} ${currency}`;
 
@@ -146,7 +150,11 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
+  if (command.units < UNITS_TOLERANCE) return refused(tooFewUnits(command.units));
   const amount = countedInCents(command.units * command.price, `the amount of the buy of ${ticker}`, currency);
+  if (amount === 0) {
+    return refused(`the buy of ${ticker} costs nothing: ${command.units} units at ${command.price} is below one cent`);
+  }
   const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${ticker}`);
   if (cost > silo.cash) {
     return refused(
@@ -198,14 +206,14 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
-  const ofTicker = silo.lots.filter((l) => l.ticker === ticker && l.units > 0);
-  if (ofTicker.length === 0) return refused(`cannot sell ${ticker}: no open lot of ${ticker} in the ${currency} silo`);
-  const chosen = command.lot === undefined ? ofTicker : ofTicker.filter((l) => l.entryId === command.lot);
-  if (chosen.length === 0) return refused(`cannot sell lot ${command.lot}: ${ticker} has no open lot with that id`);
-  const open = chosen.reduce((sum, l) => sum + l.units, 0);
-  if (command.units > open + UNITS_TOLERANCE) {
+  if (command.units < UNITS_TOLERANCE) return refused(tooFewUnits(command.units));
+  // Which lots are sold is this handler's to say; how many units they give, and the tolerance, are `planSale`'s.
+  const chosen = silo.lots.filter(
+    (l) => l.ticker === ticker && (command.lot === undefined || l.entryId === command.lot),
+  );
+  if (command.lot !== undefined && !chosen.some((l) => l.units > 0)) {
     return refused(
-      `cannot sell ${command.units} units of ${ticker}: only ${open} are open${command.lot === undefined ? "" : ` in lot ${command.lot}`}`,
+      `cannot sell lot ${JSON.stringify(command.lot)}: ${ticker} has no open lot with that id in the ${currency} silo`,
     );
   }
   const amount = countedInCents(command.units * command.price, `the amount of the sale of ${ticker}`, currency);
@@ -217,20 +225,34 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
       new Map(),
     );
   } catch (err) {
-    // The lot arithmetic refuses in words (an entry cost that cannot be shared): a reason, not a crash.
-    if (err instanceof Error) return refused(err.message);
+    // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash.
+    if (err instanceof SaleRefusal) return refused(err.message);
     throw err;
+  }
+  const costs = command.costs ?? zero(currency);
+  if (costs > amount) {
+    return refused(
+      `the costs of ${show(costs, currency)} exceed the proceeds of ${show(amount, currency)} of the sale of ${ticker}`,
+    );
+  }
+  const received = subtractCounted(amount, costs, `the proceeds of the sale of ${ticker}`);
+  const credited = movedCash(silo, received, `the sale of ${ticker}`);
+  if (credited.cash < 0) {
+    return refused(
+      `the sale of ${ticker} would leave the ${currency} cash below zero (${show(credited.cash, currency)})`,
+    );
   }
   const left = new Map(shares.map((share) => [share.lot.entryId, share.unitsLeft]));
   const lots = silo.lots
     .map((lot) => ({ ...lot, units: left.get(lot.entryId) ?? lot.units }))
     .filter((lot) => lot.units > 0);
-  const volume = lots.filter((l) => l.ticker === ticker).reduce((sum, l) => sum + l.units, 0);
+  // The position is what the lots left say it is: their units and their average entry price.
+  const remaining = lots.filter((l) => l.ticker === ticker);
+  const volume = remaining.reduce((sum, l) => sum + l.units, 0);
+  const avgPrice = remaining.reduce((sum, l) => sum + l.units * l.entryPrice, 0) / volume;
   const positions = silo.positions.flatMap((p) =>
-    p.ticker !== ticker ? [p] : volume > UNITS_TOLERANCE ? [{ ...p, volume }] : [],
+    p.ticker !== ticker ? [p] : volume > UNITS_TOLERANCE ? [{ ...p, volume, avgPrice }] : [],
   );
-  const received = subtractCounted(amount, command.costs ?? zero(currency), `the proceeds of the sale of ${ticker}`);
-  const credited = movedCash(silo, received, `the sale of ${ticker}`);
   return { state: withSilo(state, { ...credited, lots, positions }) };
 }
 

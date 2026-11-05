@@ -20,6 +20,14 @@ import {
   type Money,
 } from "../money.js";
 
+/** `planSale` refuses a sale in words (no open lot, more units than open, an entry cost that cannot be shared): the owner's data, not a bug. */
+export class SaleRefusal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SaleRefusal";
+  }
+}
+
 /** The lot an entry opens: all the units it bought, with the entry's own data as its snapshot. */
 export function lotOfEntry<C extends Currency>(entry: Decision & { currency: C }, units: number): Lot<C> {
   return {
@@ -100,14 +108,14 @@ export function planSale<C extends Currency>(
     .sort((a, b) => a.lot.date.localeCompare(b.lot.date) || a.index - b.index)
     .map(({ lot }) => lot);
   if (ordered.length === 0)
-    throw new Error(`Cannot sell ${sale.ticker}: no open lots for ${sale.ticker} in portfolio.md`);
+    throw new SaleRefusal(`Cannot sell ${sale.ticker}: no open lots for ${sale.ticker} in portfolio.md`);
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
   // and that much under leaves nothing worth keeping: the lot is used up (a position of dust is not one).
   // Units the owner gave are exact: on a low-priced asset half a cent of price is several units.
   const tolerance = (sale.unitsFromAmount ? unitsWorthHalfACent(sale.price) : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
-    throw new Error(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
+    throw new SaleRefusal(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
   }
 
   const taken: { lot: Lot<C>; unitsSold: number; unitsLeft: number }[] = [];
@@ -169,7 +177,7 @@ function entryCostsShare<C extends Currency>(
   const left = Math.max(remainder, zero(currency)) as Money<C>;
   if (t.unitsLeft === 0) return left;
   if (!(t.lot.entryUnits > 0)) {
-    throw new Error(
+    throw new SaleRefusal(
       `${lotName(t.lot)} has Entry units ${t.lot.entryUnits}: its entry costs cannot be shared over a partial sale (nothing was recorded)`,
     );
   }

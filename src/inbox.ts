@@ -1,14 +1,36 @@
 // CLI of the inbox (#131, spec #124): `inbox:check` validates the batches in `inbox/` against the current
 // portfolio and changes nothing. `inbox:ingest` (#132) will apply them.
 import { readInbox } from "./inbox-store.js";
-import { readBothPortfolios, requireReadable } from "./portfolio-store.js";
+import { readBothPortfolios, requireReadable, type PortfolioRead } from "./portfolio-store.js";
+import type { Currency, PortfolioSnapshot } from "./types.js";
+import { volumeMismatches } from "./utils/lots-check.js";
 import { checkFiles, renderIssues } from "./utils/inbox-check.js";
 import type { InboxState } from "./utils/inbox-handlers.js";
 
-/** The state the batches are checked against: both silos, read through the portfolio port. */
+/**
+ * The silo as the batches are checked against it: refused, naming what is wrong, unless it reads whole. What
+ * `decision:record` refuses (`requireReadable`, then `assertLotsMatch`'s checks that need no decision log:
+ * rows of `Lots` that do not read, a `Volume` that is not the sum of its lots) and the cells too large to
+ * count, which read as 0: a state with a guessed cash would give the owner a wrong "clean".
+ */
+function requireWhole<C extends Currency>(read: PortfolioRead<C>): PortfolioSnapshot<C> {
+  const portfolio = requireReadable(read);
+  const problems = [...read.unreadableCells, ...volumeMismatches(portfolio)];
+  if (problems.length > 0) {
+    throw new Error(
+      `${problems.join("\n")}\nFix portfolio.md by hand before checking the inbox (see docs/input-format.md)`,
+    );
+  }
+  return portfolio;
+}
+
+/** The state the batches are checked against: each silo the portfolio has, read through the portfolio port. */
 async function currentState(): Promise<InboxState> {
   const { EUR: eur, USD: usd } = await readBothPortfolios();
-  return { EUR: requireReadable(eur), USD: requireReadable(usd) };
+  return {
+    ...(eur ? { EUR: requireWhole(eur) } : {}),
+    ...(usd ? { USD: requireWhole(usd) } : {}),
+  };
 }
 
 /** Checks the inbox and returns what to print and the exit code: 0 for a clean inbox, 1 for any error. */

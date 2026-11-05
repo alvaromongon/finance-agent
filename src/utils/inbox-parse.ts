@@ -29,8 +29,20 @@ export interface ParsedCommand {
   command: Command;
 }
 
+/**
+ * A command that did not parse. What it would have done to the state is unknown, so the commands after it are
+ * not checked against the cash and lots of `currencies`: the ones it was written in, or both silos when none of
+ * its amounts read (N8: a later command must not report a cash or lot error that only this one explains).
+ */
+export interface UnreadCommand {
+  position: number;
+  currencies: Currency[];
+}
+
 export interface ParsedBatch {
   commands: ParsedCommand[];
+  /** The commands that did not parse, in order. Every problem of them is in `issues`. */
+  unread: UnreadCommand[];
   issues: InboxIssue[];
 }
 
@@ -83,23 +95,39 @@ function isDate(raw: string): boolean {
   return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
 }
 
+/** What a command that did not read says: its problems and the currencies its amounts were written in. */
+interface Unread {
+  problems: string[];
+  currencies: Currency[];
+}
+
 /** One command's mapping read into a command, or every problem found in it. */
-function readCommand(raw: unknown): Command | string[] {
+function readCommand(raw: unknown): Command | Unread {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return ["a command must be a mapping of fields (command: deposit, amount: 100 EUR, ...)"];
+    return {
+      problems: ["a command must be a mapping of fields (command: deposit, amount: 100 EUR, ...)"],
+      currencies: [],
+    };
   }
   const fields = raw as Record<string, unknown>;
   const kind = COMMAND_KINDS.find((k) => k === fields.command);
   if (kind === undefined) {
-    return [
-      fields.command === undefined
-        ? `missing field "command" (${COMMAND_KINDS.join(", ")})`
-        : `unknown command ${JSON.stringify(fields.command)} (${COMMAND_KINDS.join(", ")})`,
-    ];
+    return {
+      problems: [
+        fields.command === undefined
+          ? `missing field "command" (${COMMAND_KINDS.join(", ")})`
+          : `unknown command ${JSON.stringify(fields.command)} (${COMMAND_KINDS.join(", ")})`,
+      ],
+      currencies: [],
+    };
   }
   const problems: string[] = [];
+  /** The currencies of the amounts that read, in the order written: what is left to say about a command that fails. */
+  const seen: Currency[] = [];
+  const unread = (): Unread => ({ problems, currencies: seen });
   for (const name of Object.keys(fields)) {
-    if (!FIELDS[kind].includes(name)) problems.push(`unknown field "${name}" for a ${kind}`);
+    // Printed as JSON: a name written in the file may hold control characters (S4).
+    if (!FIELDS[kind].includes(name)) problems.push(`unknown field ${JSON.stringify(name)} for a ${kind}`);
   }
 
   /** The text of a field: undefined (and a problem when `required`) if absent or not text. */
@@ -109,12 +137,10 @@ function readCommand(raw: unknown): Command | string[] {
       if (required) problems.push(`missing field "${name}"`);
       return undefined;
     }
-    if (typeof value !== "string" || value.trim() === "") {
-      problems.push(
-        typeof value === "string"
-          ? `field "${name}" is empty`
-          : `field "${name}" must be a value, not a list or a mapping`,
-      );
+    // `amount:` with nothing after it is null, not a list: it is empty (N3).
+    const empty = value === null || (typeof value === "string" && value.trim() === "");
+    if (typeof value !== "string" || empty) {
+      problems.push(empty ? `field "${name}" is empty` : `field "${name}" must be a value, not a list or a mapping`);
       return undefined;
     }
     return value.trim();
@@ -127,6 +153,7 @@ function readCommand(raw: unknown): Command | string[] {
       problems.push(read);
       return undefined;
     }
+    if (!seen.includes(read.currency)) seen.push(read.currency);
     return read;
   };
   const date = (): string | undefined => {
@@ -181,7 +208,7 @@ function readCommand(raw: unknown): Command | string[] {
 
   if (kind === "deposit" || kind === "withdrawal") {
     const read = positive(amount("amount", true, true), "amount");
-    if (problems.length > 0 || read === undefined) return problems;
+    if (problems.length > 0 || read === undefined) return unread();
     return { kind, currency: read.currency, amount: money(read.value, read.currency) };
   }
 
@@ -193,7 +220,7 @@ function readCommand(raw: unknown): Command | string[] {
   const stop = kind === "buy" ? positive(amount("stop", false, false), "stop") : undefined;
   const currency = sameCurrency({ price, costs, stop });
   if (kind === "buy") {
-    if (problems.length > 0 || !t || !when || !n || !price || !currency) return problems;
+    if (problems.length > 0 || !t || !when || !n || !price || !currency) return unread();
     return {
       kind,
       currency,
@@ -210,7 +237,7 @@ function readCommand(raw: unknown): Command | string[] {
   if (executed !== undefined && executed !== "true" && executed !== "false") {
     problems.push(`"stop_executed" must be true or false; got: ${JSON.stringify(executed)}`);
   }
-  if (problems.length > 0 || !t || !when || !n || !price || !currency) return problems;
+  if (problems.length > 0 || !t || !when || !n || !price || !currency) return unread();
   return {
     kind,
     currency,
@@ -236,7 +263,8 @@ function blockItemLines(text: string): number[] {
   for (let i = start + 1; start >= 0 && i < rows.length; i++) {
     const item = /^(\s*)-(\s|$)/.exec(rows[i]);
     if (item === null) {
-      if (/^\S/.test(rows[i])) break;
+      // A comment at column 0 is part of the list; any other text at column 0 ends it (N4).
+      if (/^[^\s#]/.test(rows[i])) break;
       continue;
     }
     indent ??= item[1].length;
@@ -255,6 +283,7 @@ export function parseBatch(text: string): ParsedBatch {
   let doc: unknown;
   try {
     doc = yaml.load(text, {
+      // Pinned (S3): every scalar is text, whatever the file looks like; a test fails if this changes.
       schema: yaml.FAILSAFE_SCHEMA,
       listener(type, state) {
         if (type === "open") open.push(state.line);
@@ -270,7 +299,11 @@ export function parseBatch(text: string): ParsedBatch {
     if (err instanceof yaml.YAMLException) {
       return {
         commands: [],
-        issues: [{ command: null, line: (err.mark?.line ?? 0) + 1, reason: `not valid YAML: ${err.reason}` }],
+        unread: [],
+        // The reason can quote the file: printed as JSON, so no control character reaches the terminal (S4).
+        issues: [
+          { command: null, line: (err.mark?.line ?? 0) + 1, reason: `not valid YAML: ${JSON.stringify(err.reason)}` },
+        ],
       };
     }
     throw err;
@@ -280,32 +313,33 @@ export function parseBatch(text: string): ParsedBatch {
   const fileIssue = (reason: string): void => void issues.push({ command: null, line: 1, reason });
   if (doc === null || doc === undefined) {
     fileIssue("the file is empty: expected schema_version and commands");
-    return { commands: [], issues };
+    return { commands: [], unread: [], issues };
   }
   if (typeof doc !== "object" || Array.isArray(doc)) {
     fileIssue("the file must be a mapping with schema_version and commands");
-    return { commands: [], issues };
+    return { commands: [], unread: [], issues };
   }
   const top = doc as Record<string, unknown>;
   if (top.schema_version === undefined) {
     fileIssue(`missing schema_version: the inbox format is version ${INBOX_SCHEMA_VERSION}`);
-    return { commands: [], issues };
+    return { commands: [], unread: [], issues };
   } else if (top.schema_version !== INBOX_SCHEMA_VERSION) {
     fileIssue(
       `schema_version ${JSON.stringify(top.schema_version)} is not the version this engine reads (${INBOX_SCHEMA_VERSION})`,
     );
-    return { commands: [], issues };
+    return { commands: [], unread: [], issues };
   }
   for (const name of Object.keys(top)) {
-    if (name !== "schema_version" && name !== "commands") fileIssue(`unknown field "${name}"`);
+    if (name !== "schema_version" && name !== "commands") fileIssue(`unknown field ${JSON.stringify(name)}`);
   }
   if (!Array.isArray(top.commands) || top.commands.length === 0) {
     fileIssue('"commands" must be a list with at least one command');
-    return { commands: [], issues };
+    return { commands: [], unread: [], issues };
   }
 
   let itemLines: number[] | undefined;
   const commands: ParsedCommand[] = [];
+  const unread: UnreadCommand[] = [];
   top.commands.forEach((raw: unknown, index: number) => {
     const position = index + 1;
     const line =
@@ -313,11 +347,12 @@ export function parseBatch(text: string): ParsedBatch {
       (itemLines ??= blockItemLines(text))[index] ??
       1;
     const read = readCommand(raw);
-    if (Array.isArray(read)) {
-      for (const reason of read) issues.push({ command: position, line, reason });
+    if ("problems" in read) {
+      for (const reason of read.problems) issues.push({ command: position, line, reason });
+      unread.push({ position, currencies: read.currencies });
     } else {
       commands.push({ position, line, command: read });
     }
   });
-  return { commands, issues };
+  return { commands, unread, issues };
 }

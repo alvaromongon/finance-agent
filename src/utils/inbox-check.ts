@@ -1,5 +1,6 @@
 // `inbox:check` without the I/O (#131): a batch (the text of one inbox file) against a state, and the files of
 // the inbox in order. Pure; `inbox.ts` reads the files and the portfolio and prints what this returns.
+import { CURRENCIES, type Currency } from "../types.js";
 import { applyCommand, type InboxState } from "./inbox-handlers.js";
 import { parseBatch, type InboxIssue } from "./inbox-parse.js";
 
@@ -22,9 +23,22 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
   const parsed = parseBatch(text);
   const issues = [...parsed.issues];
   let current = state;
-  for (const { position, line, command } of parsed.commands) {
-    const result = applyCommand(current, command);
-    if ("reason" in result) issues.push({ command: position, line, reason: result.reason });
+  // A command that did not parse might have changed the cash or the lots of its currency: what a later command
+  // of that currency finds there is unknown, so it is not checked against it (N8) rather than reported wrongly.
+  const unknown = new Set<Currency>();
+  const unread = new Map(parsed.unread.map((u) => [u.position, u.currencies]));
+  const order = [...parsed.commands.map((c) => c.position), ...unread.keys()].sort((a, b) => a - b);
+  const byPosition = new Map(parsed.commands.map((c) => [c.position, c]));
+  for (const position of order) {
+    const read = byPosition.get(position);
+    if (read === undefined) {
+      const written = unread.get(position)!;
+      for (const currency of written.length > 0 ? written : CURRENCIES) unknown.add(currency);
+      continue;
+    }
+    if (unknown.has(read.command.currency)) continue;
+    const result = applyCommand(current, read.command);
+    if ("reason" in result) issues.push({ command: position, line: read.line, reason: result.reason });
     else current = result.state;
   }
   issues.sort((a, b) => (a.command ?? 0) - (b.command ?? 0));
@@ -55,12 +69,15 @@ export function checkFiles(state: InboxState, files: readonly InboxFile[]): File
   });
 }
 
+/** A file name as printed: JSON string escapes for every control character (an ANSI sequence must not reach the terminal), none for the rest (S4). */
+const printable = (name: string): string => JSON.stringify(name).slice(1, -1);
+
 /** One line per issue: `inbox/<file>: command <n>, line <l>: <reason>`. */
 export function renderIssues(checks: readonly FileCheck[]): string[] {
   return checks.flatMap(({ name, issues }) =>
     issues.map(({ command, line, reason }) => {
       const where = [command === null ? "file" : `command ${command}`, line === null ? undefined : `line ${line}`];
-      return `inbox/${name}: ${where.filter(Boolean).join(", ")}: ${reason}`;
+      return `inbox/${printable(name)}: ${where.filter(Boolean).join(", ")}: ${reason}`;
     }),
   );
 }

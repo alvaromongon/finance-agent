@@ -10,10 +10,11 @@ import { applyCommand, buy, deposit, sale, withdrawal, type InboxState } from ".
 import type { Buy, Command, Sale } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
 
-const ok = (state: InboxState, command: Command): InboxState => {
+/** The state after a command the handler accepts; the states of these tests have both silos. */
+const ok = (state: InboxState, command: Command): Required<InboxState> => {
   const result = applyCommand(state, command);
   assert.ok("state" in result, `expected ${command.kind} to be accepted: ${"reason" in result ? result.reason : ""}`);
-  return result.state;
+  return result.state as Required<InboxState>;
 };
 const reason = (state: InboxState, command: Command): string => {
   const result = applyCommand(state, command);
@@ -171,6 +172,13 @@ describe("inbox handlers", () => {
     });
   });
 
+  describe("buy limits (N2/S6)", () => {
+    it("refuses a buy that costs nothing and units no sale could ever close", () => {
+      assert.match(reason(stateOf(), buyOf({ units: 0.001, price: 1 })), /costs nothing/);
+      assert.match(reason(stateOf(), buyOf({ units: 1e-9, price: 1e9 })), /below the units tolerance/);
+    });
+  });
+
   describe("sale", () => {
     const held = () =>
       stateOf(
@@ -224,15 +232,64 @@ describe("inbox handlers", () => {
     });
 
     it("refuses a ticker not held, a lot not held and more units than are open", () => {
-      assert.match(reason(held(), saleOf({ ticker: tk("TCK") })), /no open lot of TCK in the EUR silo/);
+      assert.match(reason(held(), saleOf({ ticker: tk("TCK") })), /no open lots for TCK/);
       assert.match(reason(held(), saleOf({ lot: "zzz" })), /no open lot with that id/);
-      assert.match(reason(held(), saleOf({ lot: "a", units: 3 })), /only 2 are open in lot a/);
+      assert.match(reason(held(), saleOf({ lot: "a", units: 3 })), /only 2 are open/);
       assert.match(reason(held(), saleOf({ units: 6 })), /only 5 are open/);
+    });
+
+    it("refuses a sale whose costs exceed its proceeds, and one that would leave the cash below zero (B2)", () => {
+      const state = stateOf(
+        { eurCash: 8 },
+        { EUR: [lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" })] },
+      );
+      assert.match(
+        reason(state, saleOf({ units: 1, price: 1, costs: eur(50) })),
+        /costs of 50\.00 EUR exceed the proceeds of 1\.00 EUR/,
+      );
+      const negative = stateOf(
+        { eurCash: -5 },
+        { EUR: [lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" })] },
+      );
+      assert.match(reason(negative, saleOf({ units: 1, price: 1 })), /leave the EUR cash below zero/);
+      assert.equal(ok(state, saleOf({ units: 1, price: 1, costs: eur(1) })).EUR.cash, 8);
+    });
+
+    it("recomputes the position's volume and average price from the lots left (N1)", () => {
+      const state = stateOf(
+        {},
+        {
+          EUR: [
+            lot("EUR", { ticker: "SAP.DE", units: 10, entryPrice: 100, entryId: "a", date: "2026-01-10" }),
+            lot("EUR", { ticker: "SAP.DE", units: 10, entryPrice: 200, entryId: "b", date: "2026-02-10" }),
+          ],
+        },
+      );
+      const [position] = ok(state, saleOf({ units: 10 })).EUR.positions;
+      assert.deepEqual([position.volume, position.avgPrice], [10, 200]);
+    });
+
+    it("lets planSale judge the units and the tolerance, and tells its refusal from a bug (N6)", () => {
+      assert.match(reason(held(), saleOf({ units: 6 })), /Cannot sell 6 units of SAP\.DE: only 5 are open/);
+      // A bug is not a reason: it crashes instead of being reported as the owner's mistake.
+      const broken = held();
+      Object.assign(broken.EUR.lots[0], { entryUnits: 0, entryCosts: eur(4) });
+      assert.match(reason(broken, saleOf({ units: 1 })), /Entry units 0/);
+      const corrupt = { ...held(), EUR: { ...held().EUR, lots: null } } as unknown as InboxState;
+      assert.throws(() => applyCommand(corrupt, saleOf()), TypeError);
+    });
+
+    it("refuses units below the units tolerance, which no sale could close (N2/S6)", () => {
+      assert.match(reason(held(), saleOf({ units: 1e-9 })), /below the units tolerance/);
+    });
+
+    it("prints a lot id as JSON, never raw (S4)", () => {
+      assert.match(reason(held(), saleOf({ lot: "x\u001b[31m" })), /lot "x\\u001b\[31m"/);
     });
 
     it("does not sell a lot held in the other silo", () => {
       const state = stateOf({}, { USD: [lot("USD", { ticker: "SAP.DE", units: 5 })] });
-      assert.match(reason(state, saleOf()), /no open lot of SAP\.DE in the EUR silo/);
+      assert.match(reason(state, saleOf()), /no open lots for SAP\.DE/);
     });
 
     it("checks the currency explicitly", () => {

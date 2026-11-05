@@ -484,7 +484,7 @@ describe("runHeartbeat", () => {
     });
   });
 
-  it("a batch with errors in inbox/ does not touch the stop check: the crossed stop goes out (#131)", async () => {
+  it("ADR-0018 Confirmation: an invalid batch in inbox/ leaves the heartbeat's stop detection untouched: the crossed stop goes out", async () => {
     await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
     await mkdir(join(vaultDir, "inbox"), { recursive: true });
     await writeFile(
