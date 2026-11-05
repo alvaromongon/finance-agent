@@ -7,7 +7,7 @@
 import { addCounted, money, zero, type Money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { lotOfEntry, planSale, type SalePlanInput } from "../utils/portfolio-lots.js";
+import { lotOfEntry, planSale, type SalePlanInput, SaleRefusal } from "../utils/portfolio-lots.js";
 import { buildDecision } from "../decisions.js";
 import type { Lot } from "../types.js";
 import { parseTicker as tk } from "../ticker.js";
@@ -214,7 +214,7 @@ describe("planSale: an amount too large to count in cents, or entry units of 0, 
     assert.throws(
       () => planSale([lot("zero-1", 10, { entryUnits: 0, entryCosts: money(5, "EUR") })], sale(4), new Map()),
       (err: Error) => {
-        assert.equal(err.constructor, Error);
+        assert.ok(err instanceof SaleRefusal, "a domain refusal, not a bug");
         assert.match(err.message, /lot zero-1 \(TCK\).*Entry units.* 0/);
         return true;
       },

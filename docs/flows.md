@@ -15,6 +15,7 @@ parentheses so a code comment that cites it can be found here.
 | [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner  |
 | [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`           |
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize` |
+| [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                   |
 | [Evaluate decisions](#evaluate-decisions)                     | `decisions:evaluate`, `decisions:chart`, `screening:outcomes`   |
 | [Email delivery](#email-delivery)                             | `outbox:send` and every flow that sends                         |
 
@@ -354,6 +355,32 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
    forward, by citing the thesis's own invalidation criterion.
 
 Candidates excluded by filter 0 are not recorded; only the run's progress output shows why.
+
+## Check the inbox
+
+- **Starts with**: the owner, an AI or a routine having dropped [batches](glossary.md#batch) in
+  `inbox/`, then `npm run inbox:check`. No LLM, no network.
+- **Steps**:
+  1. Read the `.yaml` and `.yml` files of `inbox/` in name order. With none, the check returns "nothing to
+     check" before the portfolio is read. Otherwise read both silos of the portfolio through the
+     [state port](glossary.md#state-port); a silo the file has no section of is absent (each command of its
+     currency gets a reason), and a portfolio it cannot read whole stops the check: a `Positions` row or a `Lots`
+     table or row that does not read, a cash or P/L cell too large to count, or a `Volume` that is not the sum of
+     the units of its lots (what `decision:record` refuses, minus the checks that need the decision log).
+  2. Read each file as a batch ([format](input-format.md#inboxyaml)): a file that is not YAML, or whose
+     `schema_version` is not `1`, is one error; every command is read on its own, so one bad command does not hide
+     the next.
+  3. Check each command with its handler, in order, against the state the previous ones would produce, and
+     each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
+     handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
+     explicitly. A sale whose costs exceed its proceeds, or that would leave the cash below zero, is refused. A
+     command that did not read leaves the cash and lots of its currency (both when its currency is unknown)
+     unknown: the later commands of that currency are not checked against them, so they report no misleading
+     error.
+  4. Print every error as file, command position, line and reason, and exit 1; exit 0 when there is none.
+- **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never reads the inbox, so a
+  batch with errors does not affect its stop check.
+- **Not built yet**: applying a batch and moving it to `applied/` or `rejected/` (`inbox:ingest`).
 
 ## Evaluate decisions
 

@@ -191,6 +191,7 @@ are possible.
 | `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report |
 | `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart   |
 | `npm run decision:record`               | Records a trade or cash flow you made (JSON on stdin) |
+| `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio |
 | `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
 | `npm run outbox:send`                   | Sends the queued emails (relay)                       |
 | `npm run smoke-test`                    | Connectivity check                                    |

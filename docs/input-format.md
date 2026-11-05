@@ -28,6 +28,7 @@ this format.
 | File                                   | Versioned                  | Version | Parsed parts                                                    |
 | -------------------------------------- | -------------------------- | ------- | --------------------------------------------------------------- |
 | `portfolio.md`                         | yes                        | **2**   | Frontmatter, `Cash`, `Positions` and `Lots` tables per currency |
+| `inbox/*.yaml`                         | yes                        | **1**   | Frontmatter-less YAML: `schema_version` and `commands`          |
 | `watchlist.md`                         | yes                        | 1       | First ` ```yaml ` block                                         |
 | `screening-universe.md`                | yes                        | 1       | Frontmatter, first ` ```yaml ` block                            |
 | `screening-log.md`                     | yes                        | 1       | The table                                                       |
@@ -320,6 +321,69 @@ refused (an open entry with no lot). Correct it in a correction commit
 line in `logs/decisions.jsonl` (the ADR's dedicated commit, made when no
 automated run is in flight) together with its lot in `Lots` and `Volume` in
 `Positions`, in the same commit, so the log and the portfolio agree again.
+
+## `inbox/*.yaml`
+
+The [inbox](glossary.md#inbox) is the `inbox/` folder of the project directory. Each `.yaml` or `.yml`
+file in it is one [batch](glossary.md#batch) of [commands](glossary.md#command) that the owner, an AI or a
+routine writes; other files there are not batches and are ignored. `npm run inbox:check` reads the batches
+and checks them against the current portfolio without writing anything (applying them is `inbox:ingest`,
+not built yet). It is a new file in the format, so it has no earlier version to migrate from: the format
+shipped without a migration, approved by the owner on 2026-11-03 in
+[#131](https://github.com/alvaromongon/finance-agent/issues/131) because nobody uses the system yet.
+
+```yaml
+schema_version: 1
+commands:
+  - command: deposit
+    amount: 1000.00 EUR
+  - command: buy
+    ticker: SAP.DE
+    date: 2026-09-15
+    units: 2
+    price: 180.25 EUR
+    costs: 1.50 EUR
+    stop: 168 EUR
+  - command: sale
+    ticker: SAP.DE
+    date: 2026-09-20
+    units: 1
+    price: 190 EUR
+    stop_executed: false
+  - command: withdrawal
+    amount: 200.00 EUR
+```
+
+`schema_version` is required and is `1`: a file without it, or with another version, is one error and is
+not read further. The only other top-level field is `commands`, a list with at least one command. Every
+value is read as text, never as a YAML number or date, so the rules below are the same for all of them.
+
+An **amount** is a plain decimal number and its currency, separated by a space: `1000.50 EUR`. The number is
+digits with an optional decimal point: no sign, no thousands separator, no comma as the decimal mark and no
+exponent (`1e3`, `1,000.50`, `-5` and `.5` are errors). The currency is `EUR` or `USD`; an amount without a
+currency, or with another one, is an error. Money amounts (`amount`, `costs`) have at most two decimals and are
+greater than zero; prices (`price`, `stop`) may have more decimals. The `units` are a plain decimal number
+without a currency. A `date` is a calendar date, `YYYY-MM-DD`. A [ticker](glossary.md#ticker) follows the rule
+under _Versioning_ above, as narrowed in #93: it is checked once, when the batch is read, and read
+case-insensitively.
+
+| Command      | Required fields                    | Optional fields                 | What it checks and does                                                                                                                                                                                                                                                    |
+| ------------ | ---------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deposit`    | `amount`                           |                                 | Adds to the cash of the amount's currency.                                                                                                                                                                                                                                 |
+| `withdrawal` | `amount`                           |                                 | Refused if it exceeds the available cash of its currency.                                                                                                                                                                                                                  |
+| `buy`        | `ticker`, `date`, `units`, `price` | `costs`, `stop` (initial stop)  | Refused if `units × price + costs` exceeds the available cash of its currency. Also refused if it costs less than one cent or has fewer units than 1e-8. Opens a lot; buying a ticker already held is a scale-in.                                                          |
+| `sale`       | `ticker`, `date`, `units`, `price` | `costs`, `lot`, `stop_executed` | Refused if the ticker has no open lot, or fewer open units than sold, if its costs exceed its proceeds, or if it would leave the cash below zero. Sells oldest lot first, or only the lot whose entry id is `lot`. `stop_executed: true` marks a stop the broker executed. |
+
+All the amounts of one command are in the same currency, and the command acts on that currency's silo only.
+An unknown field is an error, so a misspelt optional field is never silently ignored.
+
+The commands of a batch are checked in order, each against the state the previous ones would produce, so a
+buy followed by its sale in one batch is valid. The files of the inbox are checked in name order, each
+against the state the clean batches before it would produce; a batch with errors contributes nothing.
+`inbox:check` reports every error of every batch, not only the first, each as the file, the command (its
+position in the batch, from 1), the line in the file where the command starts and the reason. The exit code is
+non-zero when there is any error and zero when the inbox is clean or empty. A file that is not valid YAML is
+reported as one error, with the line the YAML reader gives. A command that does not read leaves the cash and lots of its currency unknown, so the later commands of that currency are not checked against them. Names and reasons taken from the file are printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
 
 ## `watchlist.md`
 

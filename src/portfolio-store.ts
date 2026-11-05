@@ -27,6 +27,7 @@ import {
   parsePositions,
   parseTotalCash,
   POSITION_ROW_SKIPPED,
+  SiloAbsentError,
 } from "./utils/vault-parser.js";
 
 export type { PositionChange };
@@ -61,6 +62,32 @@ const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING:
  */
 export async function readPortfolio<C extends Currency>(currency: C): Promise<PortfolioRead<C>> {
   return parsePortfolioText(await readFile(portfolioPath(), "utf8"), currency);
+}
+
+/**
+ * Both silos from one read of `portfolio.md`; a stale file warns once. A silo the file has no section of is
+ * absent (`undefined`), not an error: the inbox tells each command of that currency so. A file with neither
+ * silo is refused like any file that is not the portfolio.
+ */
+export async function readBothPortfolios(): Promise<{ EUR?: PortfolioRead<"EUR">; USD?: PortfolioRead<"USD"> }> {
+  const raw = await readFile(portfolioPath(), "utf8");
+  let warn = true;
+  const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined => {
+    try {
+      const read = parsePortfolioText(raw, currency, warn);
+      warn = false;
+      return read;
+    } catch (err) {
+      if (err instanceof SiloAbsentError) return undefined;
+      throw err;
+    }
+  };
+  const read = { EUR: silo("EUR"), USD: silo("USD") };
+  if (read.EUR === undefined && read.USD === undefined) parsePortfolioText(raw, "EUR"); // throws, naming the file
+  return {
+    ...(read.EUR ? { EUR: read.EUR } : {}),
+    ...(read.USD ? { USD: read.USD } : {}),
+  };
 }
 
 /**

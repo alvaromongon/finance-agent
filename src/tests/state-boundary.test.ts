@@ -29,6 +29,7 @@ const STORAGE_LAYER: readonly string[] = [
   "utils/portfolio-writer.ts",
   "utils/parse.ts",
   "utils/fs-text.ts",
+  "inbox-store.ts",
 ];
 
 /** What a module imports to read or write a file (`node:fs`) or to parse a stored value (the storage layer's parsers). */

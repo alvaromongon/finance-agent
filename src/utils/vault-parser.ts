@@ -68,6 +68,14 @@ export function assertSchemaVersion(md: string, file: string): void {
 
 // ─── Portfolio ────────────────────────────────────────────────────────────────
 
+/** The portfolio has no section of the silo at all, not even a misspelt one: the file has no such silo. */
+export class SiloAbsentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SiloAbsentError";
+  }
+}
+
 /**
  * Checks the silo has the `Cash` and `Positions` sections and the `Available cash` row. Without this,
  * a misspelled heading or row (e.g. from the previous format) would read as an empty silo and the
@@ -77,9 +85,10 @@ export function assertSchemaVersion(md: string, file: string): void {
  */
 export function assertPortfolioSections(md: string, currency: Currency): void {
   const model = parsePortfolio(md);
+  const absent = (["Cash", "Positions", "Lots"] as const).every((kind) => !hasSection(model, currency, kind));
   for (const kind of ["Cash", "Positions"] as const) {
     if (!hasSection(model, currency, kind)) {
-      throw new Error(
+      throw new (absent ? SiloAbsentError : Error)(
         `${portfolioWhere(currency)}: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`,
       );
     }
