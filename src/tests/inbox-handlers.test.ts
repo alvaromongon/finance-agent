@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { money } from "../money.js";
 import { parseTicker as tk } from "../ticker.js";
 import { applyCommand, buy, deposit, sale, withdrawal, type InboxState } from "../utils/inbox-handlers.js";
-import type { Buy, Command, Sale } from "../utils/inbox-handlers.js";
+import type { Buy, Command, LotSources, Sale } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
 
 /** The state after a command the handler accepts; the states of these tests have both silos. */
@@ -16,8 +16,8 @@ const ok = (state: InboxState, command: Command): Required<InboxState> => {
   assert.ok("state" in result, `expected ${command.kind} to be accepted: ${"reason" in result ? result.reason : ""}`);
   return result.state as Required<InboxState>;
 };
-const reason = (state: InboxState, command: Command): string => {
-  const result = applyCommand(state, command);
+const reason = (state: InboxState, command: Command, sources?: LotSources): string => {
+  const result = applyCommand(state, command, sources);
   assert.ok("reason" in result, `expected ${command.kind} to be refused`);
   return result.reason;
 };
@@ -238,7 +238,7 @@ describe("inbox handlers", () => {
       assert.match(reason(held(), saleOf({ units: 6 })), /only 5 are open/);
     });
 
-    it("refuses a sale whose costs exceed its proceeds, and one that would leave the cash below zero (B2)", () => {
+    it("refuses a sale whose costs exceed its proceeds, whatever the cash (B2)", () => {
       const state = stateOf(
         { eurCash: 8 },
         { EUR: [lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" })] },
@@ -247,12 +247,40 @@ describe("inbox handlers", () => {
         reason(state, saleOf({ units: 1, price: 1, costs: eur(50) })),
         /costs of 50\.00 EUR exceed the proceeds of 1\.00 EUR/,
       );
+      assert.equal(ok(state, saleOf({ units: 1, price: 1, costs: eur(1) })).EUR.cash, 8);
+    });
+
+    it("never refuses a sale that raises the cash, even when the cash is already negative (#149)", () => {
       const negative = stateOf(
         { eurCash: -5 },
         { EUR: [lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" })] },
       );
-      assert.match(reason(negative, saleOf({ units: 1, price: 1 })), /leave the EUR cash below zero/);
-      assert.equal(ok(state, saleOf({ units: 1, price: 1, costs: eur(1) })).EUR.cash, 8);
+      assert.equal(ok(negative, saleOf({ units: 1, price: 1 })).EUR.cash, -4);
+      assert.equal(ok(negative, saleOf({ units: 1, price: 1, costs: eur(1) })).EUR.cash, -5);
+    });
+
+    it("refuses a sale whose proceeds round to zero cents, as a buy of a sub-cent amount is (#149)", () => {
+      const state = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" })] });
+      assert.match(
+        reason(state, saleOf({ units: 0.0001, price: 0.04 })),
+        /sale of SAP\.DE yields nothing: 0\.0001 units at 0\.04 is below one cent/,
+      );
+    });
+
+    it("says where the lots a refusal talks about come from: the portfolio or the commands that opened them (#149)", () => {
+      const state = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, entryId: "a" })] });
+      assert.match(reason(state, saleOf({ units: 3 })), /only 2 are open in portfolio\.md/);
+      const mixed = ok(state, buyOf({ units: 1, date: "2026-09-16" }));
+      const opened = mixed.EUR.lots.find((l) => l.entryId !== "a")!;
+      const labelled = new Map([[`EUR:${opened.entryId}`, "command 1 of this batch"]]);
+      assert.match(
+        reason(mixed, saleOf({ units: 4 }), labelled),
+        /only 3 are open in portfolio\.md and command 1 of this batch/,
+      );
+      assert.match(
+        reason(mixed, saleOf({ units: 2, lot: opened.entryId }), labelled),
+        /only 1 are open in command 1 of this batch/,
+      );
     });
 
     it("recomputes the position's volume and average price from the lots left (N1)", () => {

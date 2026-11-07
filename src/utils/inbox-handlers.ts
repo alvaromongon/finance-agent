@@ -71,6 +71,14 @@ export type Command<C extends Currency = Currency> = Deposit<C> | Withdrawal<C> 
 /** What the handlers work on: each silo's portfolio, in its own currency; a silo the portfolio does not have is absent. */
 export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
 
+/**
+ * Which command opened a lot, for the lots the batch under check has opened: `<currency>:<entry id>` to the
+ * words a refusal uses for it ("command 2 of this batch"). A lot it does not name is the portfolio's.
+ */
+export type LotSources = ReadonlyMap<string, string>;
+
+export const lotSourceKey = (currency: Currency, entryId: string): string => `${currency}:${entryId}`;
+
 export type HandlerResult = { state: InboxState } | { reason: string };
 
 const refused = (reason: string): { reason: string } => ({ reason });
@@ -202,7 +210,27 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   };
 }
 
-export function sale<C extends Currency>(state: InboxState, command: Sale<C>): HandlerResult {
+/** Where `lots` come from, in words: `portfolio.md`, the commands that opened them, or both. */
+function describeSources(lots: readonly Lot[], currency: Currency, sources: LotSources): string {
+  const labels = new Set<string>();
+  let fromPortfolio = lots.length === 0;
+  for (const lot of lots) {
+    const label = sources.get(lotSourceKey(currency, lot.entryId));
+    if (label === undefined) fromPortfolio = true;
+    else labels.add(label);
+  }
+  // No lot at all: they may have been in the portfolio or opened (and sold) by the batch, so name both when it opened any.
+  if (lots.length === 0 && [...sources.keys()].some((key) => key.startsWith(`${currency}:`))) {
+    labels.add("the earlier commands");
+  }
+  return [...(fromPortfolio ? ["portfolio.md"] : []), ...labels].join(" and ");
+}
+
+export function sale<C extends Currency>(
+  state: InboxState,
+  command: Sale<C>,
+  sources: LotSources = new Map(),
+): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
@@ -217,11 +245,28 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
     );
   }
   const amount = countedInCents(command.units * command.price, `the amount of the sale of ${ticker}`, currency);
+  if (amount === 0) {
+    return refused(
+      `the sale of ${ticker} yields nothing: ${command.units} units at ${command.price} is below one cent`,
+    );
+  }
   let shares: ReturnType<typeof planSale<C>>;
   try {
     shares = planSale(
       chosen,
-      { ticker, currency, units: command.units, price: command.price, amount, costs: command.costs },
+      {
+        ticker,
+        currency,
+        units: command.units,
+        price: command.price,
+        amount,
+        costs: command.costs,
+        lotsFrom: describeSources(
+          chosen.filter((l) => l.units > 0),
+          currency,
+          sources,
+        ),
+      },
       new Map(),
     );
   } catch (err) {
@@ -237,11 +282,7 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
   }
   const received = subtractCounted(amount, costs, `the proceeds of the sale of ${ticker}`);
   const credited = movedCash(silo, received, `the sale of ${ticker}`);
-  if (credited.cash < 0) {
-    return refused(
-      `the sale of ${ticker} would leave the ${currency} cash below zero (${show(credited.cash, currency)})`,
-    );
-  }
+  // The costs are at most the proceeds, so a sale never lowers the cash: there is no cash-below-zero refusal for it.
   const left = new Map(shares.map((share) => [share.lot.entryId, share.unitsLeft]));
   const lots = silo.lots
     .map((lot) => ({ ...lot, units: left.get(lot.entryId) ?? lot.units }))
@@ -256,8 +297,8 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
   return { state: withSilo(state, { ...credited, lots, positions }) };
 }
 
-/** Applies one command to the state: the new state, or the reason it is refused. Never throws for an amount too large to count. */
-export function applyCommand(state: InboxState, command: Command): HandlerResult {
+/** Applies one command to the state: the new state, or the reason it is refused (`sources`: the lots the batch opened). Never throws for an amount too large to count. */
+export function applyCommand(state: InboxState, command: Command, sources?: LotSources): HandlerResult {
   try {
     switch (command.kind) {
       case "deposit":
@@ -267,7 +308,7 @@ export function applyCommand(state: InboxState, command: Command): HandlerResult
       case "buy":
         return buy(state, command);
       case "sale":
-        return sale(state, command);
+        return sale(state, command, sources);
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

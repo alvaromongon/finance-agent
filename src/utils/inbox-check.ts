@@ -1,7 +1,7 @@
 // `inbox:check` without the I/O (#131): a batch (the text of one inbox file) against a state, and the files of
 // the inbox in order. Pure; `inbox.ts` reads the files and the portfolio and prints what this returns.
 import { CURRENCIES, type Currency } from "../types.js";
-import { applyCommand, type InboxState } from "./inbox-handlers.js";
+import { applyCommand, lotSourceKey, type InboxState, type LotSources } from "./inbox-handlers.js";
 import { parseBatch, type InboxIssue } from "./inbox-parse.js";
 
 export interface BatchCheck {
@@ -12,6 +12,8 @@ export interface BatchCheck {
    * applies whole or not at all, so a rejected one changes nothing.
    */
   state: InboxState;
+  /** The lots the clean batches so far opened, as the next batch's refusals name them. */
+  sources: LotSources;
 }
 
 /**
@@ -19,10 +21,11 @@ export interface BatchCheck {
  * before it would produce, so a buy and its sale in one batch are valid. A command that does not parse, or
  * that a handler refuses, is reported with the rest and leaves the state as it was for the next one.
  */
-export function checkBatch(state: InboxState, text: string): BatchCheck {
+export function checkBatch(state: InboxState, text: string, earlier: LotSources = new Map()): BatchCheck {
   const parsed = parseBatch(text);
   const issues = [...parsed.issues];
   let current = state;
+  const sources = new Map(earlier);
   // A command that did not parse might have changed the cash or the lots of its currency: what a later command
   // of that currency finds there is unknown, so it is not checked against it (N8) rather than reported wrongly.
   const unknown = new Set<Currency>();
@@ -37,12 +40,26 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
       continue;
     }
     if (unknown.has(read.command.currency)) continue;
-    const result = applyCommand(current, read.command);
+    const result = applyCommand(current, read.command, sources);
     if ("reason" in result) issues.push({ command: position, line: read.line, reason: result.reason });
-    else current = result.state;
+    else {
+      if (read.command.kind === "buy") {
+        const { currency } = read.command;
+        const before = new Set(current[currency]?.lots.map((l) => l.entryId));
+        for (const lot of result.state[currency]?.lots ?? []) {
+          if (!before.has(lot.entryId))
+            sources.set(lotSourceKey(currency, lot.entryId), `command ${position} of this batch`);
+        }
+      }
+      current = result.state;
+    }
   }
   issues.sort((a, b) => (a.command ?? 0) - (b.command ?? 0));
-  return { issues, state: issues.length === 0 ? current : state };
+  return {
+    issues,
+    state: issues.length === 0 ? current : state,
+    sources: issues.length === 0 ? sources : new Map(earlier),
+  };
 }
 
 export interface InboxFile {
@@ -62,9 +79,12 @@ export interface FileCheck {
  */
 export function checkFiles(state: InboxState, files: readonly InboxFile[]): FileCheck[] {
   let current = state;
+  let sources: LotSources = new Map();
   return files.map(({ name, text }) => {
-    const checked = checkBatch(current, text);
+    const checked = checkBatch(current, text, sources);
     current = checked.state;
+    // For the next file, a lot this one opened is an earlier batch's.
+    sources = new Map([...checked.sources.keys()].map((key) => [key, "an earlier batch"]));
     return { name, issues: checked.issues };
   });
 }

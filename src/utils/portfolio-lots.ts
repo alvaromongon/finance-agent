@@ -62,6 +62,8 @@ export interface SalePlanInput<C extends Currency = Currency> {
   price: number;
   /** Amount of the whole sale, in the silo currency. */
   amount: number;
+  /** Where the lots come from, as a refusal names it; absent: the file's own words. */
+  lotsFrom?: string;
   /** Costs of the whole sale; absent if none were given. */
   costs?: Money<C>;
   /**
@@ -108,14 +110,18 @@ export function planSale<C extends Currency>(
     .sort((a, b) => a.lot.date.localeCompare(b.lot.date) || a.index - b.index)
     .map(({ lot }) => lot);
   if (ordered.length === 0)
-    throw new SaleRefusal(`Cannot sell ${sale.ticker}: no open lots for ${sale.ticker} in portfolio.md`);
+    throw new SaleRefusal(
+      `Cannot sell ${sale.ticker}: no open lots for ${sale.ticker} in ${sale.lotsFrom ?? "portfolio.md"}`,
+    );
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
   // and that much under leaves nothing worth keeping: the lot is used up (a position of dust is not one).
   // Units the owner gave are exact: on a low-priced asset half a cent of price is several units.
   const tolerance = (sale.unitsFromAmount ? unitsWorthHalfACent(sale.price) : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
-    throw new SaleRefusal(`Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in Lots`);
+    throw new SaleRefusal(
+      `Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in ${sale.lotsFrom ?? "Lots"}`,
+    );
   }
 
   const taken: { lot: Lot<C>; unitsSold: number; unitsLeft: number }[] = [];

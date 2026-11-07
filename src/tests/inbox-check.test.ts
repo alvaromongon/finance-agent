@@ -82,6 +82,17 @@ describe("inbox:check", () => {
     assert.match(lines[0], /clean: 1 batch/);
   });
 
+  it("says whether the lots a sale refusal talks about are the portfolio's or an earlier command's (#149)", async () => {
+    const sell = (units: number) => `command: sale\nticker: TCK\ndate: 2026-09-20\nunits: ${units}\nprice: 110 USD`;
+    await drop(
+      "a.yaml",
+      batch(BUY, sell(5), "command: sale\nticker: SAP.DE\ndate: 2026-09-20\nunits: 9\nprice: 1 USD"),
+    );
+    const { lines } = await checkInbox();
+    assert.match(lines[0], /command 2.*only 2 are open in command 1 of this batch/);
+    assert.match(lines[1], /command 3.*only 5 are open in portfolio\.md/);
+  });
+
   it("checks each command against the state the previous ones produce", async () => {
     // The state has 500 USD: the second withdrawal fails only because the first one already happened.
     await drop("a.yaml", batch("command: withdrawal\namount: 300 USD", "command: withdrawal\namount: 300 USD"));
