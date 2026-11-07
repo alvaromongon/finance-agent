@@ -245,11 +245,6 @@ export function sale<C extends Currency>(
     );
   }
   const amount = countedInCents(command.units * command.price, `the amount of the sale of ${ticker}`, currency);
-  if (amount === 0) {
-    return refused(
-      `the sale of ${ticker} yields nothing: ${command.units} units at ${command.price} is below one cent`,
-    );
-  }
   let shares: ReturnType<typeof planSale<C>>;
   try {
     shares = planSale(
@@ -273,6 +268,12 @@ export function sale<C extends Currency>(
     // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash.
     if (err instanceof SaleRefusal) return refused(err.message);
     throw err;
+  }
+  // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
+  if (amount === 0) {
+    return refused(
+      `the sale of ${ticker} yields nothing: ${command.units} units at ${command.price} is below one cent`,
+    );
   }
   const costs = command.costs ?? zero(currency);
   if (costs > amount) {
