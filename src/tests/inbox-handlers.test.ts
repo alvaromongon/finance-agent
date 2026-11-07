@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { money } from "../money.js";
 import { parseTicker as tk } from "../ticker.js";
 import { applyCommand, buy, deposit, sale, withdrawal, type InboxState } from "../utils/inbox-handlers.js";
-import type { Buy, Command, Sale } from "../utils/inbox-handlers.js";
+import type { Buy, ClearStop, Command, Sale, SetStop } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
 
 /** The state after a command the handler accepts; the states of these tests have both silos. */
@@ -31,6 +31,18 @@ const buyOf = (over: Partial<Buy<"EUR">> = {}): Buy<"EUR"> => ({
   date: "2026-09-15",
   units: 2,
   price: 180,
+  ...over,
+});
+const setStopOf = (over: Partial<SetStop<"EUR">> = {}): SetStop<"EUR"> => ({
+  kind: "set_stop",
+  currency: "EUR",
+  ticker: tk("SAP.DE"),
+  price: 170,
+  ...over,
+});
+const clearStopOf = (over: Partial<ClearStop> = {}): ClearStop => ({
+  kind: "clear_stop",
+  ticker: tk("SAP.DE"),
   ...over,
 });
 const saleOf = (over: Partial<Sale<"EUR">> = {}): Sale<"EUR"> => ({
@@ -95,7 +107,7 @@ describe("inbox handlers", () => {
 
   describe("buy", () => {
     it("pays amount and costs from the cash, opens a lot and a position", () => {
-      const next = ok(stateOf(), buyOf({ costs: eur(1.5), stop: 170 }));
+      const next = ok(stateOf(), buyOf({ costs: eur(1.5) }));
       assert.equal(next.EUR.cash, 1000 - 360 - 1.5);
       assert.deepEqual(
         next.EUR.lots.map((l) => [
@@ -108,11 +120,11 @@ describe("inbox handlers", () => {
           l.initialStop,
           l.entryCosts,
         ]),
-        [["SAP.DE", "20260915-sapde-entry", "2026-09-15", 2, 2, 180, 170, 1.5]],
+        [["SAP.DE", "20260915-sapde-entry", "2026-09-15", 2, 2, 180, null, 1.5]],
       );
       assert.deepEqual(
         next.EUR.positions.map((p) => [p.ticker, p.volume, p.avgPrice, p.stopLoss]),
-        [["SAP.DE", 2, 180, 170]],
+        [["SAP.DE", 2, 180, null]],
       );
     });
 
@@ -156,9 +168,14 @@ describe("inbox handlers", () => {
       );
     });
 
-    it("keeps the stop of the position when the scale-in gives none", () => {
+    it("keeps the stop of the position when the scale-in gives none, and the new lot starts with it", () => {
       const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] });
-      assert.equal(ok(held, buyOf()).EUR.positions[0].stopLoss, 168);
+      const next = ok(held, buyOf());
+      assert.equal(next.EUR.positions[0].stopLoss, 168);
+      assert.deepEqual(
+        next.EUR.lots.map((l) => l.initialStop),
+        [168, 168],
+      );
     });
 
     it("checks the currency explicitly", () => {
@@ -169,6 +186,66 @@ describe("inbox handlers", () => {
 
     it("refuses an amount too large to count instead of crashing", () => {
       assert.match(reason(stateOf(), buyOf({ units: 1e307, price: 1e5 })), /too large to count in cents/);
+    });
+  });
+
+  describe("set_stop", () => {
+    const held = () =>
+      stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168, entryId: "old" })] });
+
+    it("moves the one stop of the position and leaves the initial stop of the lots already open", () => {
+      const next = ok(held(), setStopOf({ price: 175 }));
+      assert.equal(next.EUR.positions[0].stopLoss, 175);
+      assert.deepEqual(
+        next.EUR.lots.map((l) => l.initialStop),
+        [168],
+      );
+    });
+
+    it("gives the lots the same batch opened that initial stop, not the older ones", () => {
+      const first = applyCommand(held(), buyOf());
+      assert.ok("state" in first && first.opened !== undefined);
+      const second = applyCommand(first.state, setStopOf({ price: 172 }), new Set([first.opened]));
+      assert.ok("state" in second);
+      const next = second.state as Required<InboxState>;
+      assert.deepEqual(
+        next.EUR.lots.map((l) => [l.entryId, l.initialStop]),
+        [
+          ["old", 168],
+          ["20260915-sapde-entry", 172],
+        ],
+      );
+      assert.equal(next.EUR.positions[0].stopLoss, 172);
+    });
+
+    it("refuses a ticker with no open position, and a price that is not positive", () => {
+      assert.match(reason(stateOf(), setStopOf()), /no open position in SAP\.DE in the EUR silo/);
+      assert.match(reason(held(), setStopOf({ price: 0 })), /price must be greater than zero/);
+      assert.match(reason(held(), setStopOf({ price: Number.NaN })), /price must be greater than zero/);
+    });
+
+    it("does not touch a position of another silo, and checks the currency explicitly", () => {
+      const state = held();
+      assert.match(reason(state, { ...setStopOf(), currency: "USD" }), /no open position/);
+      assert.match(reason(crossedState(state), { ...setStopOf(), currency: "USD" }), /no USD silo/);
+    });
+  });
+
+  describe("clear_stop", () => {
+    it("removes the stop of the position", () => {
+      const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] });
+      const next = ok(held, clearStopOf());
+      assert.equal(next.EUR.positions[0].stopLoss, null);
+      assert.deepEqual(
+        next.EUR.lots.map((l) => l.initialStop),
+        [168],
+      );
+    });
+
+    it("is refused for a position without a stop, and for a ticker with no position", () => {
+      const noStop = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
+      assert.match(reason(noStop, clearStopOf()), /SAP\.DE has no stop to clear/);
+      assert.match(reason(stateOf(), clearStopOf()), /no open position in SAP\.DE/);
     });
   });
 

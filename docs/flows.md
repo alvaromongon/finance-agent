@@ -377,7 +377,11 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      command that did not read leaves the cash and lots of its currency (both when its currency is unknown)
      unknown: the later commands of that currency are not checked against them, so they report no misleading
      error.
-  4. Print every error as file, command position, line and reason, and exit 1; exit 0 when there is none.
+     A stop is its own command: `buy` carries none, `set_stop` sets or moves it and `clear_stop` removes it
+     ([the rule](input-format.md#inboxyaml)).
+  4. Print every error as file, command position, line and reason, and exit 1; exit 0 when there is none. A
+     clean batch whose commands leave a position with no stop gets a warning line for it, which does not change
+     the exit code.
 - **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never reads the inbox, so a
   batch with errors does not affect its stop check.
 - **Not built yet**: applying a batch and moving it to `applied/` or `rejected/` (`inbox:ingest`).

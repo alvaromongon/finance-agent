@@ -46,12 +46,14 @@ export interface ParsedBatch {
   issues: InboxIssue[];
 }
 
-const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale"] as const;
+const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale", "set_stop", "clear_stop"] as const;
 const FIELDS: Record<(typeof COMMAND_KINDS)[number], readonly string[]> = {
   deposit: ["command", "amount"],
   withdrawal: ["command", "amount"],
-  buy: ["command", "ticker", "date", "units", "price", "costs", "stop"],
+  buy: ["command", "ticker", "date", "units", "price", "costs"],
   sale: ["command", "ticker", "date", "units", "price", "costs", "lot", "stop_executed"],
+  set_stop: ["command", "ticker", "date", "price"],
+  clear_stop: ["command", "ticker", "date"],
 };
 
 const DECIMAL = /^\d+(\.\d+)?$/;
@@ -127,7 +129,11 @@ function readCommand(raw: unknown): Command | Unread {
   const unread = (): Unread => ({ problems, currencies: seen });
   for (const name of Object.keys(fields)) {
     // Printed as JSON: a name written in the file may hold control characters (S4).
-    if (!FIELDS[kind].includes(name)) problems.push(`unknown field ${JSON.stringify(name)} for a ${kind}`);
+    if (kind === "buy" && name === "stop") {
+      problems.push('a buy carries no "stop": set it with a set_stop command (docs/input-format.md › `inbox/`)');
+    } else if (!FIELDS[kind].includes(name)) {
+      problems.push(`unknown field ${JSON.stringify(name)} for a ${kind}`);
+    }
   }
 
   /** The text of a field: undefined (and a problem when `required`) if absent or not text. */
@@ -156,8 +162,8 @@ function readCommand(raw: unknown): Command | Unread {
     if (!seen.includes(read.currency)) seen.push(read.currency);
     return read;
   };
-  const date = (): string | undefined => {
-    const value = text("date", true);
+  const date = (required = true): string | undefined => {
+    const value = text("date", required);
     if (value !== undefined && !isDate(value)) {
       problems.push(`"date" must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(value)}`);
       return undefined;
@@ -212,13 +218,22 @@ function readCommand(raw: unknown): Command | Unread {
     return { kind, currency: read.currency, amount: money(read.value, read.currency) };
   }
 
+  if (kind === "set_stop" || kind === "clear_stop") {
+    const t = ticker();
+    const when = date(false);
+    const price = kind === "set_stop" ? positive(amount("price", true, false), "price") : undefined;
+    if (problems.length > 0 || !t) return unread();
+    if (kind === "clear_stop") return { kind, ticker: t, ...(when ? { date: when } : {}) };
+    if (!price) return unread();
+    return { kind, currency: price.currency, ticker: t, price: price.value, ...(when ? { date: when } : {}) };
+  }
+
   const t = ticker();
   const when = date();
   const n = units();
   const price = positive(amount("price", true, false), "price");
   const costs = positive(amount("costs", false, true), "costs");
-  const stop = kind === "buy" ? positive(amount("stop", false, false), "stop") : undefined;
-  const currency = sameCurrency({ price, costs, stop });
+  const currency = sameCurrency({ price, costs });
   if (kind === "buy") {
     if (problems.length > 0 || !t || !when || !n || !price || !currency) return unread();
     return {
@@ -229,7 +244,6 @@ function readCommand(raw: unknown): Command | Unread {
       units: n,
       price: price.value,
       ...(costs ? { costs: money(costs.value, currency) } : {}),
-      ...(stop ? { stop: stop.value } : {}),
     };
   }
   const lot = text("lot", false);
