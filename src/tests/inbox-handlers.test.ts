@@ -242,6 +242,48 @@ describe("inbox handlers", () => {
       );
     });
 
+    it("leaves the lots this batch opened with no initial stop, the older ones keeping theirs", () => {
+      const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168, entryId: "old" })] });
+      const bought = applyCommand(held, buyOf());
+      assert.ok("state" in bought && bought.opened !== undefined);
+      const cleared = applyCommand(bought.state, clearStopOf(), new Set([bought.opened]));
+      assert.ok("state" in cleared);
+      const next = cleared.state as Required<InboxState>;
+      assert.equal(next.EUR.positions[0].stopLoss, null);
+      assert.deepEqual(
+        next.EUR.lots.map((l) => [l.entryId, l.initialStop]),
+        [
+          ["old", 168],
+          ["20260915-sapde-entry", null],
+        ],
+      );
+    });
+
+    it("leaves a new lot with no initial stop after a buy, set_stop and clear_stop", () => {
+      const other = stateOf({}, { EUR: [lot("EUR", { ticker: "OTHER", units: 1 })] });
+      const bought = applyCommand(other, buyOf());
+      assert.ok("state" in bought && bought.opened !== undefined);
+      const opened = new Set([bought.opened]);
+      const stopped = applyCommand(bought.state, setStopOf({ price: 170 }), opened);
+      assert.ok("state" in stopped);
+      const cleared = applyCommand(stopped.state, clearStopOf(), opened);
+      assert.ok("state" in cleared);
+      const next = cleared.state as Required<InboxState>;
+      assert.deepEqual(
+        next.EUR.lots.filter((l) => l.ticker === "SAP.DE").map((l) => l.initialStop),
+        [null],
+      );
+      assert.equal(next.EUR.positions.find((p) => p.ticker === "SAP.DE")?.stopLoss, null);
+    });
+
+    it("checks the currency of a silo explicitly: a silo of another currency is not touched", () => {
+      const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] });
+      const crossed = crossedState(held);
+      const next = ok(crossed, clearStopOf());
+      assert.equal(next.EUR.positions[0].stopLoss, null);
+      assert.equal(next.USD, crossed.USD);
+    });
+
     it("is refused for a position without a stop, and for a ticker with no position", () => {
       const noStop = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
       assert.match(reason(noStop, clearStopOf()), /SAP\.DE has no stop to clear/);

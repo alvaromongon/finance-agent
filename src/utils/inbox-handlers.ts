@@ -261,11 +261,11 @@ export function setStop<C extends Currency>(
   };
 }
 
-export function clearStop(state: InboxState, command: ClearStop): HandlerResult {
+export function clearStop(state: InboxState, command: ClearStop, opened: OpenedLots = new Set()): HandlerResult {
   const { ticker } = command;
   const silos = CURRENCIES.flatMap((c) => {
-    const silo = state[c];
-    return silo?.positions.some((p) => p.ticker === ticker) ? [silo] : [];
+    const silo = siloOf(state, c);
+    return !isRefusal(silo) && silo.positions.some((p) => p.ticker === ticker) ? [silo] : [];
   });
   if (silos.length === 0) return refused(`cannot clear a stop: there is no open position in ${ticker}`);
   const stopped = silos.filter((silo) => silo.positions.some((p) => p.ticker === ticker && p.stopLoss !== null));
@@ -275,6 +275,10 @@ export function clearStop(state: InboxState, command: ClearStop): HandlerResult 
     next = withSilo(next, {
       ...silo,
       positions: silo.positions.map((p) => (p.ticker === ticker ? { ...p, stopLoss: null } : p)),
+      // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
+      lots: silo.lots.map((l) =>
+        opened.has(openedKey(silo.currency, l.entryId)) && l.ticker === ticker ? { ...l, initialStop: null } : l,
+      ),
     });
   }
   return { state: next };
@@ -349,7 +353,7 @@ export function applyCommand(state: InboxState, command: Command, opened: Opened
       case "set_stop":
         return setStop(state, command, opened);
       case "clear_stop":
-        return clearStop(state, command);
+        return clearStop(state, command, opened);
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);
