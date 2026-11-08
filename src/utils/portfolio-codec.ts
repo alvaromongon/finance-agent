@@ -113,6 +113,15 @@ function spanOf(model: PortfolioModel, currency: Currency, kind: PortfolioSectio
 export const hasSection = (model: PortfolioModel, currency: Currency, kind: PortfolioSection): boolean =>
   spanOf(model, currency, kind) !== null;
 
+/**
+ * The `##` headings of the file that name the currency, whatever follows it (and in any case): what a section
+ * of the silo looks like when it is misspelt. Trimmed, in file order.
+ */
+export function siloHeadings(model: PortfolioModel, currency: Currency): string[] {
+  const headingRe = new RegExp(`^##\\s+${currency}\\b`, "i");
+  return model.lines.map((line) => line.text.trim()).filter((text) => headingRe.test(text));
+}
+
 /** The table of the section; `null` if the section does not exist. */
 export function readTable(model: PortfolioModel, currency: Currency, kind: PortfolioSection): PortfolioTable | null {
   const span = spanOf(model, currency, kind);

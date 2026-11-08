@@ -42,8 +42,14 @@ export async function checkInbox(): Promise<{ lines: string[]; exitCode: number 
   if (problems.length === 0) {
     return { lines: [`Inbox is clean: ${files.length} batch(es) would apply.`], exitCode: 0 };
   }
+  const errors = checks.reduce((sum, c) => sum + c.issues.length, 0);
+  const skipped = checks.reduce((sum, c) => sum + c.notChecked.length, 0);
   const bad = checks.filter((c) => c.issues.length > 0).length;
-  return { lines: [...problems, `${problems.length} error(s) in ${bad} of ${files.length} batch(es).`], exitCode: 1 };
+  const summary = `${errors} error(s) in ${bad} of ${files.length} batch(es)`;
+  return {
+    lines: [...problems, `${summary}${skipped > 0 ? `; ${skipped} command(s) not checked` : ""}.`],
+    exitCode: 1,
+  };
 }
 
 const isMain = process.argv[1] != null && import.meta.filename === process.argv[1];

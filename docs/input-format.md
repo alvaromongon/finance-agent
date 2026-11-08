@@ -383,7 +383,7 @@ against the state the clean batches before it would produce; a batch with errors
 `inbox:check` reports every error of every batch, not only the first, each as the file, the command (its
 position in the batch, from 1), the line in the file where the command starts and the reason. The exit code is
 non-zero when there is any error and zero when the inbox is clean or empty. A file that is not valid YAML is
-reported as one error, with the line the YAML reader gives. A command that does not read leaves the cash and lots of its currency unknown, so the later commands of that currency are not checked against them. Names and reasons taken from the file are printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
+reported as one error, with the line the YAML reader gives. A command that does not read, or that a handler refuses, leaves the cash and lots of its currency unknown, so the later commands of that currency are not checked against them: each is listed as not checked, with the command that blocked it, and is not an error. Names and reasons taken from the file are printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
 
 ## `watchlist.md`
 

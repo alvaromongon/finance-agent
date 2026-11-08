@@ -11,6 +11,7 @@ import {
   isBlockedLog,
   assertSchemaVersion,
   assertPortfolioSections,
+  SiloAbsentError,
   parseLots,
   parseLotRows,
   splitTableRow,
@@ -410,6 +411,46 @@ describe("assertPortfolioSections", () => {
     assert.throws(() => {
       assertPortfolioSections(md, "USD");
     }, /portfolio\.md.*## USD — Cash/);
+  });
+
+  describe("a silo with no section of its own", () => {
+    const misspelt = (md: string, currency: string, to: string[]) =>
+      md
+        .replace(`## ${currency} — Cash`, `## ${currency} — ${to[0]}`)
+        .replace(`## ${currency} — Positions`, `## ${currency} — ${to[1]}`)
+        .replace(`## ${currency} — Lots`, `## ${currency} — ${to[2]}`);
+
+    it("is absent when the file has no heading of that currency at all", () => {
+      const md = PORTFOLIO_MD.split("## USD — Cash")[0];
+      assert.throws(() => assertPortfolioSections(md, "USD"), SiloAbsentError);
+    });
+
+    it("is not absent when every one of its headings is misspelt: the error names the headings found", () => {
+      const md = misspelt(PORTFOLIO_MD, "USD", ["Caja", "Posiciones", "Lotes"]);
+      assert.throws(
+        () => assertPortfolioSections(md, "USD"),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.ok(!(err instanceof SiloAbsentError), "a misspelt silo is not an absent one");
+          assert.match(err.message, /missing section "## USD — Cash"/);
+          assert.match(err.message, /"## USD — Caja", "## USD — Posiciones", "## USD — Lotes"/);
+          return true;
+        },
+      );
+    });
+
+    it("is not absent when its heading is in lower case", () => {
+      const md = PORTFOLIO_MD.replaceAll("## USD —", "## usd —");
+      assert.throws(
+        () => assertPortfolioSections(md, "USD"),
+        (err: unknown) => err instanceof Error && !(err instanceof SiloAbsentError),
+      );
+    });
+
+    it("prints a heading it found escaped, never raw", () => {
+      const md = misspelt(PORTFOLIO_MD, "USD", ["Caja\u001b[31m", "Posiciones", "Lotes"]);
+      assert.throws(() => assertPortfolioSections(md, "USD"), /"## USD — Caja\\u001b\[31m"/);
+    });
   });
 
   it("accepts a silo whose Lots section is empty", () => {
