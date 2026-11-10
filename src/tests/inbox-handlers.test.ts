@@ -12,6 +12,7 @@ import {
   deposit,
   initialStopBreaches,
   sale,
+  saleShares,
   withdrawal,
   type InboxState,
 } from "../utils/inbox-handlers.js";
@@ -474,6 +475,52 @@ describe("inbox handlers", () => {
       // Selling the oldest lot first reaches the same dust lot; a sale that leaves it part-sold is still refused.
       assert.equal(ok(state, saleOf({ units: 0.0001, price: 0.04 })).EUR.lots.length, 1);
       assert.match(reason(state, saleOf({ units: 0.00005, price: 0.04, lot: "dust" })), /yields nothing/);
+    });
+
+    it("refuses a 0.00 sale unless it uses up every lot it touches, not just one (#162)", () => {
+      const state = stateOf(
+        { eurCash: 5 },
+        {
+          EUR: [
+            lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "dust", date: "2026-09-01" }),
+            lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a", date: "2026-09-02" }),
+          ],
+        },
+      );
+      // Closes the dust lot but takes 0.00005 units from the real lot for nothing.
+      assert.match(reason(state, saleOf({ units: 0.00015, price: 0.04 })), /sale of SAP\.DE yields nothing/);
+    });
+
+    it("accepts a 0.00 sale that closes several dust lots, giving each exit a non-zero exact amount (#162)", () => {
+      const state = stateOf(
+        { eurCash: 5 },
+        {
+          EUR: [
+            lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d1", date: "2026-09-01" }),
+            lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d2", date: "2026-09-02" }),
+            lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a", date: "2026-09-03" }),
+          ],
+        },
+      );
+      const after = ok(state, saleOf({ units: 0.0002, price: 0.04 })).EUR;
+      assert.equal(after.cash, 5);
+      assert.deepEqual(
+        after.lots.map((l) => l.entryId),
+        ["a"],
+      );
+    });
+
+    it("gives each exit of a dust-closing sale a non-zero exact amount at 8 decimals (#162)", () => {
+      const dust = [
+        lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d1", date: "2026-09-01" }),
+        lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d2", date: "2026-09-02" }),
+      ];
+      const proceeds = 0.0002 * 0.04; // 0.000008: zero cents, but 800 at 8 decimals
+      const shares = saleShares(dust, saleOf({ units: 0.0002, price: 0.04 }), proceeds, new Map());
+      assert.deepEqual(
+        shares.map((share) => share.amount),
+        [0.000004, 0.000004],
+      );
     });
 
     it("closes a whole position of dust with a sale of nothing (#149)", () => {
