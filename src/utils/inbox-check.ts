@@ -1,8 +1,8 @@
 // `inbox:check` without the I/O (#131): a batch (the text of one inbox file) against a state, and the files of
 // the inbox in order. Pure; `inbox.ts` reads the files and the portfolio and prints what this returns.
 import { CURRENCIES, type Currency } from "../types.js";
-import { applyCommand, type InboxState } from "./inbox-handlers.js";
-import { parseBatch, type InboxIssue } from "./inbox-parse.js";
+import { applyCommand, type Command, type InboxState } from "./inbox-handlers.js";
+import { parseBatch, type InboxIssue, type ParsedCommand } from "./inbox-parse.js";
 import { printable } from "./printable.js";
 
 export interface BatchCheck {
@@ -13,6 +13,11 @@ export interface BatchCheck {
    * clean while any is listed, and fixing `issues` and checking again checks them.
    */
   notChecked: InboxIssue[];
+  /**
+   * What a clean batch leaves that the owner should know, and that does not stop it: a position it touched
+   * that ends with no stop. Empty when the batch has issues.
+   */
+  warnings: InboxIssue[];
   /**
    * The state the batch would produce, or the state it was checked against when it has issues: a batch
    * applies whole or not at all, so a rejected one changes nothing.
@@ -46,6 +51,7 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
   const block = (currencies: readonly Currency[], blocker: Blocker): void => {
     for (const currency of currencies) if (!blocked.has(currency)) blocked.set(currency, blocker);
   };
+  const opened = new Set<string>();
   const unread = new Map(parsed.unread.map((u) => [u.position, u.currencies]));
   const order = [...parsed.commands.map((c) => c.position), ...unread.keys()].sort((a, b) => a - b);
   const byPosition = new Map(parsed.commands.map((c) => [c.position, c]));
@@ -56,28 +62,61 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
       block(written.length > 0 ? written : CURRENCIES, { position, how: "could not be read" });
       continue;
     }
-    const blocker = blocked.get(read.command.currency);
+    // A clear_stop names no currency: it waits for the first blocked one.
+    const currency = "currency" in read.command ? read.command.currency : undefined;
+    const blocker = currency !== undefined ? blocked.get(currency) : blocked.values().next().value;
     if (blocker !== undefined) {
       notChecked.push({
         command: position,
         line: read.line,
-        reason: `not checked: command ${blocker.position} ${blocker.how}, so the ${read.command.currency} cash and lots it would change are unknown`,
+        reason: `not checked: command ${blocker.position} ${blocker.how}, so ${currency !== undefined ? `the ${currency} cash and lots` : "the position"} it would change ${currency !== undefined ? "are" : "is"} unknown`,
       });
       continue;
     }
-    const result = applyCommand(current, read.command);
+    const result = applyCommand(current, read.command, opened);
     if ("reason" in result) {
       issues.push({ command: position, line: read.line, reason: result.reason });
       // A silo the portfolio does not have: nothing to be unknown about, every command of it is refused for that.
-      if (current[read.command.currency] !== undefined) {
-        block([read.command.currency], { position, how: "was refused" });
-      }
-    } else current = result.state;
+      // A refused clear_stop names no currency and changes no cash or lots: it blocks nothing.
+      if (currency !== undefined && current[currency] !== undefined)
+        block([currency], { position, how: "was refused" });
+    } else {
+      current = result.state;
+      if (result.opened !== undefined) opened.add(result.opened);
+    }
   }
   const byCommand = (a: InboxIssue, b: InboxIssue): number => (a.command ?? 0) - (b.command ?? 0);
   issues.sort(byCommand);
   notChecked.sort(byCommand);
-  return { issues, notChecked, state: issues.length === 0 ? current : state };
+  const clean = issues.length === 0;
+  return {
+    issues,
+    notChecked,
+    warnings: clean && notChecked.length === 0 ? withoutStop(current, parsed.commands) : [],
+    state: clean ? current : state,
+  };
+}
+
+/** A command that changes the stop of a position, or opens one. */
+const touchesStop = (c: Command): c is Extract<Command, { kind: "buy" | "set_stop" | "clear_stop" }> =>
+  c.kind === "buy" || c.kind === "set_stop" || c.kind === "clear_stop";
+
+/**
+ * The positions the commands touched that `state` (the one they produce) holds with no stop, one warning per
+ * ticker at the last command that touched it: risk watch cannot protect a position without a stop.
+ */
+function withoutStop(state: InboxState, commands: readonly ParsedCommand[]): InboxIssue[] {
+  const last = new Map<string, ParsedCommand>();
+  for (const read of commands) if (touchesStop(read.command)) last.set(read.command.ticker, read);
+  const open = (ticker: string) =>
+    CURRENCIES.some((c) => state[c]?.positions.some((p) => p.ticker === ticker && p.stopLoss === null));
+  return [...last]
+    .filter(([ticker]) => open(ticker))
+    .map(([ticker, { position, line }]) => ({
+      command: position,
+      line,
+      reason: `${ticker} has no stop, so risk watch cannot protect it`,
+    }));
 }
 
 export interface InboxFile {
@@ -90,6 +129,7 @@ export interface FileCheck {
   issues: InboxIssue[];
   /** The commands of the file that were not checked; see `BatchCheck`. */
   notChecked: InboxIssue[];
+  warnings: InboxIssue[];
 }
 
 /**
@@ -102,9 +142,14 @@ export function checkFiles(state: InboxState, files: readonly InboxFile[]): File
   return files.map(({ name, text }) => {
     const checked = checkBatch(current, text);
     current = checked.state;
-    return { name, issues: checked.issues, notChecked: checked.notChecked };
+    return { name, issues: checked.issues, notChecked: checked.notChecked, warnings: checked.warnings };
   });
 }
+
+const where = (command: number | null, line: number | null): string =>
+  [command === null ? "file" : `command ${command}`, line === null ? undefined : `line ${line}`]
+    .filter(Boolean)
+    .join(", ");
 
 /**
  * One line per issue and per command not checked, in the order of the file:
@@ -115,9 +160,15 @@ export function renderIssues(checks: readonly FileCheck[]): string[] {
     [...issues, ...notChecked]
       .map((issue, index) => ({ issue, index }))
       .sort((a, b) => (a.issue.command ?? 0) - (b.issue.command ?? 0) || a.index - b.index)
-      .map(({ issue: { command, line, reason } }) => {
-        const where = [command === null ? "file" : `command ${command}`, line === null ? undefined : `line ${line}`];
-        return `inbox/${printable(name)}: ${where.filter(Boolean).join(", ")}: ${reason}`;
-      }),
+      .map(({ issue: { command, line, reason } }) => `inbox/${printable(name)}: ${where(command, line)}: ${reason}`),
+  );
+}
+
+/** One line per warning, like an issue with `warning: ` before the reason. */
+export function renderWarnings(checks: readonly FileCheck[]): string[] {
+  return checks.flatMap(({ name, warnings }) =>
+    warnings.map(
+      ({ command, line, reason }) => `inbox/${printable(name)}: ${where(command, line)}: warning: ${reason}`,
+    ),
   );
 }
