@@ -6,7 +6,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { money } from "../money.js";
 import { parseTicker as tk, type Ticker } from "../ticker.js";
-import { applyCommand, buy, deposit, sale, withdrawal, type InboxState } from "../utils/inbox-handlers.js";
+import {
+  applyCommand,
+  buy,
+  deposit,
+  initialStopBreaches,
+  sale,
+  withdrawal,
+  type InboxState,
+} from "../utils/inbox-handlers.js";
 import type { Buy, ClearStop, Command, LotSources, Sale, SetStop } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
 
@@ -288,6 +296,67 @@ describe("inbox handlers", () => {
       const noStop = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
       assert.match(reason(noStop, clearStopOf()), /SAP\.DE has no stop to clear/);
       assert.match(reason(stateOf(), clearStopOf()), /no open position in SAP\.DE/);
+    });
+  });
+
+  describe("initialStopBreaches (#159)", () => {
+    const held = () =>
+      stateOf(
+        {},
+        { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168, entryId: "old", entryPrice: 150 })] },
+      );
+    /** The state after the commands, with the keys of the lots they opened. */
+    const run = (...commands: Command[]) => {
+      let state: InboxState = held();
+      const opened = new Set<string>();
+      for (const command of commands) {
+        const result = applyCommand(state, command, opened);
+        assert.ok("state" in result, "reason" in result ? result.reason : "");
+        state = result.state;
+        if (result.opened !== undefined) opened.add(result.opened);
+      }
+      return { state, opened };
+    };
+
+    it("names a lot the batch opened whose initial stop is at or above its entry price", () => {
+      const { state, opened } = run(buyOf({ price: 180 }), setStopOf({ price: 180 }));
+      assert.deepEqual(initialStopBreaches(state, opened), [
+        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 180 },
+      ]);
+      const above = run(buyOf({ price: 180 }), setStopOf({ price: 200 }));
+      assert.equal(initialStopBreaches(above.state, above.opened).length, 1);
+    });
+
+    it("accepts a stop below the entry price, and a stop above the entry of a lot the batch did not open", () => {
+      const below = run(buyOf({ price: 180 }), setStopOf({ price: 179 }));
+      assert.deepEqual(initialStopBreaches(below.state, below.opened), []);
+      const trailing = run(setStopOf({ price: 200 }));
+      assert.deepEqual(initialStopBreaches(trailing.state, trailing.opened), []);
+    });
+
+    it("judges the stop the position ends the batch with: a later set_stop or a clear_stop replaces it", () => {
+      const fixed = run(buyOf({ price: 180 }), setStopOf({ price: 190 }), setStopOf({ price: 170 }));
+      assert.deepEqual(initialStopBreaches(fixed.state, fixed.opened), []);
+      const cleared = run(buyOf({ price: 180 }), setStopOf({ price: 190 }), clearStopOf());
+      assert.deepEqual(initialStopBreaches(cleared.state, cleared.opened), []);
+    });
+
+    it("a scale-in under a stop at or above the new price takes that stop, unless a set_stop moves it below", () => {
+      const trailing = () =>
+        stateOf(
+          {},
+          { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168, entryId: "old", entryPrice: 150 })] },
+        );
+      const raised = ok(trailing(), setStopOf({ price: 190 }));
+      const bought = applyCommand(raised, buyOf({ price: 180 }));
+      assert.ok("state" in bought && bought.opened !== undefined);
+      const opened = new Set([bought.opened]);
+      assert.deepEqual(initialStopBreaches(bought.state, opened), [
+        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 190 },
+      ]);
+      const moved = applyCommand(bought.state, setStopOf({ price: 175 }), opened);
+      assert.ok("state" in moved);
+      assert.deepEqual(initialStopBreaches(moved.state, opened), []);
     });
   });
 

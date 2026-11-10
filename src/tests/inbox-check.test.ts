@@ -95,6 +95,46 @@ describe("inbox:check", () => {
   describe("stops are their own commands (#151)", () => {
     const BUY_TCK = "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 2\nprice: 100 USD";
 
+    describe("an initial stop at or above the entry price is refused (#159)", () => {
+      it("names the set_stop, the buy and both prices", async () => {
+        await drop("a.yaml", batch(BUY_TCK, "command: set_stop\nticker: TCK\nprice: 100 USD"));
+        const { lines, exitCode } = await checkInbox();
+        assert.equal(exitCode, 1);
+        assert.match(lines[0], /^inbox\/a\.yaml: command 2, line 8: /);
+        assert.match(lines[0], /set_stop at 100 USD/);
+        assert.match(lines[0], /buy of TCK \(command 1.*entry price of 100 USD/);
+        assert.match(lines[0], /R/);
+      });
+
+      it("accepts a set_stop above the entry price of a position with no lot opened in the batch", async () => {
+        await drop("a.yaml", batch("command: set_stop\nticker: SAP.DE\nprice: 500 USD"));
+        const { lines, exitCode } = await checkInbox();
+        assert.equal(exitCode, 0, lines.join("\n"));
+      });
+
+      it("refuses a scale-in under a stop at or above the new price, naming the portfolio's stop", async () => {
+        await drop("a.yaml", batch("command: buy\nticker: SAP.DE\ndate: 2026-09-15\nunits: 1\nprice: 100 USD"));
+        await writeFile(join(vaultDir, "portfolio.md"), portfolioMd({ usd: [{ ...SAP, stop: 150 }] }), "utf8");
+        const { lines, exitCode } = await checkInbox();
+        assert.equal(exitCode, 1, lines.join("\n"));
+        assert.match(lines[0], /^inbox\/a\.yaml: command 1, line 3: /);
+        assert.match(lines[0], /entry price of 100 USD.*stop of 150 USD that portfolio\.md holds/);
+      });
+
+      it("accepts that scale-in when a set_stop in the batch sets a stop below the entry price", async () => {
+        await drop(
+          "a.yaml",
+          batch(
+            "command: buy\nticker: SAP.DE\ndate: 2026-09-15\nunits: 1\nprice: 100 USD",
+            "command: set_stop\nticker: SAP.DE\nprice: 90 USD",
+          ),
+        );
+        await writeFile(join(vaultDir, "portfolio.md"), portfolioMd({ usd: [{ ...SAP, stop: 150 }] }), "utf8");
+        const { lines, exitCode } = await checkInbox();
+        assert.equal(exitCode, 0, lines.join("\n"));
+      });
+    });
+
     it("refuses a buy that carries a stop, naming set_stop", async () => {
       await drop("a.yaml", batch(`${BUY_TCK}\nstop: 90 USD`));
       const { lines, exitCode } = await checkInbox();

@@ -394,6 +394,33 @@ export function sale<C extends Currency>(
   return { state: withSilo(state, { ...credited, lots, positions }) };
 }
 
+/** A lot the batch opened whose initial stop is not below its entry price, so its R would be zero or negative. */
+export interface InitialStopBreach {
+  currency: Currency;
+  ticker: Ticker;
+  entryId: string;
+  entryPrice: number;
+  /** The stop the position ends the batch with, which is the lot's initial stop. */
+  stop: number;
+}
+
+/**
+ * The lots in `opened` (the ones the batch opened, see `openedKey`) that `state` (the one after the whole batch)
+ * holds with an initial stop at or above their entry price (#159). R is the entry price minus the initial stop,
+ * so it would be zero or negative. Only the stop a lot starts with counts: a position's stop moved above the
+ * entry later, in another batch, is a trailing stop. A lot with no initial stop is not a breach (it carries
+ * `no_stop`, #132), nor is one the batch sold out.
+ */
+export function initialStopBreaches(state: InboxState, opened: OpenedLots): InitialStopBreach[] {
+  return CURRENCIES.flatMap((currency) =>
+    (state[currency]?.lots ?? []).flatMap((l) =>
+      opened.has(openedKey(currency, l.entryId)) && l.initialStop !== null && l.initialStop >= l.entryPrice
+        ? [{ currency, ticker: l.ticker, entryId: l.entryId, entryPrice: l.entryPrice, stop: l.initialStop }]
+        : [],
+    ),
+  );
+}
+
 /**
  * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the batch
  * opened before it, for the stops; `sources`: who opened them, for the words of a sale refusal. Never throws for

@@ -383,7 +383,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      so fixing the errors listed and checking again reveals no unannounced one. A silo the portfolio does not have
      blocks nothing: every command of it is refused for that.
      A stop is its own command: `buy` carries none, `set_stop` sets or moves it and `clear_stop` removes it
-     ([the rule](input-format.md#inboxyaml)).
+     ([the rule](input-format.md#inboxyaml)). After the last command, a lot the batch opened whose initial stop (the
+     position's stop) is at or above its entry price is refused, because R would be zero or negative (#159).
   4. Print every error, and every command not checked, as file, command position, line and reason, then a
      summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
      position with no stop gets a warning line for it, which does not change the exit code.
