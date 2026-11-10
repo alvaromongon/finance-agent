@@ -375,8 +375,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   3. Check each command with its handler, in order, against the state the previous ones would produce, and
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
-     explicitly. A sale whose costs exceed its proceeds, or whose proceeds round to zero cents (under half a cent;
-     unless it uses up a lot, which it may close for 0.00), is refused; a refusal about lots says whether they
+     explicitly. A sale whose costs exceed its proceeds, or whose proceeds round to zero cents (under half a cent),
+     unless it uses up every remaining unit of each lot it sells, which it may close for 0.00, is refused; a refusal about lots says whether they
      are the portfolio's, were opened by an earlier command of the batch ("command 2 of this batch") or by an
      earlier file ("command 1 of inbox/a.yaml"), and a ticker none of them opened is the portfolio's alone. When
      no lot of the ticker is left, because the batch opened it and sold it out, the refusal says "the earlier

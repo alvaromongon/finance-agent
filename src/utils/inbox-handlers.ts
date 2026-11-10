@@ -11,12 +11,13 @@ import {
   addCounted,
   formatMoney,
   countedInCents,
+  exactAmount,
   isCountedRefusal,
   subtractCounted,
   type Money,
   zero,
 } from "../money.js";
-import { LOTS_SOURCE, planSale, SaleRefusal } from "./portfolio-lots.js";
+import { LOTS_SOURCE, planSale, SaleRefusal, type SaleShare } from "./portfolio-lots.js";
 import { printable, quoted } from "./printable.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
@@ -402,6 +403,29 @@ export function clearStop(
   return { state: stopped.reduce((next, silo) => withSilo(next, withStop(silo, ticker, null, opened)), state) };
 }
 
+/**
+ * The exit of each lot a sale touches. Each exit gets its exact share of the proceeds, kept to 8 decimals
+ * (ADR-0017), not of the proceeds in whole cents, so a dust lot does not get an amount of 0.
+ */
+export function saleShares<C extends Currency>(
+  chosen: readonly Lot<C>[],
+  command: Sale<C>,
+  proceeds: number,
+): SaleShare<C>[] {
+  return planSale(
+    chosen,
+    {
+      ticker: command.ticker,
+      currency: command.currency,
+      units: command.units,
+      price: command.price,
+      amount: exactAmount(proceeds),
+      costs: command.costs,
+    },
+    new Map(),
+  );
+}
+
 export function sale<C extends Currency>(
   state: InboxState,
   command: Sale<C>,
@@ -421,25 +445,12 @@ export function sale<C extends Currency>(
       `cannot sell lot ${quoted(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
     );
   }
-  const amount = countedInCents(
-    command.units * command.price,
-    `the amount of the sale of ${printable(ticker)}`,
-    currency,
-  );
-  let shares: ReturnType<typeof planSale<C>>;
+  // Cents are for the cash credit and the costs check; the exact amount is for the exits #132 will write (ADR-0017).
+  const proceeds = command.units * command.price;
+  const amount = countedInCents(proceeds, `the amount of the sale of ${printable(ticker)}`, currency);
+  let shares: SaleShare<C>[];
   try {
-    shares = planSale(
-      chosen,
-      {
-        ticker,
-        currency,
-        units: command.units,
-        price: command.price,
-        amount,
-        costs: command.costs,
-      },
-      new Map(),
-    );
+    shares = saleShares(chosen, command, proceeds);
   } catch (err) {
     // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash. Where the
     // lots come from is worked out here, only for a refusal that names it.
@@ -459,8 +470,8 @@ export function sale<C extends Currency>(
     throw err;
   }
   // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
-  // A sale that uses a lot up is the way out for a dust lot, so it may credit 0.00 (#149).
-  if (amount === 0 && !shares.some((share) => share.unitsLeft === 0)) {
+  // A sale that uses up every lot it touches is the way out for dust lots, so it may credit 0.00 (#149, #162).
+  if (amount === 0 && !shares.every((share) => share.unitsLeft === 0)) {
     return refused(`the sale of ${printable(ticker)} yields nothing: ${belowHalfACent(command)}`);
   }
   const costs = command.costs ?? zero(currency);
