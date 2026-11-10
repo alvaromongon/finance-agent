@@ -16,8 +16,8 @@ import {
   type Money,
   zero,
 } from "../money.js";
-import { planSale, SaleRefusal } from "./portfolio-lots.js";
-import { printable } from "./printable.js";
+import { LOTS_SOURCE, planSale, SaleRefusal } from "./portfolio-lots.js";
+import { printable, quoted } from "./printable.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -96,22 +96,45 @@ export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
 
 /**
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
- * (`opened`, see `openedKey`): the batch passes those to the handlers after it, so a `set_stop` knows which
- * lots are the batch's own.
+ * (`opened`, see `openedKey`): the batch records those, so a `set_stop` knows which lots are the batch's own.
  */
 export type HandlerResult = { state: InboxState; opened?: string } | { reason: string };
-
-/** The lots the commands before the current one, in the same batch, opened; see `openedKey`. */
-export type OpenedLots = ReadonlySet<string>;
 
 /** Identifies a lot across silos: entry ids are only unique within one. */
 export const openedKey = (currency: Currency, entryId: string): string => `${currency}/${entryId}`;
 
+/** A lot that a command of the inbox opened, and which command. */
+export interface OpenedLot {
+  ticker: Ticker;
+  /** The 1-based position of the buy in its batch, and its line. */
+  command: number;
+  line: number;
+  /** The inbox file that opened it; absent: the batch under check. */
+  file?: string;
+}
+
 /**
- * Which command opened a lot, for the lots the batch under check has opened: the `openedKey` of the lot to the
- * words a refusal uses for it ("command 2 of this batch"). A lot it does not name is the portfolio's.
+ * The lots the commands of the inbox opened so far, by `openedKey`: the ones of the batch under check (no
+ * `file`: a `set_stop` gives them their initial stop) and the ones of the clean files before it. A lot it
+ * does not hold is the portfolio's.
  */
-export type LotSources = ReadonlyMap<string, string>;
+export type OpenedLots = ReadonlyMap<string, OpenedLot>;
+
+/** True for a lot the batch under check opened. */
+const ownLot = (opened: OpenedLots, key: string): boolean => {
+  const lot = opened.get(key);
+  return lot !== undefined && lot.file === undefined;
+};
+
+/** Where a lot was opened, in words: the batch under check, or an earlier file. */
+export const sourceOf = (lot: OpenedLot): string =>
+  lot.file === undefined
+    ? `command ${lot.command} of this batch`
+    : `command ${lot.command} of inbox/${printable(lot.file)}`;
+
+/** A stop is a price; a position with none, or a stop that is not above zero, has no stop. */
+export const stopOf = (position: Pick<Position, "stopLoss">): number | null =>
+  position.stopLoss !== null && position.stopLoss > 0 ? position.stopLoss : null;
 
 const refused = (reason: string): { reason: string } => ({ reason });
 
@@ -146,6 +169,10 @@ function movedCash<C extends Currency>(
       : {}),
   };
 }
+
+/** The words for an amount that rounds to zero cents: below half a cent, the way `countedInCents` rounds. */
+const belowHalfACent = (command: { units: number; price: number; currency: Currency }): string =>
+  `${command.units} units at ${command.price} ${command.currency} is below half a cent`;
 
 /** The reason for units no lot could be closed with: `planSale` takes less than this as nothing left to sell. */
 const tooFewUnits = (units: number): string =>
@@ -197,9 +224,7 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
     currency,
   );
   if (amount === 0) {
-    return refused(
-      `the buy of ${printable(ticker)} costs nothing: ${command.units} units at ${command.price} is below one cent`,
-    );
+    return refused(`the buy of ${printable(ticker)} costs nothing: ${belowHalfACent(command)}`);
   }
   const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${printable(ticker)}`);
   if (cost > silo.cash) {
@@ -217,7 +242,7 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
     entryPrice: command.price,
     // A buy never changes the stop: the lot starts with the one the position has (a `set_stop` later in
     // the batch replaces it), or none, and then it carries `no_stop` when the batch is applied (#132).
-    initialStop: held?.stopLoss ?? null,
+    initialStop: held ? stopOf(held) : null,
     entryCosts: command.costs ?? null,
     origin: "propietario",
     // The rules version is filled when the batch is applied (#132); the check does not need it.
@@ -254,73 +279,84 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   };
 }
 
-/** Where `lots` come from, in words: `portfolio.md`, the commands that opened them, or both. */
-function describeSources(lots: readonly Lot[], currency: Currency, sources: LotSources): string {
+/**
+ * Where `lots` (the open lots of `ticker` a sale reaches) come from, in words: `portfolio.md`, the commands that
+ * opened them, or both. With no lot at all the ticker may have been in the portfolio, or opened and sold by the
+ * commands before: name the ones that opened any of it.
+ */
+function describeSources(lots: readonly Lot[], currency: Currency, ticker: Ticker, opened: OpenedLots): string {
   const labels = new Set<string>();
   let fromPortfolio = lots.length === 0;
   for (const lot of lots) {
-    const label = sources.get(openedKey(currency, lot.entryId));
-    if (label === undefined) fromPortfolio = true;
-    else labels.add(label);
+    const origin = opened.get(openedKey(currency, lot.entryId));
+    if (origin === undefined) fromPortfolio = true;
+    else labels.add(sourceOf(origin));
   }
-  // No lot at all: they may have been in the portfolio or opened (and sold) by the batch, so name both when it opened any.
-  if (lots.length === 0 && [...sources.keys()].some((key) => key.startsWith(`${currency}/`))) {
-    labels.add("the earlier commands");
+  if (lots.length === 0) {
+    const prefix = openedKey(currency, "");
+    const before = [...opened].filter(([key, origin]) => key.startsWith(prefix) && origin.ticker === ticker);
+    if (before.some(([, origin]) => origin.file === undefined)) labels.add("the earlier commands");
+    if (before.some(([, origin]) => origin.file !== undefined)) labels.add("an earlier file");
   }
-  return [...(fromPortfolio ? ["portfolio.md"] : []), ...labels].join(" and ");
+  return [...(fromPortfolio ? [LOTS_SOURCE] : []), ...labels].join(" and ");
+}
+
+/**
+ * The silo with the stop of `ticker` set to `stop` (null: none). The lots the batch opened before the command
+ * start with that stop, the older ones keep theirs (their R): the initial stop of a lot is the stop of its
+ * position right after the batch that holds the buy.
+ */
+function withStop<C extends Currency>(
+  silo: PortfolioSnapshot<C>,
+  ticker: Ticker,
+  stop: number | null,
+  opened: OpenedLots,
+): PortfolioSnapshot<C> {
+  return {
+    ...silo,
+    positions: silo.positions.map((p) => (p.ticker === ticker ? { ...p, stopLoss: stop } : p)),
+    lots: silo.lots.map((l) =>
+      l.ticker === ticker && ownLot(opened, openedKey(silo.currency, l.entryId)) ? { ...l, initialStop: stop } : l,
+    ),
+  };
 }
 
 export function setStop<C extends Currency>(
   state: InboxState,
   command: SetStop<C>,
-  opened: OpenedLots = new Set(),
+  opened: OpenedLots = new Map(),
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
-  const { currency, ticker, price } = command;
-  if (!(price > 0)) return refused(`the stop of ${ticker}: the price must be greater than zero`);
-  const held = silo.positions.find((p) => p.ticker === ticker);
-  if (held === undefined)
-    return refused(`cannot set a stop: there is no open position in ${ticker} in the ${currency} silo`);
-  return {
-    state: withSilo(state, {
-      ...silo,
-      positions: silo.positions.map((p) => (p === held ? { ...p, stopLoss: price } : p)),
-      // The lots this batch opened before the command start with this stop; the older ones keep theirs (their R).
-      lots: silo.lots.map((l) =>
-        opened.has(openedKey(currency, l.entryId)) && l.ticker === ticker ? { ...l, initialStop: price } : l,
-      ),
-    }),
-  };
+  const { currency, ticker } = command;
+  // The price is positive: the parser refuses anything else, and the handler does not check it again.
+  if (!silo.positions.some((p) => p.ticker === ticker)) {
+    return refused(`cannot set a stop: there is no open position in ${printable(ticker)} in the ${currency} silo`);
+  }
+  return { state: withSilo(state, withStop(silo, ticker, command.price, opened)) };
 }
 
-export function clearStop(state: InboxState, command: ClearStop, opened: OpenedLots = new Set()): HandlerResult {
+export function clearStop(state: InboxState, command: ClearStop, opened: OpenedLots = new Map()): HandlerResult {
   const { ticker } = command;
-  const silos = CURRENCIES.flatMap((c) => {
-    const silo = siloOf(state, c);
-    return !isRefusal(silo) && silo.positions.some((p) => p.ticker === ticker) ? [silo] : [];
-  });
-  if (silos.length === 0) return refused(`cannot clear a stop: there is no open position in ${ticker}`);
-  const stopped = silos.filter((silo) => silo.positions.some((p) => p.ticker === ticker && p.stopLoss !== null));
-  if (stopped.length === 0) return refused(`cannot clear a stop: ${ticker} has no stop to clear`);
-  let next = state;
-  for (const silo of stopped) {
-    next = withSilo(next, {
-      ...silo,
-      positions: silo.positions.map((p) => (p.ticker === ticker ? { ...p, stopLoss: null } : p)),
-      // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
-      lots: silo.lots.map((l) =>
-        opened.has(openedKey(silo.currency, l.entryId)) && l.ticker === ticker ? { ...l, initialStop: null } : l,
-      ),
-    });
+  // A silo the portfolio does not have holds nothing; one that fails to read is the state's error, not an absent position.
+  const silos: PortfolioSnapshot[] = [];
+  for (const currency of CURRENCIES) {
+    if (state[currency] === undefined) continue;
+    const silo = siloOf(state, currency);
+    if (isRefusal(silo)) return silo;
+    if (silo.positions.some((p) => p.ticker === ticker)) silos.push(silo);
   }
-  return { state: next };
+  if (silos.length === 0) return refused(`cannot clear a stop: there is no open position in ${printable(ticker)}`);
+  const stopped = silos.filter((silo) => silo.positions.some((p) => p.ticker === ticker && stopOf(p) !== null));
+  if (stopped.length === 0) return refused(`cannot clear a stop: ${printable(ticker)} has no stop to clear`);
+  // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
+  return { state: stopped.reduce((next, silo) => withSilo(next, withStop(silo, ticker, null, opened)), state) };
 }
 
 export function sale<C extends Currency>(
   state: InboxState,
   command: Sale<C>,
-  sources: LotSources = new Map(),
+  opened: OpenedLots = new Map(),
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
@@ -332,7 +368,7 @@ export function sale<C extends Currency>(
   );
   if (command.lot !== undefined && !chosen.some((l) => l.units > 0)) {
     return refused(
-      `cannot sell lot ${JSON.stringify(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
+      `cannot sell lot ${quoted(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
     );
   }
   const amount = countedInCents(
@@ -351,25 +387,30 @@ export function sale<C extends Currency>(
         price: command.price,
         amount,
         costs: command.costs,
-        lotsFrom: describeSources(
-          chosen.filter((l) => l.units > 0),
-          currency,
-          sources,
-        ),
       },
       new Map(),
     );
   } catch (err) {
-    // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash.
-    if (err instanceof SaleRefusal) return refused(err.message);
+    // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash. Where the
+    // lots come from is worked out here, only for a refusal that names it.
+    if (err instanceof SaleRefusal) {
+      return refused(
+        err.named(
+          describeSources(
+            chosen.filter((l) => l.units > 0),
+            currency,
+            ticker,
+            opened,
+          ),
+        ),
+      );
+    }
     throw err;
   }
   // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
   // A sale that uses a lot up is the way out for a dust lot, so it may credit 0.00 (#149).
   if (amount === 0 && !shares.some((share) => share.unitsLeft === 0)) {
-    return refused(
-      `the sale of ${ticker} yields nothing: ${command.units} units at ${command.price} is below one cent`,
-    );
+    return refused(`the sale of ${printable(ticker)} yields nothing: ${belowHalfACent(command)}`);
   }
   const costs = command.costs ?? zero(currency);
   if (costs > amount) {
@@ -414,7 +455,7 @@ export interface InitialStopBreach {
 export function initialStopBreaches(state: InboxState, opened: OpenedLots): InitialStopBreach[] {
   return CURRENCIES.flatMap((currency) =>
     (state[currency]?.lots ?? []).flatMap((l) =>
-      opened.has(openedKey(currency, l.entryId)) && l.initialStop !== null && l.initialStop >= l.entryPrice
+      ownLot(opened, openedKey(currency, l.entryId)) && l.initialStop !== null && l.initialStop >= l.entryPrice
         ? [{ currency, ticker: l.ticker, entryId: l.entryId, entryPrice: l.entryPrice, stop: l.initialStop }]
         : [],
     ),
@@ -422,16 +463,11 @@ export function initialStopBreaches(state: InboxState, opened: OpenedLots): Init
 }
 
 /**
- * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the batch
- * opened before it, for the stops; `sources`: who opened them, for the words of a sale refusal. Never throws for
- * an amount too large to count.
+ * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the commands
+ * before it opened, for the stops and for the words of a sale refusal. Never throws for an amount too large to
+ * count.
  */
-export function applyCommand(
-  state: InboxState,
-  command: Command,
-  opened: OpenedLots = new Set(),
-  sources: LotSources = new Map(),
-): HandlerResult {
+export function applyCommand(state: InboxState, command: Command, opened: OpenedLots = new Map()): HandlerResult {
   try {
     switch (command.kind) {
       case "deposit":
@@ -441,7 +477,7 @@ export function applyCommand(
       case "buy":
         return buy(state, command);
       case "sale":
-        return sale(state, command, sources);
+        return sale(state, command, opened);
       case "set_stop":
         return setStop(state, command, opened);
       case "clear_stop":

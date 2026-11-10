@@ -114,12 +114,14 @@ export const hasSection = (model: PortfolioModel, currency: Currency, kind: Port
   spanOf(model, currency, kind) !== null;
 
 /**
- * The `##` headings of the file that name the currency, whatever follows it (and in any case): what a section
- * of the silo looks like when it is misspelt. Trimmed, in file order.
+ * The `##` headings of the file that are shaped like a heading of the silo, `## <CURRENCY> — <anything>`, whatever
+ * the section and the case of the currency: what a section of the silo looks like when it is misspelt. Like
+ * `spanOf` it takes the line as it starts: an indented `## USD — Cash`, or `## usd plans` (no dash), is not a
+ * heading of the silo. In file order.
  */
 export function siloHeadings(model: PortfolioModel, currency: Currency): string[] {
-  const headingRe = new RegExp(`^##\\s+${currency}\\b`, "i");
-  return model.lines.map((line) => line.text.trim()).filter((text) => headingRe.test(text));
+  const headingRe = new RegExp(`^##\\s+${currency}\\s+[—–-](?:\\s|$)`, "i");
+  return model.lines.map((line) => line.text.trimEnd()).filter((text) => headingRe.test(text));
 }
 
 /** The table of the section; `null` if the section does not exist. */

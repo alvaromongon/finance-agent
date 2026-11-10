@@ -375,19 +375,33 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   3. Check each command with its handler, in order, against the state the previous ones would produce, and
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
-     explicitly. A sale whose costs exceed its proceeds, or whose proceeds round to zero cents (unless it uses up a lot, which it may close for 0.00), is refused; a refusal about
-     lots says whether they are the portfolio's or were opened by an earlier command. A command that did not read, or that a handler refuses, leaves the cash and lots of its currency (both when
-     its currency is unknown) unknown: the later commands of that currency are not checked against them, so they
-     report no misleading error (a refused buy does not make its sale fail with "no open lots"). A `clear_stop`
-     names no currency, so it waits for either. Each is listed as "not checked" with the command that blocked it,
-     so fixing the errors listed and checking again reveals no unannounced one. A silo the portfolio does not have
-     blocks nothing: every command of it is refused for that.
-     A stop is its own command: `buy` carries none, `set_stop` sets or moves it and `clear_stop` removes it
-     ([the rule](input-format.md#inboxyaml)). After the last command, a lot the batch opened whose initial stop (the
-     position's stop) is at or above its entry price is refused, because R would be zero or negative (#159).
+     explicitly. A sale whose costs exceed its proceeds, or whose proceeds round to zero cents (under half a cent;
+     unless it uses up a lot, which it may close for 0.00), is refused; a refusal about lots says whether they
+     are the portfolio's, were opened by an earlier command of the batch ("command 2 of this batch") or by an
+     earlier file ("command 1 of inbox/a.yaml"), and a ticker none of them opened is the portfolio's alone.
+     - **What a failure leaves unknown.** A command that did not read, or that a handler refuses, leaves the cash
+       and lots of its currency (both when its currency is unknown, and only for a silo the portfolio has)
+       unknown: the later commands of that currency are not checked against them, so they report no misleading
+       error (a refused buy does not make its sale fail with "no open lots"). A `set_stop` or `clear_stop` that
+       fails changes no cash or lots: it leaves only the stop of its ticker unknown (in every currency for a
+       `clear_stop`), so the later cash and lot commands are still checked. A `clear_stop` names no currency: it
+       waits for either.
+     - **What is listed instead.** Each command not checked is listed as "not checked" with the command that
+       blocked it, so the next check shows no error of the same batch that this one hid. A command whose refusal
+       an earlier file that was rejected could explain (that file touched its currency, and for a sale or a stop
+       its ticker) is listed as "not checked: depends on" that file, and so is the batch that holds it. Fixing the
+       errors listed can still reveal a new one: in a later file that depends on a rejected one but passed
+       against the state without it, and in an initial stop (below) of a currency that a refusal blocked.
+     - **Stops.** A stop is its own command: `buy` carries none, `set_stop` sets or moves it and `clear_stop`
+       removes it; a stop that is not above zero is no stop. The initial stop of the lots a batch opened is the
+       one rule of [the input format](input-format.md#inboxyaml): after the last command, a lot whose initial stop
+       breaks it is refused (#159), once per `set_stop` or position, naming its lots and where the stop comes from
+       (the `set_stop`, an earlier file, or `portfolio.md`). In a currency a refusal blocked it is listed as not
+       checked on the buy instead.
   4. Print every error, and every command not checked, as file, command position, line and reason, then a
      summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
-     position with no stop gets a warning line for it, which does not change the exit code.
+     position they touched (a buy, a sale, a `set_stop` or `clear_stop`) with no stop gets a warning line for it,
+     naming the silo, which does not change the exit code.
 - **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never reads the inbox, so a
   batch with errors does not affect its stop check.
 - **Not built yet**: applying a batch and moving it to `applied/` or `rejected/` (`inbox:ingest`).

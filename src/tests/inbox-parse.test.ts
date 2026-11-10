@@ -343,10 +343,10 @@ describe("inbox format", () => {
         [1],
       );
       assert.deepEqual(unread, [
-        { position: 2, currencies: ["USD"] },
-        { position: 3, currencies: [] },
-        { position: 4, currencies: [] },
-        { position: 5, currencies: ["USD", "EUR"] },
+        { position: 2, currencies: ["USD"], kind: "buy", ticker: undefined },
+        { position: 3, currencies: [], kind: "withdrawal", ticker: undefined },
+        { position: 4, currencies: [], kind: undefined, ticker: undefined },
+        { position: 5, currencies: ["USD", "EUR"], kind: "buy", ticker: "TCK" },
       ]);
     });
   });

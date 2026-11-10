@@ -9,7 +9,7 @@
 import yaml from "js-yaml";
 import { CURRENCIES, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
-import { checkTicker } from "../ticker.js";
+import { checkTicker, type Ticker } from "../ticker.js";
 import type { Command } from "./inbox-handlers.js";
 
 /** The `schema_version` of the inbox format this engine reads. */
@@ -32,11 +32,17 @@ export interface ParsedCommand {
 /**
  * A command that did not parse. What it would have done to the state is unknown, so the commands after it are
  * not checked against the cash and lots of `currencies`: the ones it was written in, or both silos when none of
- * its amounts read (N8: a later command must not report a cash or lot error that only this one explains).
+ * its amounts read (N8: a later command must not report a cash or lot error that only this one explains). A
+ * `set_stop` or `clear_stop` changes no cash or lots: only the stop of its `ticker` (any, when it did not
+ * read) is unknown.
  */
 export interface UnreadCommand {
   position: number;
   currencies: Currency[];
+  /** The command's kind, when it read that far. */
+  kind?: CommandKind;
+  /** The ticker, when it read that far. */
+  ticker?: Ticker;
 }
 
 export interface ParsedBatch {
@@ -47,13 +53,19 @@ export interface ParsedBatch {
 }
 
 const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale", "set_stop", "clear_stop"] as const;
-const FIELDS: Record<(typeof COMMAND_KINDS)[number], readonly string[]> = {
+export type CommandKind = (typeof COMMAND_KINDS)[number];
+const FIELDS: Record<CommandKind, readonly string[]> = {
   deposit: ["command", "amount"],
   withdrawal: ["command", "amount"],
   buy: ["command", "ticker", "date", "units", "price", "costs"],
   sale: ["command", "ticker", "date", "units", "price", "costs", "lot", "stop_executed"],
   set_stop: ["command", "ticker", "date", "price"],
   clear_stop: ["command", "ticker", "date"],
+};
+
+/** Fields that used to exist: a command that still carries one is told where it went. */
+const REMOVED_FIELDS: Partial<Record<CommandKind, Record<string, string>>> = {
+  buy: { stop: 'a buy carries no "stop": set it with a set_stop command (docs/input-format.md › `inbox/`)' },
 };
 
 const DECIMAL = /^\d+(\.\d+)?$/;
@@ -101,6 +113,8 @@ function isDate(raw: string): boolean {
 interface Unread {
   problems: string[];
   currencies: Currency[];
+  commandKind?: CommandKind;
+  ticker?: Ticker;
 }
 
 /** One command's mapping read into a command, or every problem found in it. */
@@ -126,14 +140,13 @@ function readCommand(raw: unknown): Command | Unread {
   const problems: string[] = [];
   /** The currencies of the amounts that read, in the order written: what is left to say about a command that fails. */
   const seen: Currency[] = [];
-  const unread = (): Unread => ({ problems, currencies: seen });
+  let tickerRead: Ticker | undefined;
+  const unread = (): Unread => ({ problems, currencies: seen, commandKind: kind, ticker: tickerRead });
   for (const name of Object.keys(fields)) {
+    const removed = REMOVED_FIELDS[kind]?.[name];
+    if (removed !== undefined) problems.push(removed);
     // Printed as JSON: a name written in the file may hold control characters (S4).
-    if (kind === "buy" && name === "stop") {
-      problems.push('a buy carries no "stop": set it with a set_stop command (docs/input-format.md › `inbox/`)');
-    } else if (!FIELDS[kind].includes(name)) {
-      problems.push(`unknown field ${JSON.stringify(name)} for a ${kind}`);
-    }
+    else if (!FIELDS[kind].includes(name)) problems.push(`unknown field ${JSON.stringify(name)} for a ${kind}`);
   }
 
   /** The text of a field: undefined (and a problem when `required`) if absent or not text. */
@@ -179,6 +192,7 @@ function readCommand(raw: unknown): Command | Unread {
       problems.push(checked.problem);
       return undefined;
     }
+    tickerRead = checked.ticker;
     return checked.ticker;
   };
   const units = (): number | undefined => {
@@ -363,7 +377,7 @@ export function parseBatch(text: string): ParsedBatch {
     const read = readCommand(raw);
     if ("problems" in read) {
       for (const reason of read.problems) issues.push({ command: position, line, reason });
-      unread.push({ position, currencies: read.currencies });
+      unread.push({ position, currencies: read.currencies, kind: read.commandKind, ticker: read.ticker });
     } else {
       commands.push({ position, line, command: read });
     }

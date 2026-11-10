@@ -8,6 +8,7 @@ import { DECISION_ORIGINS } from "../decisions.js";
 import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
 import { missingLotsSection, portfolioWhere } from "./portfolio-where.js";
+import { quoted } from "./printable.js";
 import {
   hasSection,
   parsePortfolio,
@@ -93,14 +94,15 @@ export class SiloAbsentError extends Error {
 export function assertPortfolioSections(md: string, currency: Currency): void {
   const model = parsePortfolio(md);
   const anySection = (["Cash", "Positions", "Lots"] as const).some((kind) => hasSection(model, currency, kind));
-  // Misspelt headings are not an absent silo: the file does have one, and the owner must be told which.
-  const headings = anySection ? [] : siloHeadings(model, currency);
+  // Misspelt headings are not an absent silo: the file does have one, and the owner must be told which, also
+  // when it has some of the silo's sections and only the others are missing.
+  const headings = siloHeadings(model, currency);
   const absent = !anySection && headings.length === 0;
   for (const kind of ["Cash", "Positions"] as const) {
     if (!hasSection(model, currency, kind)) {
       const found =
         headings.length > 0
-          ? `; the headings of that silo in the file are ${headings.map((h) => JSON.stringify(h)).join(", ")}`
+          ? `; the headings of that silo in the file are ${headings.map((h) => quoted(h)).join(", ")}`
           : "";
       throw new (absent ? SiloAbsentError : Error)(
         `${portfolioWhere(currency)}: missing section "## ${currency} — ${kind}" (see docs/input-format.md)${found}`,
@@ -177,7 +179,7 @@ function reportTooLarge(
   onUnreadable?: (message: string) => void,
 ): void {
   if (!onUnreadable || parseMarkdownNumber(cell) === null) return;
-  onUnreadable(`${where} ${JSON.stringify((cell ?? "").trim())} is too large to count in cents (read as ${used})`);
+  onUnreadable(`${where} ${quoted((cell ?? "").trim())} is too large to count in cents (read as ${used})`);
 }
 
 // ─── Decision logs ────────────────────────────────────────────────────────────
@@ -222,7 +224,7 @@ export function parseScreeningLog(md: string, onSkip: (message: string) => void 
       // match no filter and the ticker would be analyzed again too early.
       if (!SCREENING_RESULTS.includes(cells[4] as ScreeningResultValue)) {
         throw new Error(
-          `screening-log.md: unknown Result ${JSON.stringify(cells[4])} in row ${cells[0]} of ${cells[3]} (values: ${SCREENING_RESULTS.join(", ")})`,
+          `screening-log.md: unknown Result ${quoted(cells[4])} in row ${cells[0]} of ${cells[3]} (values: ${SCREENING_RESULTS.join(", ")})`,
         );
       }
       return cells;
@@ -230,7 +232,7 @@ export function parseScreeningLog(md: string, onSkip: (message: string) => void 
     .flatMap((cells) => {
       const checked = checkTicker(cells[0]);
       if ("problem" in checked) {
-        onSkip(`screening-log.md: row ${JSON.stringify(cells[0])} of ${cells[3]} skipped: ${checked.problem}`);
+        onSkip(`screening-log.md: row ${quoted(cells[0])} of ${cells[3]} skipped: ${checked.problem}`);
         return [];
       }
       return [
@@ -264,7 +266,7 @@ export function extractRetireList(reviewText: string): Ticker[] {
         if ("ticker" in checked) return [checked.ticker];
         // A trailing comma leaves an empty token: nothing was asked.
         if (t.trim() !== "")
-          warnSkipped(`RETIRE: ${JSON.stringify(t.trim())} is not a ticker and was not retired: ${checked.problem}`);
+          warnSkipped(`RETIRE: ${quoted(t.trim())} is not a ticker and was not retired: ${checked.problem}`);
         return [];
       })
     : [];
@@ -413,7 +415,7 @@ export function parsePositions<C extends Currency>(
 
     const checked = checkTicker(rawTicker);
     if ("problem" in checked) {
-      const message = `## ${currency} — Positions: Ticker ${JSON.stringify(rawTicker)}: ${checked.problem}`;
+      const message = `## ${currency} — Positions: Ticker ${quoted(rawTicker)}: ${checked.problem}`;
       if (!onSkip) throw new Error(message);
       onSkip(`${message}${POSITION_ROW_SKIPPED}`);
       continue;
@@ -554,8 +556,7 @@ function readLotRow<C extends Currency>(
   if (isPlaceholder(cell("entryId"))) return { reason: "no Entry id" };
   if (isPlaceholder(cell("ticker"))) return { reason: "no Ticker" };
   const ticker = checkTicker(cell("ticker"));
-  if ("problem" in ticker)
-    return { reason: `Ticker ${JSON.stringify(cell("ticker"))} does not read: ${ticker.problem}` };
+  if ("problem" in ticker) return { reason: `Ticker ${quoted(cell("ticker"))} does not read: ${ticker.problem}` };
 
   const numbers = {} as Record<"units" | "entryUnits" | "entryPrice", number>;
   for (const key of ["units", "entryUnits", "entryPrice"] as const) {

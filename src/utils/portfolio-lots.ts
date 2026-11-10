@@ -21,11 +21,22 @@ import {
   type Money,
 } from "../money.js";
 
-/** `planSale` refuses a sale in words (no open lot, more units than open, an entry cost that cannot be shared): the owner's data, not a bug. */
+/** How a refusal names the file the lots are in, unless the caller says where they come from. */
+export const LOTS_SOURCE = "portfolio.md";
+
+/**
+ * `planSale` refuses a sale in words (no open lot, more units than open, an entry cost that cannot be shared):
+ * the owner's data, not a bug. `message` names the lots as `LOTS_SOURCE`; `named` gives it with the words of the
+ * caller who knows better where the lots come from (the inbox: some were opened by its own commands).
+ */
 export class SaleRefusal extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly named: (lotsFrom: string) => string;
+
+  constructor(message: string | ((lotsFrom: string) => string)) {
+    const named = typeof message === "string" ? () => message : message;
+    super(named(LOTS_SOURCE));
     this.name = "SaleRefusal";
+    this.named = named;
   }
 }
 
@@ -63,8 +74,6 @@ export interface SalePlanInput<C extends Currency = Currency> {
   price: number;
   /** Amount of the whole sale, in the silo currency. */
   amount: number;
-  /** Where the lots come from, as a refusal names it; absent: the file's own words. */
-  lotsFrom?: string;
   /** Costs of the whole sale; absent if none were given. */
   costs?: Money<C>;
   /**
@@ -112,7 +121,7 @@ export function planSale<C extends Currency>(
     .map(({ lot }) => lot);
   if (ordered.length === 0)
     throw new SaleRefusal(
-      `Cannot sell ${printable(sale.ticker)}: no open lots for ${printable(sale.ticker)} in ${sale.lotsFrom ?? "portfolio.md"}`,
+      (lotsFrom) => `Cannot sell ${printable(sale.ticker)}: no open lots for ${printable(sale.ticker)} in ${lotsFrom}`,
     );
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
@@ -121,7 +130,8 @@ export function planSale<C extends Currency>(
   const tolerance = (sale.unitsFromAmount ? unitsWorthHalfACent(sale.price) : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
     throw new SaleRefusal(
-      `Cannot sell ${sale.units} units of ${printable(sale.ticker)}: only ${open} are open in ${sale.lotsFrom ?? "Lots"}`,
+      (lotsFrom) =>
+        `Cannot sell ${sale.units} units of ${printable(sale.ticker)}: only ${open} are open in ${lotsFrom}`,
     );
   }
 
@@ -197,4 +207,4 @@ function entryCostsShare<C extends Currency>(
 }
 
 /** How a lot is named in a refusal: its entry id and ticker. */
-const lotName = (lot: Lot<Currency>): string => `lot ${lot.entryId} (${printable(lot.ticker)})`;
+const lotName = (lot: Lot<Currency>): string => `lot ${printable(lot.entryId)} (${printable(lot.ticker)})`;
