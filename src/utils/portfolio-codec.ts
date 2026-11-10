@@ -115,13 +115,16 @@ export const hasSection = (model: PortfolioModel, currency: Currency, kind: Port
 
 /**
  * The `##` headings of the file that are shaped like a heading of the silo, `## <CURRENCY> — <anything>`, whatever
- * the section and the case of the currency: what a section of the silo looks like when it is misspelt. Like
+ * the section and the case of the currency, or with the dash misspelt: what a section of the silo looks like when it is misspelt. Like
  * `spanOf` it takes the line as it starts: an indented `## USD — Cash`, or `## usd plans` (no dash), is not a
  * heading of the silo. In file order.
  */
 export function siloHeadings(model: PortfolioModel, currency: Currency): string[] {
-  const headingRe = new RegExp(`^##\\s+${currency}\\s+[—–-](?:\\s|$)`, "i");
-  return model.lines.map((line) => line.text.trimEnd()).filter((text) => headingRe.test(text));
+  // The currency in capitals followed by anything but a letter or digit (`## USD Cash`, `## USD—Cash`, `## USD: Cash`),
+  // or in any case followed by the dash (`## usd — Cash`); `## usd plans` and `## USDT — Cash` are other headings.
+  const capitals = new RegExp(`^##\\s+${currency}(?![\\p{L}\\p{N}])`, "u");
+  const dashed = new RegExp(`^##\\s+${currency}\\s*[—–-]`, "i");
+  return model.lines.map((line) => line.text.trimEnd()).filter((text) => capitals.test(text) || dashed.test(text));
 }
 
 /** The table of the section; `null` if the section does not exist. */

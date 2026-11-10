@@ -547,6 +547,23 @@ describe("inbox:check", () => {
         assert.match(lineOf(lines, 3)!, /exceeds the available cash/);
       });
 
+      it("a clear_stop not checked because its currency is blocked leaves no cascade error in another currency", async () => {
+        await withPortfolio(portfolioMd({ eur: [{ ticker: "TCK", units: 1, price: 100, stop: 110 }] }));
+        await drop(
+          "a.yaml",
+          batch(
+            "command: buy\nticker: ZZZ\ndate: 2026-09-15\nunits: 10\nprice: 100 USD", // 1: refused for cash, blocks USD
+            "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 100 EUR", // 2: the stop of 110 is not below it
+            "command: clear_stop\nticker: TCK", // 3: would clear that stop; not checked
+          ),
+        );
+        const { lines } = await checkInbox();
+        assert.match(lineOf(lines, 1)!, /more than the available cash/);
+        assert.match(lineOf(lines, 2)!, /not checked: command (1 was refused|3 was not checked), so/);
+        assert.match(lineOf(lines, 3)!, /not checked: command 1 was refused/);
+        assert.doesNotMatch(lines.join("\n"), /R would be zero or negative/);
+      });
+
       it("an unreadable clear_stop leaves the stop of its ticker unknown in every currency", async () => {
         await drop(
           "a.yaml",
@@ -632,12 +649,15 @@ describe("inbox:check", () => {
         assert.match(lines[0], /^inbox\/b\.yaml: command 1.*only 2 are open in command 1 of inbox\/a\.yaml$/);
       });
 
-      it("says nothing of lots an earlier file opened and a later one sold out", async () => {
+      it("names an earlier file for a ticker it opened and a later one sold out, though no lot of it is left", async () => {
         await drop("a.yaml", batch(buyTck(100, 2)));
         await drop("b.yaml", batch(sell(2)));
         await drop("c.yaml", batch(sell(1)));
         const { lines } = await checkInbox();
-        assert.match(lines[0], /^inbox\/c\.yaml: command 1.*no open lots for TCK in portfolio\.md$/);
+        assert.match(
+          lines[0],
+          /^inbox\/c\.yaml: command 1.*no open lots for TCK in portfolio\.md and an earlier file$/,
+        );
       });
 
       it("names the commands of the batch for a ticker they sold out, and not for another ticker", async () => {
@@ -667,6 +687,17 @@ describe("inbox:check", () => {
         assert.match(b[1], /command 2, line 8: the withdrawal of 99999\.00 EUR exceeds/);
         assert.doesNotMatch(lines.join("\n"), /no open lots/);
         assert.match(lines.at(-1)!, /^2 error\(s\) in 2 of 2 batch\(es\); 1 command\(s\) not checked\.$/);
+      });
+
+      it("says the position, not cash and lots, for a set_stop that depends on a rejected file", async () => {
+        await drop("a.yaml", batch(buyTck(100, 2), "command: deposit\namount: 5 USD\nbogus: 1"));
+        await drop("b.yaml", batch(setStop("TCK", "90 USD")));
+        const { lines } = await checkInbox();
+        const b = lines.find((l) => l.startsWith("inbox/b.yaml"))!;
+        assert.match(
+          b,
+          /not checked: depends on inbox\/a\.yaml, which was rejected, so the position it would change is unknown$/,
+        );
       });
 
       it("a file that is not YAML could have changed anything: a later refusal depends on it", async () => {

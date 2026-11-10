@@ -447,6 +447,23 @@ describe("assertPortfolioSections", () => {
       }
     });
 
+    it("is not absent when its headings are misspelt in the dash or the spaces: they are still named", () => {
+      for (const typo of ["USD—Cash", "USD Cash", "USD: Cash", "USD -Cash"]) {
+        const md = PORTFOLIO_MD.replaceAll("## USD — Cash", `## ${typo}`)
+          .replaceAll("## USD — Positions", `## ${typo.replace("Cash", "Positions")}`)
+          .replaceAll("## USD — Lots", `## ${typo.replace("Cash", "Lots")}`);
+        assert.throws(
+          () => assertPortfolioSections(md, "USD"),
+          (err: unknown) => {
+            assert.ok(err instanceof Error && !(err instanceof SiloAbsentError), typo);
+            assert.ok(err.message.includes(`"## ${typo}"`), `${typo}: ${err.message}`);
+            return true;
+          },
+          typo,
+        );
+      }
+    });
+
     it("names the headings found also when only some of its sections are missing", () => {
       const md = PORTFOLIO_MD.replace("## USD — Cash", "## USD — Caja");
       assert.throws(

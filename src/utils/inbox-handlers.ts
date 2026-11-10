@@ -284,7 +284,13 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
  * opened them, or both. With no lot at all the ticker may have been in the portfolio, or opened and sold by the
  * commands before: name the ones that opened any of it.
  */
-function describeSources(lots: readonly Lot[], currency: Currency, ticker: Ticker, opened: OpenedLots): string {
+function describeSources(
+  lots: readonly Lot[],
+  currency: Currency,
+  ticker: Ticker,
+  opened: OpenedLots,
+  earlierTickers: ReadonlySet<string>,
+): string {
   const labels = new Set<string>();
   let fromPortfolio = lots.length === 0;
   for (const lot of lots) {
@@ -296,7 +302,9 @@ function describeSources(lots: readonly Lot[], currency: Currency, ticker: Ticke
     const prefix = openedKey(currency, "");
     const before = [...opened].filter(([key, origin]) => key.startsWith(prefix) && origin.ticker === ticker);
     if (before.some(([, origin]) => origin.file === undefined)) labels.add("the earlier commands");
-    if (before.some(([, origin]) => origin.file !== undefined)) labels.add("an earlier file");
+    if (before.some(([, origin]) => origin.file !== undefined) || earlierTickers.has(openedKey(currency, ticker))) {
+      labels.add("an earlier file");
+    }
   }
   return [...(fromPortfolio ? [LOTS_SOURCE] : []), ...labels].join(" and ");
 }
@@ -357,6 +365,7 @@ export function sale<C extends Currency>(
   state: InboxState,
   command: Sale<C>,
   opened: OpenedLots = new Map(),
+  earlierTickers: ReadonlySet<string> = new Set(),
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
@@ -401,6 +410,7 @@ export function sale<C extends Currency>(
             currency,
             ticker,
             opened,
+            earlierTickers,
           ),
         ),
       );
@@ -464,10 +474,16 @@ export function initialStopBreaches(state: InboxState, opened: OpenedLots): Init
 
 /**
  * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the commands
- * before it opened, for the stops and for the words of a sale refusal. Never throws for an amount too large to
+ * before it opened, for the stops and for the words of a sale refusal; `earlierTickers` (`openedKey(currency,
+ * ticker)`): the tickers earlier files opened, even if sold out since, for the same words. Never throws for an amount too large to
  * count.
  */
-export function applyCommand(state: InboxState, command: Command, opened: OpenedLots = new Map()): HandlerResult {
+export function applyCommand(
+  state: InboxState,
+  command: Command,
+  opened: OpenedLots = new Map(),
+  earlierTickers: ReadonlySet<string> = new Set(),
+): HandlerResult {
   try {
     switch (command.kind) {
       case "deposit":
@@ -477,7 +493,7 @@ export function applyCommand(state: InboxState, command: Command, opened: Opened
       case "buy":
         return buy(state, command);
       case "sale":
-        return sale(state, command, opened);
+        return sale(state, command, opened, earlierTickers);
       case "set_stop":
         return setStop(state, command, opened);
       case "clear_stop":

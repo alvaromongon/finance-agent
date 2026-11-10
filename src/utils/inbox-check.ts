@@ -49,6 +49,8 @@ export interface Earlier {
   lots: OpenedLots;
   stops: StopSources;
   rejected: readonly RejectedFile[];
+  /** `openedKey(currency, ticker)` of every ticker the clean files opened, also when all of it was sold since. */
+  tickers?: ReadonlySet<string>;
 }
 
 export interface BatchCheck {
@@ -157,24 +159,21 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
     const { command } = read;
     // A clear_stop names no currency: it waits for the first blocked one.
     const currency = "currency" in command ? command.currency : undefined;
-    const changesStop = command.kind === "set_stop" || command.kind === "clear_stop";
     const cashBlock = currency !== undefined ? blocked.get(currency) : blocked.values().next().value;
     const blocker = cashBlock ?? (command.kind === "clear_stop" ? stopBlockOf(command.ticker) : undefined);
     if (blocker !== undefined) {
-      const unknown = changesStop
-        ? cashBlock
-          ? "the position it would change is unknown"
-          : "the stop it would change is unknown"
-        : `the ${currency} cash and lots it would change are unknown`;
+      const unknown = unknownOf(command, currency, cashBlock === undefined);
       notChecked.push({
         command: position,
         line: read.line,
         reason: `not checked: command ${blocker.position} ${blocker.how}, so ${unknown}`,
       });
+      // The stop it would have cleared is unknown in every silo: a breach that it would have removed is not an error.
+      if (command.kind === "clear_stop") blockStop(CURRENCIES, command.ticker, { position, how: "was not checked" });
       continue;
     }
     const before = current;
-    const result = applyCommand(current, command, opened);
+    const result = applyCommand(current, command, opened, earlier.tickers);
     if ("reason" in result) {
       // A refusal in a silo the portfolio has, that the rejected file before it could explain, is not an error of this one.
       const rejected =
@@ -185,7 +184,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
         notChecked.push({
           command: position,
           line: read.line,
-          reason: `not checked: depends on inbox/${printable(rejected.file)}, which was rejected, so the ${currency === undefined ? "position" : `${currency} cash and lots`} it would change ${currency === undefined ? "is" : "are"} unknown`,
+          reason: `not checked: depends on inbox/${printable(rejected.file)}, which was rejected, so ${unknownOf(command, currency, false)}`,
         });
       } else issues.push({ command: position, line: read.line, reason: result.reason });
       // What it would have done is unknown from here on. A silo the portfolio does not have has nothing unknown:
@@ -275,6 +274,17 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
   };
 }
 
+/**
+ * What a command not checked would have changed and is unknown, for the reason of its `not checked`: a stop command
+ * changes no cash or lots, only a stop (`stopBlocked`: only the stop of the ticker is what the blocker left unknown).
+ */
+function unknownOf(command: Command, currency: Currency | undefined, stopBlocked: boolean): string {
+  if (command.kind === "set_stop" || command.kind === "clear_stop") {
+    return stopBlocked ? "the stop it would change is unknown" : "the position it would change is unknown";
+  }
+  return `the ${currency} cash and lots it would change are unknown`;
+}
+
 /** `a`, `a and b`, `a, b and c`. */
 const joined = (items: readonly string[]): string =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
@@ -350,21 +360,25 @@ export interface FileCheck {
 export function checkFiles(state: InboxState, files: readonly InboxFile[]): FileCheck[] {
   let current = state;
   const lots = new Map<string, OpenedLot>();
+  const tickers = new Set<string>();
   const stops = new Map<string, StopSource | null>();
   const rejected: RejectedFile[] = [];
   return files.map(({ name, text }) => {
-    const checked = checkBatch(current, text, { lots, stops, rejected });
+    const checked = checkBatch(current, text, { lots, stops, rejected, tickers });
     if (checked.issues.length > 0 || checked.notChecked.length > 0) {
       rejected.push({ file: name, footprint: checked.footprint });
     } else {
       current = checked.state;
       // For the next files, a lot or a stop this one left is the file's.
-      for (const [key, lot] of checked.opened) lots.set(key, { ...lot, file: name });
+      for (const [key, lot] of checked.opened) {
+        lots.set(key, { ...lot, file: name });
+        tickers.add(openedKey(key.slice(0, key.indexOf("/")) as Currency, lot.ticker));
+      }
       for (const [key, source] of checked.stops) {
         if (source === null) stops.delete(key);
         else stops.set(key, { ...source, file: name });
       }
-      // A lot this file or an earlier one used up is the portfolio's concern no more: nothing to name.
+      // A lot this file or an earlier one used up is no lot to name any more; its ticker stays in `tickers`.
       const open = new Set(CURRENCIES.flatMap((c) => (current[c]?.lots ?? []).map((l) => openedKey(c, l.entryId))));
       for (const key of lots.keys()) if (!open.has(key)) lots.delete(key);
     }
