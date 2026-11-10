@@ -907,6 +907,25 @@ describe("inbox:check", () => {
         );
       });
 
+      it("a breach that a rejected file's sale could remove, by closing the position, is not checked", async () => {
+        await withPortfolio(portfolioMd({ usd: [{ ticker: "AAPL", units: 1, price: 100, stop: 50 }] }));
+        await drop(
+          "a.yaml",
+          batch(
+            "command: sale\nticker: AAPL\ndate: 2026-09-15\nunits: 1\nprice: 100 USD",
+            "command: withdrawal\namount: 99999 USD",
+          ),
+        );
+        await drop("b.yaml", batch("command: buy\nticker: AAPL\ndate: 2026-09-16\nunits: 1\nprice: 40 USD"));
+        const { lines } = await checkInbox();
+        const b = lines.filter((l) => l.startsWith("inbox/b.yaml"));
+        assert.equal(b.length, 1, lines.join("\n"));
+        assert.match(
+          b[0],
+          /^inbox\/b\.yaml: command 1, line 3: not checked: depends on inbox\/a\.yaml, which was rejected, so the initial stop of the buy of AAPL \(command 1, line 3\) at an entry price of 40 USD is unknown$/,
+        );
+      });
+
       it("a rejected file that changed no stop of that ticker does not hide a breach", async () => {
         await withPortfolio(portfolioMd({ usd: [{ ticker: "AAPL", units: 1, price: 100, stop: 200 }] }));
         await drop("a.yaml", batch("command: withdrawal\namount: 99999 USD"));

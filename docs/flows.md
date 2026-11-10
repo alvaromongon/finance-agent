@@ -410,7 +410,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
        (the `set_stop`, an earlier file, or `portfolio.md`; the handlers record who set each stop as they apply the
        commands). It is listed as not checked on the buy instead in a currency a refusal blocked, and when the stop
        comes from an earlier file or `portfolio.md` and a rejected file could have set or cleared the stop of that
-       ticker ("not checked: depends on" that file): the stop it ends with is unknown until that file is fixed.
+       ticker, or sold its position out, which takes the stop with it ("not checked: depends on" that file): the
+       stop it ends with is unknown until that file is fixed.
   4. Print every error, and every command not checked, as file, command position, line and reason, then a
      summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
      position they touched (a buy, a sale, a `set_stop` or `clear_stop`) with no stop gets a warning line for it,

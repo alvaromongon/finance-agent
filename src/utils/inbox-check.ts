@@ -387,12 +387,15 @@ function dependsOn(footprint: readonly Footprint[], command: Command): boolean {
   });
 }
 
-/** True if the file with this footprint could have set or cleared the stop of `ticker` in `currency`. */
+/**
+ * True if the file with this footprint could have changed the stop of `ticker` in `currency`: set or cleared it,
+ * or sold the position out, which takes its stop with it (a later buy opens a position with none).
+ */
 function changesStop(footprint: readonly Footprint[], currency: Currency, ticker: Ticker): boolean {
   return footprint.some(
     (f) =>
       f.currencies.includes(currency) &&
-      (f.kind === null || CHANGES[f.kind].stop) &&
+      (f.kind === null || f.kind === "sale" || CHANGES[f.kind].stop) &&
       (f.ticker === null || f.ticker === ticker),
   );
 }
