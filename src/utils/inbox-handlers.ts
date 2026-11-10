@@ -11,6 +11,7 @@ import {
   addCounted,
   formatMoney,
   countedInCents,
+  exactAmount,
   isCountedRefusal,
   subtractCounted,
   type Money,
@@ -191,11 +192,9 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
   if (command.units < UNITS_TOLERANCE) return refused(tooFewUnits(command.units));
-  const amount = countedInCents(
-    command.units * command.price,
-    `the amount of the buy of ${printable(ticker)}`,
-    currency,
-  );
+  // Cents are for the cash credit and the costs check; each exit keeps its exact share of the sale amount (ADR-0017).
+  const proceeds = command.units * command.price;
+  const amount = countedInCents(proceeds, `the amount of the buy of ${printable(ticker)}`, currency);
   if (amount === 0) {
     return refused(
       `the buy of ${printable(ticker)} costs nothing: ${command.units} units at ${command.price} is below one cent`,
@@ -335,11 +334,9 @@ export function sale<C extends Currency>(
       `cannot sell lot ${JSON.stringify(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
     );
   }
-  const amount = countedInCents(
-    command.units * command.price,
-    `the amount of the sale of ${printable(ticker)}`,
-    currency,
-  );
+  // Cents are for the cash credit and the costs check; each exit keeps its exact share of the sale amount (ADR-0017).
+  const proceeds = command.units * command.price;
+  const amount = countedInCents(proceeds, `the amount of the sale of ${printable(ticker)}`, currency);
   let shares: ReturnType<typeof planSale<C>>;
   try {
     shares = planSale(
@@ -349,7 +346,7 @@ export function sale<C extends Currency>(
         currency,
         units: command.units,
         price: command.price,
-        amount,
+        amount: exactAmount(proceeds),
         costs: command.costs,
         lotsFrom: describeSources(
           chosen.filter((l) => l.units > 0),
@@ -365,8 +362,8 @@ export function sale<C extends Currency>(
     throw err;
   }
   // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
-  // A sale that uses a lot up is the way out for a dust lot, so it may credit 0.00 (#149).
-  if (amount === 0 && !shares.some((share) => share.unitsLeft === 0)) {
+  // A sale that uses up every lot it touches is the way out for dust lots, so it may credit 0.00 (#149, #162).
+  if (amount === 0 && !shares.every((share) => share.unitsLeft === 0)) {
     return refused(
       `the sale of ${ticker} yields nothing: ${command.units} units at ${command.price} is below one cent`,
     );
