@@ -4,7 +4,7 @@ import { readInbox } from "./inbox-store.js";
 import { readBothPortfolios, requireReadable, type PortfolioRead } from "./portfolio-store.js";
 import type { Currency, PortfolioSnapshot } from "./types.js";
 import { volumeMismatches } from "./utils/lots-check.js";
-import { checkFiles, renderIssues } from "./utils/inbox-check.js";
+import { checkFiles, renderIssues, renderWarnings } from "./utils/inbox-check.js";
 import type { InboxState } from "./utils/inbox-handlers.js";
 
 /**
@@ -39,11 +39,19 @@ export async function checkInbox(): Promise<{ lines: string[]; exitCode: number 
   if (files.length === 0) return { lines: ["Inbox is empty: nothing to check."], exitCode: 0 };
   const checks = checkFiles(await currentState(), files);
   const problems = renderIssues(checks);
+  // Warnings never change the exit code: a position without a stop is for the owner to know, not a rejected batch.
+  const warnings = renderWarnings(checks);
   if (problems.length === 0) {
-    return { lines: [`Inbox is clean: ${files.length} batch(es) would apply.`], exitCode: 0 };
+    return { lines: [`Inbox is clean: ${files.length} batch(es) would apply.`, ...warnings], exitCode: 0 };
   }
+  const errors = checks.reduce((sum, c) => sum + c.issues.length, 0);
+  const skipped = checks.reduce((sum, c) => sum + c.notChecked.length, 0);
   const bad = checks.filter((c) => c.issues.length > 0).length;
-  return { lines: [...problems, `${problems.length} error(s) in ${bad} of ${files.length} batch(es).`], exitCode: 1 };
+  const summary = `${errors} error(s) in ${bad} of ${files.length} batch(es)`;
+  return {
+    lines: [...problems, ...warnings, `${summary}${skipped > 0 ? `; ${skipped} command(s) not checked` : ""}.`],
+    exitCode: 1,
+  };
 }
 
 const isMain = process.argv[1] != null && import.meta.filename === process.argv[1];

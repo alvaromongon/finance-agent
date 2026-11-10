@@ -8,7 +8,14 @@ import { DECISION_ORIGINS } from "../decisions.js";
 import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
 import { missingLotsSection, portfolioWhere } from "./portfolio-where.js";
-import { hasSection, parsePortfolio, parseTableRows, readTable, type PortfolioSection } from "./portfolio-codec.js";
+import {
+  hasSection,
+  parsePortfolio,
+  parseTableRows,
+  readTable,
+  siloHeadings,
+  type PortfolioSection,
+} from "./portfolio-codec.js";
 
 // `portfolio.md`'s grammar lives in the codec; these are re-exported for the readers of other files.
 export {
@@ -85,11 +92,18 @@ export class SiloAbsentError extends Error {
  */
 export function assertPortfolioSections(md: string, currency: Currency): void {
   const model = parsePortfolio(md);
-  const absent = (["Cash", "Positions", "Lots"] as const).every((kind) => !hasSection(model, currency, kind));
+  const anySection = (["Cash", "Positions", "Lots"] as const).some((kind) => hasSection(model, currency, kind));
+  // Misspelt headings are not an absent silo: the file does have one, and the owner must be told which.
+  const headings = anySection ? [] : siloHeadings(model, currency);
+  const absent = !anySection && headings.length === 0;
   for (const kind of ["Cash", "Positions"] as const) {
     if (!hasSection(model, currency, kind)) {
+      const found =
+        headings.length > 0
+          ? `; the headings of that silo in the file are ${headings.map((h) => JSON.stringify(h)).join(", ")}`
+          : "";
       throw new (absent ? SiloAbsentError : Error)(
-        `${portfolioWhere(currency)}: missing section "## ${currency} — ${kind}" (see docs/input-format.md)`,
+        `${portfolioWhere(currency)}: missing section "## ${currency} — ${kind}" (see docs/input-format.md)${found}`,
       );
     }
   }

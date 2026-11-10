@@ -6,6 +6,7 @@
 // - `planSale`: which lots a sale consumes (first in, first out) and what each exit carries.
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
+import { printable } from "./printable.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import type { Ticker } from "../ticker.js";
 import {
@@ -111,7 +112,7 @@ export function planSale<C extends Currency>(
     .map(({ lot }) => lot);
   if (ordered.length === 0)
     throw new SaleRefusal(
-      `Cannot sell ${sale.ticker}: no open lots for ${sale.ticker} in ${sale.lotsFrom ?? "portfolio.md"}`,
+      `Cannot sell ${printable(sale.ticker)}: no open lots for ${printable(sale.ticker)} in ${sale.lotsFrom ?? "portfolio.md"}`,
     );
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
@@ -120,7 +121,7 @@ export function planSale<C extends Currency>(
   const tolerance = (sale.unitsFromAmount ? unitsWorthHalfACent(sale.price) : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
     throw new SaleRefusal(
-      `Cannot sell ${sale.units} units of ${sale.ticker}: only ${open} are open in ${sale.lotsFrom ?? "Lots"}`,
+      `Cannot sell ${sale.units} units of ${printable(sale.ticker)}: only ${open} are open in ${sale.lotsFrom ?? "Lots"}`,
     );
   }
 
@@ -158,8 +159,8 @@ export function planSale<C extends Currency>(
       ? undefined
       : subtractCounted(
           sale.pnl,
-          sumCounted(computed, `the results of the lots of ${sale.ticker} sold together`, sale.currency),
-          `the difference between the pnl and the results of the lots of ${sale.ticker}`,
+          sumCounted(computed, `the results of the lots of ${printable(sale.ticker)} sold together`, sale.currency),
+          `the difference between the pnl and the results of the lots of ${printable(sale.ticker)}`,
         );
   const adjustments = shareOf(difference);
 
@@ -196,4 +197,4 @@ function entryCostsShare<C extends Currency>(
 }
 
 /** How a lot is named in a refusal: its entry id and ticker. */
-const lotName = (lot: Lot<Currency>): string => `lot ${lot.entryId} (${lot.ticker})`;
+const lotName = (lot: Lot<Currency>): string => `lot ${lot.entryId} (${printable(lot.ticker)})`;

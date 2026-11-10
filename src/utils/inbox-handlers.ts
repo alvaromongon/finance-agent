@@ -5,7 +5,7 @@
 // The state is both silos of the portfolio. The currency is enforced by the type only where a silo is
 // picked at run time (`state[command.currency]`, #145), so every handler checks it explicitly before it
 // touches a silo (`siloOf`).
-import type { Currency, Lot, PortfolioSnapshot, Position } from "../types.js";
+import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
 import { tickerIdPart, type Ticker } from "../ticker.js";
 import {
   addCounted,
@@ -17,6 +17,7 @@ import {
   zero,
 } from "../money.js";
 import { planSale, SaleRefusal } from "./portfolio-lots.js";
+import { printable } from "./printable.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -45,8 +46,29 @@ export interface Buy<C extends Currency = Currency> {
   units: number;
   price: number;
   costs?: Money<C>;
-  /** Initial stop, a price. */
-  stop?: number;
+}
+
+/**
+ * Sets or moves the one stop of a position, a price. It is also the initial stop (the base of R) of the lots
+ * the same batch opened before it. A buy carries no stop: buying and setting a stop are two commands.
+ */
+export interface SetStop<C extends Currency = Currency> {
+  kind: "set_stop";
+  currency: C;
+  ticker: Ticker;
+  /** YYYY-MM-DD, when given. */
+  date?: string;
+  price: number;
+}
+
+/**
+ * Removes the stop of a position. It has no amount, so no currency: the silo is the one that holds the ticker.
+ */
+export interface ClearStop {
+  kind: "clear_stop";
+  ticker: Ticker;
+  /** YYYY-MM-DD, when given. */
+  date?: string;
 }
 
 /** Units sold, oldest lot first or from one named lot; an executed stop is a sale the broker made at the stop. */
@@ -64,7 +86,8 @@ export interface Sale<C extends Currency = Currency> {
   stopExecuted: boolean;
 }
 
-export type Command<C extends Currency = Currency> = Deposit<C> | Withdrawal<C> | Buy<C> | Sale<C>;
+export type Command<C extends Currency = Currency> =
+  Deposit<C> | Withdrawal<C> | Buy<C> | Sale<C> | SetStop<C> | ClearStop;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -72,14 +95,23 @@ export type Command<C extends Currency = Currency> = Deposit<C> | Withdrawal<C> 
 export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
 
 /**
- * Which command opened a lot, for the lots the batch under check has opened: `<currency>:<entry id>` to the
+ * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
+ * (`opened`, see `openedKey`): the batch passes those to the handlers after it, so a `set_stop` knows which
+ * lots are the batch's own.
+ */
+export type HandlerResult = { state: InboxState; opened?: string } | { reason: string };
+
+/** The lots the commands before the current one, in the same batch, opened; see `openedKey`. */
+export type OpenedLots = ReadonlySet<string>;
+
+/** Identifies a lot across silos: entry ids are only unique within one. */
+export const openedKey = (currency: Currency, entryId: string): string => `${currency}/${entryId}`;
+
+/**
+ * Which command opened a lot, for the lots the batch under check has opened: the `openedKey` of the lot to the
  * words a refusal uses for it ("command 2 of this batch"). A lot it does not name is the portfolio's.
  */
 export type LotSources = ReadonlyMap<string, string>;
-
-export const lotSourceKey = (currency: Currency, entryId: string): string => `${currency}:${entryId}`;
-
-export type HandlerResult = { state: InboxState } | { reason: string };
 
 const refused = (reason: string): { reason: string } => ({ reason });
 
@@ -159,16 +191,23 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
   if (command.units < UNITS_TOLERANCE) return refused(tooFewUnits(command.units));
-  const amount = countedInCents(command.units * command.price, `the amount of the buy of ${ticker}`, currency);
+  const amount = countedInCents(
+    command.units * command.price,
+    `the amount of the buy of ${printable(ticker)}`,
+    currency,
+  );
   if (amount === 0) {
-    return refused(`the buy of ${ticker} costs nothing: ${command.units} units at ${command.price} is below one cent`);
-  }
-  const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${ticker}`);
-  if (cost > silo.cash) {
     return refused(
-      `the buy of ${ticker} costs ${show(cost, currency)}, more than the available cash of ${show(silo.cash, currency)}`,
+      `the buy of ${printable(ticker)} costs nothing: ${command.units} units at ${command.price} is below one cent`,
     );
   }
+  const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${printable(ticker)}`);
+  if (cost > silo.cash) {
+    return refused(
+      `the buy of ${printable(ticker)} costs ${show(cost, currency)}, more than the available cash of ${show(silo.cash, currency)}`,
+    );
+  }
+  const held = silo.positions.find((p) => p.ticker === ticker);
   const lot: Lot<C> = {
     ticker,
     entryId: newEntryId(command.date, ticker, new Set(silo.lots.map((l) => l.entryId))),
@@ -176,20 +215,20 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
     units: command.units,
     entryUnits: command.units,
     entryPrice: command.price,
-    initialStop: command.stop ?? null,
+    // A buy never changes the stop: the lot starts with the one the position has (a `set_stop` later in
+    // the batch replaces it), or none, and then it carries `no_stop` when the batch is applied (#132).
+    initialStop: held?.stopLoss ?? null,
     entryCosts: command.costs ?? null,
     origin: "propietario",
     // The rules version is filled when the batch is applied (#132); the check does not need it.
     rulesVersion: "",
     rulesViolations: [],
   };
-  const held = silo.positions.find((p) => p.ticker === ticker);
   const position: Position<C> = held
     ? {
         ...held,
         volume: held.volume + command.units,
         avgPrice: (held.volume * held.avgPrice + command.units * command.price) / (held.volume + command.units),
-        stopLoss: command.stop ?? held.stopLoss,
       }
     : {
         ticker,
@@ -198,15 +237,20 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
         avgPrice: command.price,
         currentPrice: command.price,
         pl: zero(currency),
-        stopLoss: command.stop ?? null,
+        stopLoss: null,
       };
-  const paid = movedCash(silo, subtractCounted(zero(currency), cost, `the buy of ${ticker}`), `the buy of ${ticker}`);
+  const paid = movedCash(
+    silo,
+    subtractCounted(zero(currency), cost, `the buy of ${printable(ticker)}`),
+    `the buy of ${printable(ticker)}`,
+  );
   return {
     state: withSilo(state, {
       ...paid,
       lots: [...silo.lots, lot],
       positions: held ? silo.positions.map((p) => (p === held ? position : p)) : [...silo.positions, position],
     }),
+    opened: openedKey(currency, lot.entryId),
   };
 }
 
@@ -215,15 +259,62 @@ function describeSources(lots: readonly Lot[], currency: Currency, sources: LotS
   const labels = new Set<string>();
   let fromPortfolio = lots.length === 0;
   for (const lot of lots) {
-    const label = sources.get(lotSourceKey(currency, lot.entryId));
+    const label = sources.get(openedKey(currency, lot.entryId));
     if (label === undefined) fromPortfolio = true;
     else labels.add(label);
   }
   // No lot at all: they may have been in the portfolio or opened (and sold) by the batch, so name both when it opened any.
-  if (lots.length === 0 && [...sources.keys()].some((key) => key.startsWith(`${currency}:`))) {
+  if (lots.length === 0 && [...sources.keys()].some((key) => key.startsWith(`${currency}/`))) {
     labels.add("the earlier commands");
   }
   return [...(fromPortfolio ? ["portfolio.md"] : []), ...labels].join(" and ");
+}
+
+export function setStop<C extends Currency>(
+  state: InboxState,
+  command: SetStop<C>,
+  opened: OpenedLots = new Set(),
+): HandlerResult {
+  const silo = siloOf(state, command.currency);
+  if (isRefusal(silo)) return silo;
+  const { currency, ticker, price } = command;
+  if (!(price > 0)) return refused(`the stop of ${ticker}: the price must be greater than zero`);
+  const held = silo.positions.find((p) => p.ticker === ticker);
+  if (held === undefined)
+    return refused(`cannot set a stop: there is no open position in ${ticker} in the ${currency} silo`);
+  return {
+    state: withSilo(state, {
+      ...silo,
+      positions: silo.positions.map((p) => (p === held ? { ...p, stopLoss: price } : p)),
+      // The lots this batch opened before the command start with this stop; the older ones keep theirs (their R).
+      lots: silo.lots.map((l) =>
+        opened.has(openedKey(currency, l.entryId)) && l.ticker === ticker ? { ...l, initialStop: price } : l,
+      ),
+    }),
+  };
+}
+
+export function clearStop(state: InboxState, command: ClearStop, opened: OpenedLots = new Set()): HandlerResult {
+  const { ticker } = command;
+  const silos = CURRENCIES.flatMap((c) => {
+    const silo = siloOf(state, c);
+    return !isRefusal(silo) && silo.positions.some((p) => p.ticker === ticker) ? [silo] : [];
+  });
+  if (silos.length === 0) return refused(`cannot clear a stop: there is no open position in ${ticker}`);
+  const stopped = silos.filter((silo) => silo.positions.some((p) => p.ticker === ticker && p.stopLoss !== null));
+  if (stopped.length === 0) return refused(`cannot clear a stop: ${ticker} has no stop to clear`);
+  let next = state;
+  for (const silo of stopped) {
+    next = withSilo(next, {
+      ...silo,
+      positions: silo.positions.map((p) => (p.ticker === ticker ? { ...p, stopLoss: null } : p)),
+      // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
+      lots: silo.lots.map((l) =>
+        opened.has(openedKey(silo.currency, l.entryId)) && l.ticker === ticker ? { ...l, initialStop: null } : l,
+      ),
+    });
+  }
+  return { state: next };
 }
 
 export function sale<C extends Currency>(
@@ -241,10 +332,14 @@ export function sale<C extends Currency>(
   );
   if (command.lot !== undefined && !chosen.some((l) => l.units > 0)) {
     return refused(
-      `cannot sell lot ${JSON.stringify(command.lot)}: ${ticker} has no open lot with that id in the ${currency} silo`,
+      `cannot sell lot ${JSON.stringify(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
     );
   }
-  const amount = countedInCents(command.units * command.price, `the amount of the sale of ${ticker}`, currency);
+  const amount = countedInCents(
+    command.units * command.price,
+    `the amount of the sale of ${printable(ticker)}`,
+    currency,
+  );
   let shares: ReturnType<typeof planSale<C>>;
   try {
     shares = planSale(
@@ -278,11 +373,11 @@ export function sale<C extends Currency>(
   const costs = command.costs ?? zero(currency);
   if (costs > amount) {
     return refused(
-      `the costs of ${show(costs, currency)} exceed the proceeds of ${show(amount, currency)} of the sale of ${ticker}`,
+      `the costs of ${show(costs, currency)} exceed the proceeds of ${show(amount, currency)} of the sale of ${printable(ticker)}`,
     );
   }
-  const received = subtractCounted(amount, costs, `the proceeds of the sale of ${ticker}`);
-  const credited = movedCash(silo, received, `the sale of ${ticker}`);
+  const received = subtractCounted(amount, costs, `the proceeds of the sale of ${printable(ticker)}`);
+  const credited = movedCash(silo, received, `the sale of ${printable(ticker)}`);
   // The costs are at most the proceeds, so a sale never lowers the cash: there is no cash-below-zero refusal for it.
   const left = new Map(shares.map((share) => [share.lot.entryId, share.unitsLeft]));
   const lots = silo.lots
@@ -298,8 +393,17 @@ export function sale<C extends Currency>(
   return { state: withSilo(state, { ...credited, lots, positions }) };
 }
 
-/** Applies one command to the state: the new state, or the reason it is refused (`sources`: the lots the batch opened). Never throws for an amount too large to count. */
-export function applyCommand(state: InboxState, command: Command, sources?: LotSources): HandlerResult {
+/**
+ * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the batch
+ * opened before it, for the stops; `sources`: who opened them, for the words of a sale refusal. Never throws for
+ * an amount too large to count.
+ */
+export function applyCommand(
+  state: InboxState,
+  command: Command,
+  opened: OpenedLots = new Set(),
+  sources: LotSources = new Map(),
+): HandlerResult {
   try {
     switch (command.kind) {
       case "deposit":
@@ -310,6 +414,10 @@ export function applyCommand(state: InboxState, command: Command, sources?: LotS
         return buy(state, command);
       case "sale":
         return sale(state, command, sources);
+      case "set_stop":
+        return setStop(state, command, opened);
+      case "clear_stop":
+        return clearStop(state, command, opened);
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

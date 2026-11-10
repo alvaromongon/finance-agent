@@ -89,6 +89,13 @@ The folder where a person, an AI or a routine drops one file per [batch](#batch)
 engine never edits a file there: it moves it to `applied/`, or to `rejected/` with the line and the
 reason.
 
+### Stop
+
+The price at which a position is closed to cap its loss. A position has one stop, set or moved by the
+`set_stop` [command](#command) and removed by `clear_stop`; a buy never changes it. The stop a lot starts
+with is its initial stop, the base of [R](#r). A position without a stop is named in every digest, since
+risk watch cannot protect it.
+
 ### Silo
 
 A currency account (EUR or USD) managed on its own: its own cash, positions,
