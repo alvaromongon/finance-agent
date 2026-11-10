@@ -365,7 +365,8 @@ export function sale<C extends Currency>(
     throw err;
   }
   // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
-  if (amount === 0) {
+  // A sale that uses a lot up is the way out for a dust lot, so it may credit 0.00 (#149).
+  if (amount === 0 && !shares.some((share) => share.unitsLeft === 0)) {
     return refused(
       `the sale of ${ticker} yields nothing: ${command.units} units at ${command.price} is below one cent`,
     );

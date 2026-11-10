@@ -386,6 +386,37 @@ describe("inbox handlers", () => {
       );
     });
 
+    it("accepts a sale that closes a dust lot worth under a cent: it credits 0.00 and closes the lot (#149)", () => {
+      const state = stateOf(
+        { eurCash: 5 },
+        {
+          EUR: [
+            lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "dust", date: "2026-09-01" }),
+            lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a", date: "2026-09-02" }),
+          ],
+        },
+      );
+      const after = ok(state, saleOf({ units: 0.0001, price: 0.04, lot: "dust" })).EUR;
+      assert.equal(after.cash, 5);
+      assert.deepEqual(
+        after.lots.map((l) => l.entryId),
+        ["a"],
+      );
+      // Selling the oldest lot first reaches the same dust lot; a sale that leaves it part-sold is still refused.
+      assert.equal(ok(state, saleOf({ units: 0.0001, price: 0.04 })).EUR.lots.length, 1);
+      assert.match(reason(state, saleOf({ units: 0.00005, price: 0.04, lot: "dust" })), /yields nothing/);
+    });
+
+    it("closes a whole position of dust with a sale of nothing (#149)", () => {
+      const state = stateOf(
+        {},
+        { EUR: [lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "a" })] },
+      );
+      const after = ok(state, saleOf({ units: 0.0001, price: 0.04 })).EUR;
+      assert.deepEqual(after.lots, []);
+      assert.deepEqual(after.positions, []);
+    });
+
     it("says where the lots a refusal talks about come from: the portfolio or the commands that opened them (#149)", () => {
       const state = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, entryId: "a" })] });
       assert.match(reason(state, saleOf({ units: 3 })), /only 2 are open in portfolio\.md/);
