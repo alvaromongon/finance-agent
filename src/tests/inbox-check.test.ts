@@ -82,6 +82,62 @@ describe("inbox:check", () => {
     assert.match(lines[0], /clean: 1 batch/);
   });
 
+  describe("stops are their own commands (#151)", () => {
+    const BUY_TCK = "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 2\nprice: 100 USD";
+
+    it("refuses a buy that carries a stop, naming set_stop", async () => {
+      await drop("a.yaml", batch(`${BUY_TCK}\nstop: 90 USD`));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 1);
+      assert.match(lines[0], /^inbox\/a\.yaml: command 1, line 3: a buy carries no "stop": set it with a set_stop/);
+    });
+
+    it("accepts a buy and its set_stop in one batch with no warning", async () => {
+      await drop("a.yaml", batch(BUY_TCK, "command: set_stop\nticker: TCK\nprice: 90 USD"));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+      assert.deepEqual(lines, ["Inbox is clean: 1 batch(es) would apply."]);
+    });
+
+    it("warns, without failing, about a position that ends the batch with no stop", async () => {
+      await drop("a.yaml", batch(BUY_TCK));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0);
+      assert.equal(lines[0], "Inbox is clean: 1 batch(es) would apply.");
+      assert.equal(
+        lines[1],
+        "inbox/a.yaml: command 1, line 3: warning: TCK has no stop, so risk watch cannot protect it",
+      );
+    });
+
+    it("warns when a clear_stop leaves the position without one", async () => {
+      await drop(
+        "a.yaml",
+        batch(BUY_TCK, "command: set_stop\nticker: TCK\nprice: 90 USD", "command: clear_stop\nticker: TCK"),
+      );
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0);
+      assert.match(lines[1], /command 3, line 11: warning: TCK has no stop/);
+    });
+
+    it("refuses clear_stop on a position without a stop and set_stop on a ticker with no position", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: clear_stop\nticker: SAP.DE", "command: set_stop\nticker: NOPE\nprice: 1 USD"),
+      );
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 1);
+      assert.match(lines[0], /command 1, line 3: .*SAP\.DE has no stop to clear/);
+      assert.match(lines[1], /command 2, line 5: .*no open position in NOPE/);
+    });
+
+    it("sees a position opened earlier in the batch, and one sold earlier in it", async () => {
+      await drop("a.yaml", batch(BUY_TCK, SELL, "command: set_stop\nticker: TCK\nprice: 90 USD"));
+      const { lines } = await checkInbox();
+      assert.match(lines[0], /command 3, line 13: .*no open position in TCK/);
+    });
+  });
+
   it("checks each command against the state the previous ones produce", async () => {
     // The state has 500 USD: the second withdrawal fails only because the first one already happened.
     await drop("a.yaml", batch("command: withdrawal\namount: 300 USD", "command: withdrawal\namount: 300 USD"));

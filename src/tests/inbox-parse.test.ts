@@ -18,12 +18,14 @@ const problem = (command: string): string => {
 };
 
 describe("inbox format", () => {
-  it("reads the four commands with their amounts, currency and optional fields", () => {
+  it("reads the six commands with their amounts, currency and optional fields", () => {
     const { commands, issues } = parseBatch(
       batch(
         "command: deposit\namount: 1000.50 EUR",
         "command: withdrawal\namount: 200 USD",
-        "command: buy\nticker: sap.de\ndate: 2026-09-15\nunits: 2\nprice: 180.25 EUR\ncosts: 1.50 EUR\nstop: 168 EUR",
+        "command: buy\nticker: sap.de\ndate: 2026-09-15\nunits: 2\nprice: 180.25 EUR\ncosts: 1.50 EUR",
+        "command: set_stop\nticker: sap.de\nprice: 168 EUR\ndate: 2026-09-15",
+        "command: clear_stop\nticker: SAP.DE",
         "command: sale\nticker: SAP.DE\ndate: 2026-09-20\nunits: 1.5\nprice: 190 EUR\nlot: lot-1\nstop_executed: true",
       ),
     );
@@ -44,12 +46,13 @@ describe("inbox format", () => {
             units: 2,
             price: 180.25,
             costs: 1.5,
-            stop: 168,
           },
         ],
+        [4, 13, { kind: "set_stop", currency: "EUR", ticker: "SAP.DE", price: 168, date: "2026-09-15" }],
+        [5, 17, { kind: "clear_stop", ticker: "SAP.DE" }],
         [
-          4,
-          14,
+          6,
+          19,
           {
             kind: "sale",
             currency: "EUR",
@@ -131,9 +134,35 @@ describe("inbox format", () => {
         /"costs" is in EUR but "price" is in USD/,
       );
       assert.match(
-        problem("command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 10 USD\nstop: 9 EUR"),
-        /"stop" is in EUR/,
+        problem("command: set_stop\nticker: TCK\nprice: 9 EUR\ndate: 2026-09-15\ncosts: 1 USD"),
+        /unknown field "costs" for a set_stop/,
       );
+    });
+  });
+
+  describe("stops are their own commands", () => {
+    it("refuses a stop on a buy, and says which command sets it", () => {
+      assert.match(
+        problem("command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 10 USD\nstop: 9 USD"),
+        /a buy carries no "stop": set it with a set_stop command/,
+      );
+    });
+
+    it("needs a price with its currency on set_stop, greater than zero, and a real date when one is given", () => {
+      assert.match(problem("command: set_stop\nticker: TCK"), /missing field "price"/);
+      assert.match(problem("command: set_stop\nticker: TCK\nprice: 9"), /needs its currency/);
+      assert.match(problem("command: set_stop\nticker: TCK\nprice: 0 USD"), /"price" must be greater than zero/);
+      assert.match(
+        problem("command: set_stop\nticker: TCK\nprice: 9 USD\ndate: 2026-02-30"),
+        /"date" must be a calendar date/,
+      );
+      assert.equal(parseBatch(batch("command: set_stop\nticker: TCK\nprice: 9 USD")).issues.length, 0);
+    });
+
+    it("clear_stop takes a ticker and an optional date only", () => {
+      assert.match(problem("command: clear_stop"), /missing field "ticker"/);
+      assert.match(problem("command: clear_stop\nticker: TCK\nprice: 9 USD"), /unknown field "price" for a clear_stop/);
+      assert.match(problem("command: clear_stop\nticker: TCK\ndate: tomorrow"), /"date" must be a calendar date/);
     });
   });
 
