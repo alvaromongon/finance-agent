@@ -12,6 +12,7 @@ import {
   deposit,
   initialStopBreaches,
   sale,
+  saleShares,
   withdrawal,
   type InboxState,
 } from "../utils/inbox-handlers.js";
@@ -506,6 +507,19 @@ describe("inbox handlers", () => {
       assert.deepEqual(
         after.lots.map((l) => l.entryId),
         ["a"],
+      );
+    });
+
+    it("gives each exit of a dust-closing sale a non-zero exact amount at 8 decimals (#162)", () => {
+      const dust = [
+        lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d1", date: "2026-09-01" }),
+        lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d2", date: "2026-09-02" }),
+      ];
+      const proceeds = 0.0002 * 0.04; // 0.000008: zero cents, but 800 at 8 decimals
+      const shares = saleShares(dust, saleOf({ units: 0.0002, price: 0.04 }), proceeds, new Map());
+      assert.deepEqual(
+        shares.map((share) => share.amount),
+        [0.000004, 0.000004],
       );
     });
 
