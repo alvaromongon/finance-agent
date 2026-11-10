@@ -384,7 +384,15 @@ that holds the buy: the price of a `set_stop` for that ticker in the same batch 
 buy is checked first), else the stop the position already had, else none, and then the buy carries the
 `no_stop` rule violation when the batch is applied. A `set_stop` gives that initial stop only to the lots
 its own batch opened before it; the lots already open keep theirs, so moving a stop never rewrites an
-earlier R. `inbox:check` warns, without failing, about every position a batch touches that ends with no
+earlier R.
+
+That initial stop must be below the entry price of its lot, so that R is never zero or negative: a batch
+where a lot it opened would end with an initial stop at or above its entry price is refused, whether the
+stop comes from a `set_stop` of the batch or, in a scale-in with no `set_stop`, from the stop the position
+already had. The error names the `set_stop` (or `portfolio.md`), the buy and both prices. A `set_stop`
+above the entry price of a position with no lot opened in the batch is accepted: that is a trailing stop.
+The rule was approved by the owner on 2026-11-10 in [#159](https://github.com/alvaromongon/finance-agent/issues/159),
+without a migration. `inbox:check` warns, without failing, about every position a batch touches that ends with no
 stop; the digest will name every position without a stop (#132).
 
 ```yaml

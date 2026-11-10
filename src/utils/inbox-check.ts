@@ -1,7 +1,14 @@
 // `inbox:check` without the I/O (#131): a batch (the text of one inbox file) against a state, and the files of
 // the inbox in order. Pure; `inbox.ts` reads the files and the portfolio and prints what this returns.
 import { CURRENCIES, type Currency } from "../types.js";
-import { applyCommand, type Command, type InboxState, type LotSources } from "./inbox-handlers.js";
+import {
+  applyCommand,
+  initialStopBreaches,
+  openedKey,
+  type Command,
+  type InboxState,
+  type LotSources,
+} from "./inbox-handlers.js";
 import { parseBatch, type InboxIssue, type ParsedCommand } from "./inbox-parse.js";
 import { printable } from "./printable.js";
 
@@ -55,6 +62,8 @@ export function checkBatch(state: InboxState, text: string, earlier: LotSources 
     for (const currency of currencies) if (!blocked.has(currency)) blocked.set(currency, blocker);
   };
   const opened = new Set<string>();
+  const openedBy = new Map<string, ParsedCommand>();
+  const lastSetStop = new Map<string, ParsedCommand>();
   const unread = new Map(parsed.unread.map((u) => [u.position, u.currencies]));
   const order = [...parsed.commands.map((c) => c.position), ...unread.keys()].sort((a, b) => a - b);
   const byPosition = new Map(parsed.commands.map((c) => [c.position, c]));
@@ -85,11 +94,35 @@ export function checkBatch(state: InboxState, text: string, earlier: LotSources 
         block([currency], { position, how: "was refused" });
     } else {
       current = result.state;
+      if (read.command.kind === "set_stop") lastSetStop.set(read.command.ticker, read);
       if (result.opened !== undefined) {
         opened.add(result.opened);
+        openedBy.set(result.opened, read);
         sources.set(result.opened, `command ${position} of this batch`);
       }
     }
+  }
+  // The initial stop of a lot is the position's stop after the whole batch, so it is judged here, not per command (#159).
+  // A currency with a command that was refused or unread has lots that are not the batch's: nothing to judge there.
+  for (const breach of initialStopBreaches(current, opened)) {
+    if (blocked.has(breach.currency)) continue;
+    const buy = openedBy.get(openedKey(breach.currency, breach.entryId))!;
+    const stop = lastSetStop.get(breach.ticker);
+    const price = `${breach.entryPrice} ${breach.currency}`;
+    const bought = `the buy of ${printable(breach.ticker)} (command ${buy.position}, line ${buy.line}) at an entry price of ${price}`;
+    issues.push(
+      stop === undefined
+        ? {
+            command: buy.position,
+            line: buy.line,
+            reason: `${bought} would take the stop of ${breach.stop} ${breach.currency} that portfolio.md holds as its initial stop, which is not below the entry price, so R would be zero or negative: set a stop below it with a set_stop`,
+          }
+        : {
+            command: stop.position,
+            line: stop.line,
+            reason: `the set_stop at ${breach.stop} ${breach.currency} would be the initial stop of ${bought}, not below it, so R would be zero or negative`,
+          },
+    );
   }
   const byCommand = (a: InboxIssue, b: InboxIssue): number => (a.command ?? 0) - (b.command ?? 0);
   issues.sort(byCommand);
