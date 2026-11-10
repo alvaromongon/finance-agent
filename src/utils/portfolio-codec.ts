@@ -133,20 +133,21 @@ export const hasSection = (model: PortfolioModel, currency: Currency, kind: Port
   spanOf(model, currency, kind) !== null;
 
 /**
- * The `##` headings of the file that are shaped like a heading of the silo, `## <CURRENCY> — <anything>`, whatever
- * the section and the case of the currency, or with the dash misspelt: what a section of the silo looks like when it is misspelt. Like
- * `spanOf` it takes the line as it starts: an indented `## USD — Cash`, or `## usd plans` (no dash), is not a
- * heading of the silo. In file order.
+ * The `##` headings of the file that are shaped like a heading of the silo, whatever the section: what a section of
+ * the silo looks like when it is misspelt, for the error that names them. The currency counts in any case when the
+ * dash follows (`## usd — Cash`), and without a dash only when it is not all lowercase (`## USD Cash`, `## Usd: Cash`),
+ * so `## usd plans` and `## USDT — Cash` are other headings. A heading indented up to three spaces counts too, although
+ * `spanOf` does not read it as a heading. Headings in a fenced code block do not count. In file order.
  */
 export function siloHeadings(model: PortfolioModel, currency: Currency): string[] {
-  // The currency in capitals followed by anything but a letter or digit (`## USD Cash`, `## USD—Cash`, `## USD: Cash`),
-  // or in any case followed by the dash (`## usd — Cash`); `## usd plans` and `## USDT — Cash` are other headings.
-  const capitals = new RegExp(`^##\\s+${currency}(?![\\p{L}\\p{N}])`, "u");
-  const dashed = new RegExp(`^##\\s+${currency}\\s*[—–-]`, "i");
+  const heading = new RegExp(`^ {0,3}##\\s+(${currency})(?![\\p{L}\\p{N}])(\\s*[—–-])?`, "iu");
   const fenced = fencedLines(model.lines);
   return model.lines
     .map((line) => line.text.trimEnd())
-    .filter((text, i) => !fenced[i] && (capitals.test(text) || dashed.test(text)));
+    .filter((text, i) => {
+      const match = fenced[i] ? null : heading.exec(text);
+      return match !== null && (match[2] !== undefined || match[1] !== match[1].toLowerCase());
+    });
 }
 
 /** The table of the section; `null` if the section does not exist. */

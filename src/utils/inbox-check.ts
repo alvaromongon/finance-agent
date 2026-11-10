@@ -12,21 +12,13 @@ import {
   type InitialStopBreach,
   type OpenedLot,
   type OpenedLots,
+  type StopSource,
+  type StopSources,
 } from "./inbox-handlers.js";
 import { parseBatch, type CommandKind, type InboxIssue, type ParsedBatch, type ParsedCommand } from "./inbox-parse.js";
 import { printable } from "./printable.js";
 
-/** Who set the stop of a position: a `set_stop` of the batch under check (no `file`), or of an earlier file. */
-export interface StopSource {
-  command: number;
-  line: number;
-  file?: string;
-}
-
-/** The stop of a position (`<currency>/<ticker>`) after the commands so far: who set it, or `null` for cleared. */
-export type StopSources = ReadonlyMap<string, StopSource | null>;
-
-const stopKey = (currency: Currency, ticker: Ticker): string => `${currency}/${ticker}`;
+export type { StopSource, StopSources };
 
 /**
  * What a command would have changed, as far as other commands can depend on it: the silos, the kind of command
@@ -95,7 +87,7 @@ interface LotsBlock {
 
 /** The stop of `ticker` (any ticker when `undefined`) in `currencies` is unknown: a `set_stop` or `clear_stop` failed. */
 interface StopBlock {
-  currencies: Currency[];
+  currencies: readonly Currency[];
   ticker: Ticker | undefined;
   blocker: Blocker;
 }
@@ -132,11 +124,12 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
   /** The lots of the earlier files and of this batch; `own` has this batch's alone. */
   const opened = new Map(earlier.lots);
   const own = new Map<string, OpenedLot>();
-  const stops = new Map<string, StopSource | null>();
+  /** Who set each stop: the earlier files', then this batch's, which the handlers write down as they apply the commands. */
+  const stops = new Map(earlier.stops);
   const touched = new Map<string, { currency: Currency; ticker: Ticker; read: ParsedCommand }>();
   const blocked = new Map<Currency, Blocker>();
   const lotsBlocks: LotsBlock[] = [];
-  const stopBlocks: StopBlock[] = [];
+  let stopBlocks: StopBlock[] = [];
   const block = (currencies: readonly Currency[], blocker: Blocker): void => {
     for (const currency of currencies) if (present(currency) && !blocked.has(currency)) blocked.set(currency, blocker);
   };
@@ -150,8 +143,9 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
   };
   /** A `set_stop` that succeeded sets the stop of its ticker in its silo for sure: that stop is no longer unknown. */
   const liftStop = (currency: Currency, ticker: Ticker): void => {
-    for (const b of stopBlocks) if (b.ticker === ticker) b.currencies = b.currencies.filter((c) => c !== currency);
-    stopBlocks.splice(0, stopBlocks.length, ...stopBlocks.filter((b) => b.currencies.length > 0));
+    stopBlocks = stopBlocks
+      .map((b) => (b.ticker === ticker ? { ...b, currencies: b.currencies.filter((c) => c !== currency) } : b))
+      .filter((b) => b.currencies.length > 0);
   };
   const stopBlockOf = (ticker: Ticker, currency?: Currency): Blocker | undefined =>
     stopBlocks.find(
@@ -161,7 +155,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
   const lotsBlockOf = (ticker: Ticker): Blocker | undefined =>
     lotsBlocks.find((b) => b.ticker === null || b.ticker === ticker)?.blocker;
   const touch = (currency: Currency, ticker: Ticker, read: ParsedCommand): void =>
-    void touched.set(stopKey(currency, ticker), { currency, ticker, read });
+    void touched.set(openedKey(currency, ticker), { currency, ticker, read });
 
   const unread = new Map(parsed.unread.map((u) => [u.position, u]));
   const order = [...parsed.commands.map((c) => c.position), ...unread.keys()].sort((a, b) => a - b);
@@ -197,13 +191,20 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
       });
       // The stop it would have cleared is unknown in every silo: a breach that it would have removed is not an error.
       if (command.kind === "clear_stop") blockStop(CURRENCIES, command.ticker, { position, how: "was not checked" });
+      // A `set_stop` that was not checked may have set or moved the stop of its ticker.
+      else if (command.kind === "set_stop") {
+        blockStop([command.currency], command.ticker, { position, how: "was not checked" });
+      }
       // A buy or a sale that was not checked may have opened or closed the lots of its ticker.
       else if (command.kind === "buy" || command.kind === "sale")
         blockLots([command.currency], command.ticker, blocker);
       continue;
     }
     const before = current;
-    const result = applyCommand(current, command, opened, earlier.tickers);
+    const result = applyCommand(current, command, opened, earlier.tickers, {
+      at: { command: position, line: read.line },
+      stops,
+    });
     if ("reason" in result) {
       // A refusal in a silo the portfolio has, that the rejected file before it could explain, is not an error of this one.
       const rejected =
@@ -234,15 +235,11 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
       for (const c of CURRENCIES) {
         if (before[c]?.positions.some((p) => p.ticker === command.ticker && stopOf(p) !== null)) {
           touch(c, command.ticker, read);
-          stops.set(stopKey(c, command.ticker), null);
         }
       }
     } else if (command.kind !== "deposit" && command.kind !== "withdrawal") {
       touch(command.currency, command.ticker, read);
-      if (command.kind === "set_stop") {
-        stops.set(stopKey(command.currency, command.ticker), { command: position, line: read.line });
-        liftStop(command.currency, command.ticker);
-      }
+      if (command.kind === "set_stop") liftStop(command.currency, command.ticker);
     }
     if (result.opened !== undefined && command.kind === "buy") {
       const lot = { currency: command.currency, ticker: command.ticker, command: position, line: read.line };
@@ -252,12 +249,12 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
   }
   // The initial stop of a lot is the position's stop after the whole batch, so it is judged here, not per command (#159).
   const breaches = new Map<string, InitialStopBreach[]>();
-  for (const breach of initialStopBreaches(current, opened)) {
-    const key = stopKey(breach.currency, breach.ticker);
+  for (const breach of initialStopBreaches(current, opened, stops)) {
+    const key = openedKey(breach.currency, breach.ticker);
     breaches.set(key, [...(breaches.get(key) ?? []), breach]);
   }
-  for (const [key, group] of breaches) {
-    const [{ currency, ticker, stop }] = group;
+  for (const group of breaches.values()) {
+    const [{ currency, ticker, stop, setBy }] = group;
     const lots = group.map((b) => ({ b, lot: opened.get(openedKey(b.currency, b.entryId))! }));
     const bought = joined(
       lots.map(
@@ -276,9 +273,21 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
       });
       continue;
     }
-    const setBy = stops.has(key) ? stops.get(key) : earlier.stops.get(key);
+    // A stop an earlier file or portfolio.md holds is what a rejected file before this one may have changed.
+    const rejected =
+      setBy?.file === undefined && setBy !== null
+        ? undefined
+        : earlier.rejected.find((r) => changesStop(r.footprint, currency, ticker));
+    if (rejected !== undefined) {
+      notChecked.push({
+        command: first.command,
+        line: first.line,
+        reason: `not checked: depends on inbox/${printable(rejected.file)}, which was rejected, so the initial stop of ${bought} is unknown`,
+      });
+      continue;
+    }
     const plural = lots.length > 1;
-    if (setBy?.file === undefined && setBy != null) {
+    if (setBy?.file === undefined && setBy !== null) {
       issues.push({
         command: setBy.command,
         line: setBy.line,
@@ -303,7 +312,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
     warnings: clean ? withoutStop(current, touched.values()) : [],
     state: clean ? current : state,
     opened: clean ? own : new Map(),
-    stops: clean ? stops : new Map(),
+    stops: clean ? new Map([...stops].filter(([key, source]) => earlier.stops.get(key) !== source)) : new Map(),
     footprint: footprintOf(parsed),
   };
 }
@@ -378,6 +387,16 @@ function dependsOn(footprint: readonly Footprint[], command: Command): boolean {
   });
 }
 
+/** True if the file with this footprint could have set or cleared the stop of `ticker` in `currency`. */
+function changesStop(footprint: readonly Footprint[], currency: Currency, ticker: Ticker): boolean {
+  return footprint.some(
+    (f) =>
+      f.currencies.includes(currency) &&
+      (f.kind === null || CHANGES[f.kind].stop) &&
+      (f.ticker === null || f.ticker === ticker),
+  );
+}
+
 /**
  * The positions the commands touched that `state` (the one they produce) holds with no stop, one warning per
  * silo and ticker at the last command that touched it: risk watch cannot protect a position without a stop.
@@ -437,8 +456,9 @@ export function checkFiles(state: InboxState, files: readonly InboxFile[]): File
         else stops.set(key, { ...source, file: name });
       }
       // A lot this file or an earlier one used up is no lot to name any more; its ticker stays in `tickers`.
-      const open = new Set(CURRENCIES.flatMap((c) => (current[c]?.lots ?? []).map((l) => openedKey(c, l.entryId))));
-      for (const key of lots.keys()) if (!open.has(key)) lots.delete(key);
+      for (const [key, lot] of lots) {
+        if (!current[lot.currency]?.lots.some((l) => openedKey(lot.currency, l.entryId) === key)) lots.delete(key);
+      }
     }
     return { name, issues: checked.issues, notChecked: checked.notChecked, warnings: checked.warnings };
   });

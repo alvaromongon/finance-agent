@@ -133,6 +133,27 @@ export const sourceOf = (lot: OpenedLot): string =>
     ? `command ${lot.command} of this batch`
     : `command ${lot.command} of inbox/${printable(lot.file)}`;
 
+/** Who set the stop of a position: a `set_stop` of the batch under check (no `file`), or of an earlier file. */
+export interface StopSource {
+  command: number;
+  line: number;
+  file?: string;
+}
+
+/** The stop of a position (`openedKey(currency, ticker)`) after the commands so far: who set it, or `null` for cleared. */
+export type StopSources = ReadonlyMap<string, StopSource | null>;
+
+/**
+ * Where the handlers write down who set or cleared a stop as they apply a command (#158), so whoever applies the
+ * commands (`inbox:check`, `inbox:ingest`) reads the source of an initial stop from `initialStopBreaches` and does
+ * not work it out again. `stops` starts with the sources of the earlier files; a position it does not hold is the portfolio's.
+ */
+export interface StopRecord {
+  /** The command being applied. */
+  at: Pick<StopSource, "command" | "line">;
+  stops: Map<string, StopSource | null>;
+}
+
 /** A stop is a price; a position with none, or a stop that is not above zero, has no stop. */
 export const stopOf = (position: Pick<Position, "stopLoss">): number | null =>
   position.stopLoss !== null && position.stopLoss > 0 ? position.stopLoss : null;
@@ -334,6 +355,7 @@ export function setStop<C extends Currency>(
   state: InboxState,
   command: SetStop<C>,
   opened: OpenedLots = new Map(),
+  record?: StopRecord,
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
@@ -344,10 +366,16 @@ export function setStop<C extends Currency>(
   if (!silo.positions.some((p) => p.ticker === ticker)) {
     return refused(`cannot set a stop: there is no open position in ${printable(ticker)} in the ${currency} silo`);
   }
+  record?.stops.set(openedKey(currency, ticker), { ...record.at });
   return { state: withSilo(state, withStop(silo, ticker, command.price, opened)) };
 }
 
-export function clearStop(state: InboxState, command: ClearStop, opened: OpenedLots = new Map()): HandlerResult {
+export function clearStop(
+  state: InboxState,
+  command: ClearStop,
+  opened: OpenedLots = new Map(),
+  record?: StopRecord,
+): HandlerResult {
   const { ticker } = command;
   // A silo the portfolio does not have holds nothing. One that fails to read may hold the ticker, so its error
   // is what the command reports when no silo that reads settles it: a ticker held in a silo that reads is
@@ -369,6 +397,7 @@ export function clearStop(state: InboxState, command: ClearStop, opened: OpenedL
         : `cannot clear a stop: ${printable(ticker)} has no stop to clear`,
     );
   }
+  for (const silo of stopped) record?.stops.set(openedKey(silo.currency, ticker), null);
   // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
   return { state: stopped.reduce((next, silo) => withSilo(next, withStop(silo, ticker, null, opened)), state) };
 }
@@ -465,6 +494,8 @@ export interface InitialStopBreach {
   entryPrice: number;
   /** The stop the position ends the batch with, which is the lot's initial stop. */
   stop: number;
+  /** Who set that stop (see `StopRecord`); `null`: nobody in the inbox, `portfolio.md` holds it. */
+  setBy: StopSource | null;
 }
 
 /**
@@ -474,11 +505,20 @@ export interface InitialStopBreach {
  * entry later, in another batch, is a trailing stop. A lot with no initial stop is not a breach (it carries
  * `no_stop`, #132), nor is one the batch sold out.
  */
-export function initialStopBreaches(state: InboxState, opened: OpenedLots): InitialStopBreach[] {
+export function initialStopBreaches(state: InboxState, opened: OpenedLots, stops: StopSources): InitialStopBreach[] {
   return CURRENCIES.flatMap((currency) =>
     (state[currency]?.lots ?? []).flatMap((l) =>
       ownLot(opened, openedKey(currency, l.entryId)) && l.initialStop !== null && l.initialStop >= l.entryPrice
-        ? [{ currency, ticker: l.ticker, entryId: l.entryId, entryPrice: l.entryPrice, stop: l.initialStop }]
+        ? [
+            {
+              currency,
+              ticker: l.ticker,
+              entryId: l.entryId,
+              entryPrice: l.entryPrice,
+              stop: l.initialStop,
+              setBy: stops.get(openedKey(currency, l.ticker)) ?? null,
+            },
+          ]
         : [],
     ),
   );
@@ -487,7 +527,8 @@ export function initialStopBreaches(state: InboxState, opened: OpenedLots): Init
 /**
  * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the commands
  * before it opened, for the stops and for the words of a sale refusal; `earlierTickers` (`openedKey(currency,
- * ticker)`): the tickers earlier files opened, even if sold out since, for the same words. Never throws for an amount too large to
+ * ticker)`): the tickers earlier files opened, even if sold out since, for the same words; `record`: where a
+ * `set_stop` or `clear_stop` writes who changed the stop. Never throws for an amount too large to
  * count.
  */
 export function applyCommand(
@@ -495,6 +536,7 @@ export function applyCommand(
   command: Command,
   opened: OpenedLots = new Map(),
   earlierTickers: ReadonlySet<string> = new Set(),
+  record?: StopRecord,
 ): HandlerResult {
   try {
     switch (command.kind) {
@@ -507,9 +549,9 @@ export function applyCommand(
       case "sale":
         return sale(state, command, opened, earlierTickers);
       case "set_stop":
-        return setStop(state, command, opened);
+        return setStop(state, command, opened, record);
       case "clear_stop":
-        return clearStop(state, command, opened);
+        return clearStop(state, command, opened, record);
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

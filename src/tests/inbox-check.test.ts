@@ -430,6 +430,20 @@ describe("inbox:check", () => {
       });
     });
 
+    it("names a mixed-case heading with no dash and an indented one, but not a plan or a fenced heading", async () => {
+      const md = portfolioMd()
+        .replace("## USD — Cash", "## Usd Cash")
+        .replace("## USD — Positions", "  ## USD — Posiciones")
+        .replace("## USD — Lots", "## usd plans\n\n```\n## USD — Lotes\n```\n");
+      await writeFile(join(vaultDir, "portfolio.md"), md, "utf8");
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
+      await assert.rejects(checkInbox(), (err: Error) => {
+        assert.match(err.message, /"## Usd Cash", " {2}## USD — Posiciones"/);
+        assert.doesNotMatch(err.message, /usd plans|Lotes/);
+        return true;
+      });
+    });
+
     it("the other flows still refuse the file", async () => {
       await writeFile(join(vaultDir, "portfolio.md"), typo(), "utf8");
       const { readPortfolio } = await import("../portfolio-store.js");
@@ -857,6 +871,50 @@ describe("inbox:check", () => {
         assert.match(
           lines[0],
           /buy of TCK \(command 1, line 3\) at an entry price of 100 USD and the buy of TCK \(command 2, line 8\) at an entry price of 101 USD, not below them/,
+        );
+      });
+
+      it("a set_stop that was not checked leaves the stop of its ticker unknown for a later clear_stop", async () => {
+        await withPortfolio(portfolioMd({ usdCash: "0.00", usd: [{ ticker: "AAPL", units: 1, price: 100 }] }));
+        await drop(
+          "a.yaml",
+          batch(
+            "command: buy\nticker: MSFT\ndate: 2026-09-15\nunits: 1\nprice: 100 USD",
+            setStop("AAPL", "90 USD"),
+            "command: clear_stop\nticker: AAPL",
+          ),
+        );
+        const { lines } = await checkInbox();
+        assert.match(lineOf(lines, 1)!, /more than the available cash/);
+        assert.match(lineOf(lines, 2)!, /not checked/);
+        assert.match(
+          lineOf(lines, 3)!,
+          /not checked: command 2 was not checked, so the stop it would change is unknown/,
+        );
+        assert.doesNotMatch(lines.join("\n"), /no stop to clear/);
+      });
+
+      it("a breach that a rejected file's set_stop could remove is not checked, not an error", async () => {
+        await withPortfolio(portfolioMd({ usd: [{ ticker: "AAPL", units: 1, price: 100, stop: 200 }] }));
+        await drop("a.yaml", batch(setStop("AAPL", "90 USD"), "command: withdrawal\namount: 99999 USD"));
+        await drop("b.yaml", batch("command: buy\nticker: AAPL\ndate: 2026-09-15\nunits: 1\nprice: 100 USD"));
+        const { lines } = await checkInbox();
+        const b = lines.filter((l) => l.startsWith("inbox/b.yaml"));
+        assert.equal(b.length, 1, lines.join("\n"));
+        assert.match(
+          b[0],
+          /^inbox\/b\.yaml: command 1, line 3: not checked: depends on inbox\/a\.yaml, which was rejected, so the initial stop of the buy of AAPL \(command 1, line 3\) at an entry price of 100 USD is unknown$/,
+        );
+      });
+
+      it("a rejected file that changed no stop of that ticker does not hide a breach", async () => {
+        await withPortfolio(portfolioMd({ usd: [{ ticker: "AAPL", units: 1, price: 100, stop: 200 }] }));
+        await drop("a.yaml", batch("command: withdrawal\namount: 99999 USD"));
+        await drop("b.yaml", batch("command: buy\nticker: AAPL\ndate: 2026-09-15\nunits: 1\nprice: 100 USD"));
+        const { lines } = await checkInbox();
+        assert.match(
+          lines.find((l) => l.startsWith("inbox/b.yaml"))!,
+          /stop of 200 USD that portfolio\.md holds/,
         );
       });
 

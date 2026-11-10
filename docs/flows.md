@@ -389,8 +389,9 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
        `clear_stop`), so the later cash and lot commands are still checked, and a later `set_stop` that succeeds
        sets the stop of its ticker and silo for sure, so it lifts that unknown. A `clear_stop` names no currency:
        it is not checked only when a command that could have changed the lots or the stop of its own ticker
-       (a buy or sale of it, or a command that did not read) was refused or not checked, not for a refusal of
-       another ticker or currency.
+       (a buy or sale of it, a `set_stop` of it in any silo, or a command that did not read) was refused or not
+       checked, not for a refusal of another ticker or currency. A `set_stop` that is not checked (its currency is
+       blocked) leaves the stop of its ticker unknown in the same way, until a later `set_stop` of it succeeds.
      - **What is listed instead.** Each command not checked is listed as "not checked" with the command that
        blocked it, so nothing is skipped without a word. The errors listed are certain; fixing them can reveal
        others in the commands listed as not checked: a `buy X` is checked once the refusal before it is fixed, a
@@ -406,8 +407,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
        removes it; a stop that is not above zero is no stop. The initial stop of the lots a batch opened is the
        one rule of [the input format](input-format.md#inboxyaml): after the last command, a lot whose initial stop
        breaks it is refused (#159), once per `set_stop` or position, naming its lots and where the stop comes from
-       (the `set_stop`, an earlier file, or `portfolio.md`). In a currency a refusal blocked it is listed as not
-       checked on the buy instead.
+       (the `set_stop`, an earlier file, or `portfolio.md`; the handlers record who set each stop as they apply the
+       commands). It is listed as not checked on the buy instead in a currency a refusal blocked, and when the stop
+       comes from an earlier file or `portfolio.md` and a rejected file could have set or cleared the stop of that
+       ticker ("not checked: depends on" that file): the stop it ends with is unknown until that file is fixed.
   4. Print every error, and every command not checked, as file, command position, line and reason, then a
      summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
      position they touched (a buy, a sale, a `set_stop` or `clear_stop`) with no stop gets a warning line for it,

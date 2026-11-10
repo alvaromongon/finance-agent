@@ -14,6 +14,7 @@ import {
   sale,
   withdrawal,
   type InboxState,
+  type StopSource,
 } from "../utils/inbox-handlers.js";
 import type { Buy, ClearStop, Command, OpenedLot, OpenedLots, Sale, SetStop } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
@@ -374,37 +375,48 @@ describe("inbox handlers", () => {
     const run = (...commands: Command[]) => {
       let state: InboxState = held();
       const opened = new Map<string, OpenedLot>();
-      for (const command of commands) {
-        const result = applyCommand(state, command, opened);
+      const stops = new Map<string, StopSource | null>();
+      for (const [i, command] of commands.entries()) {
+        const result = applyCommand(state, command, opened, new Set(), {
+          at: { command: i + 1, line: 3 * (i + 1) },
+          stops,
+        });
         assert.ok("state" in result, "reason" in result ? result.reason : "");
         state = result.state;
         if (result.opened !== undefined)
           opened.set(result.opened, { currency: "EUR", ticker: tk("SAP.DE"), command: 1, line: 3 });
       }
-      return { state, opened };
+      return { state, opened, stops };
     };
 
     it("names a lot the batch opened whose initial stop is at or above its entry price", () => {
-      const { state, opened } = run(buyOf({ price: 180 }), setStopOf({ price: 180 }));
-      assert.deepEqual(initialStopBreaches(state, opened), [
-        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 180 },
+      const { state, opened, stops } = run(buyOf({ price: 180 }), setStopOf({ price: 180 }));
+      assert.deepEqual(initialStopBreaches(state, opened, stops), [
+        {
+          currency: "EUR",
+          ticker: "SAP.DE",
+          entryId: "20260915-sapde-entry",
+          entryPrice: 180,
+          stop: 180,
+          setBy: { command: 2, line: 6 },
+        },
       ]);
       const above = run(buyOf({ price: 180 }), setStopOf({ price: 200 }));
-      assert.equal(initialStopBreaches(above.state, above.opened).length, 1);
+      assert.equal(initialStopBreaches(above.state, above.opened, above.stops).length, 1);
     });
 
     it("accepts a stop below the entry price, and a stop above the entry of a lot the batch did not open", () => {
       const below = run(buyOf({ price: 180 }), setStopOf({ price: 179 }));
-      assert.deepEqual(initialStopBreaches(below.state, below.opened), []);
+      assert.deepEqual(initialStopBreaches(below.state, below.opened, below.stops), []);
       const trailing = run(setStopOf({ price: 200 }));
-      assert.deepEqual(initialStopBreaches(trailing.state, trailing.opened), []);
+      assert.deepEqual(initialStopBreaches(trailing.state, trailing.opened, trailing.stops), []);
     });
 
     it("judges the stop the position ends the batch with: a later set_stop or a clear_stop replaces it", () => {
       const fixed = run(buyOf({ price: 180 }), setStopOf({ price: 190 }), setStopOf({ price: 170 }));
-      assert.deepEqual(initialStopBreaches(fixed.state, fixed.opened), []);
+      assert.deepEqual(initialStopBreaches(fixed.state, fixed.opened, fixed.stops), []);
       const cleared = run(buyOf({ price: 180 }), setStopOf({ price: 190 }), clearStopOf());
-      assert.deepEqual(initialStopBreaches(cleared.state, cleared.opened), []);
+      assert.deepEqual(initialStopBreaches(cleared.state, cleared.opened, cleared.stops), []);
     });
 
     it("a scale-in under a stop at or above the new price takes that stop, unless a set_stop moves it below", () => {
@@ -412,12 +424,17 @@ describe("inbox handlers", () => {
       const bought = applyCommand(raised, buyOf({ price: 180 }));
       assert.ok("state" in bought && bought.opened !== undefined);
       const opened = openedBy(bought.opened);
-      assert.deepEqual(initialStopBreaches(bought.state, opened), [
-        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 190 },
+      const stops = new Map<string, StopSource | null>();
+      // The stop the position already had is not the batch's: no source (`setBy: null`, the portfolio's).
+      assert.deepEqual(initialStopBreaches(bought.state, opened, stops), [
+        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 190, setBy: null },
       ]);
-      const moved = applyCommand(bought.state, setStopOf({ price: 175 }), opened);
+      const moved = applyCommand(bought.state, setStopOf({ price: 175 }), opened, new Set(), {
+        at: { command: 2, line: 6 },
+        stops,
+      });
       assert.ok("state" in moved);
-      assert.deepEqual(initialStopBreaches(moved.state, opened), []);
+      assert.deepEqual(initialStopBreaches(moved.state, opened, stops), []);
     });
   });
 
