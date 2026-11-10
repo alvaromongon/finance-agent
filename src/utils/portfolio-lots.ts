@@ -63,6 +63,8 @@ export interface SalePlanInput<C extends Currency = Currency> {
   price: number;
   /** Amount of the whole sale, in the silo currency. */
   amount: number;
+  /** Where the lots come from, as a refusal names it; absent: the file's own words. */
+  lotsFrom?: string;
   /** Costs of the whole sale; absent if none were given. */
   costs?: Money<C>;
   /**
@@ -110,7 +112,7 @@ export function planSale<C extends Currency>(
     .map(({ lot }) => lot);
   if (ordered.length === 0)
     throw new SaleRefusal(
-      `Cannot sell ${printable(sale.ticker)}: no open lots for ${printable(sale.ticker)} in portfolio.md`,
+      `Cannot sell ${printable(sale.ticker)}: no open lots for ${printable(sale.ticker)} in ${sale.lotsFrom ?? "portfolio.md"}`,
     );
   const open = ordered.reduce((sum, l) => sum + l.units, 0);
   // A sale narrated by amount has its units known to half a cent of price: that much over is the lot,
@@ -119,7 +121,7 @@ export function planSale<C extends Currency>(
   const tolerance = (sale.unitsFromAmount ? unitsWorthHalfACent(sale.price) : 0) + UNITS_TOLERANCE;
   if (sale.units > open + tolerance) {
     throw new SaleRefusal(
-      `Cannot sell ${sale.units} units of ${printable(sale.ticker)}: only ${open} are open in Lots`,
+      `Cannot sell ${sale.units} units of ${printable(sale.ticker)}: only ${open} are open in ${sale.lotsFrom ?? "Lots"}`,
     );
   }
 

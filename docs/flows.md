@@ -375,8 +375,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   3. Check each command with its handler, in order, against the state the previous ones would produce, and
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
-     explicitly. A sale whose costs exceed its proceeds, or that would leave the cash below zero, is refused. A
-     command that did not read, or that a handler refuses, leaves the cash and lots of its currency (both when
+     explicitly. A sale whose costs exceed its proceeds, or whose proceeds round to zero cents (unless it uses up a lot, which it may close for 0.00), is refused; a refusal about
+     lots says whether they are the portfolio's or were opened by an earlier command. A command that did not read, or that a handler refuses, leaves the cash and lots of its currency (both when
      its currency is unknown) unknown: the later commands of that currency are not checked against them, so they
      report no misleading error (a refused buy does not make its sale fail with "no open lots"). A `clear_stop`
      names no currency, so it waits for either. Each is listed as "not checked" with the command that blocked it,

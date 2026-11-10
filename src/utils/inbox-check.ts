@@ -1,7 +1,7 @@
 // `inbox:check` without the I/O (#131): a batch (the text of one inbox file) against a state, and the files of
 // the inbox in order. Pure; `inbox.ts` reads the files and the portfolio and prints what this returns.
 import { CURRENCIES, type Currency } from "../types.js";
-import { applyCommand, type Command, type InboxState } from "./inbox-handlers.js";
+import { applyCommand, type Command, type InboxState, type LotSources } from "./inbox-handlers.js";
 import { parseBatch, type InboxIssue, type ParsedCommand } from "./inbox-parse.js";
 import { printable } from "./printable.js";
 
@@ -23,6 +23,8 @@ export interface BatchCheck {
    * applies whole or not at all, so a rejected one changes nothing.
    */
   state: InboxState;
+  /** The lots the clean batches so far opened, as the next batch's refusals name them. */
+  sources: LotSources;
 }
 
 /** The first command that left a silo's cash and lots unknown, and how. */
@@ -42,11 +44,12 @@ interface Blocker {
  * with the command that blocked it, so nothing is skipped without a word and the next check shows no error that
  * this one hid. A command that does not parse and has no readable currency blocks both silos.
  */
-export function checkBatch(state: InboxState, text: string): BatchCheck {
+export function checkBatch(state: InboxState, text: string, earlier: LotSources = new Map()): BatchCheck {
   const parsed = parseBatch(text);
   const issues = [...parsed.issues];
   const notChecked: InboxIssue[] = [];
   let current = state;
+  const sources = new Map(earlier);
   const blocked = new Map<Currency, Blocker>();
   const block = (currencies: readonly Currency[], blocker: Blocker): void => {
     for (const currency of currencies) if (!blocked.has(currency)) blocked.set(currency, blocker);
@@ -73,7 +76,7 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
       });
       continue;
     }
-    const result = applyCommand(current, read.command, opened);
+    const result = applyCommand(current, read.command, opened, sources);
     if ("reason" in result) {
       issues.push({ command: position, line: read.line, reason: result.reason });
       // A silo the portfolio does not have: nothing to be unknown about, every command of it is refused for that.
@@ -82,7 +85,10 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
         block([currency], { position, how: "was refused" });
     } else {
       current = result.state;
-      if (result.opened !== undefined) opened.add(result.opened);
+      if (result.opened !== undefined) {
+        opened.add(result.opened);
+        sources.set(result.opened, `command ${position} of this batch`);
+      }
     }
   }
   const byCommand = (a: InboxIssue, b: InboxIssue): number => (a.command ?? 0) - (b.command ?? 0);
@@ -94,6 +100,7 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
     notChecked,
     warnings: clean && notChecked.length === 0 ? withoutStop(current, parsed.commands) : [],
     state: clean ? current : state,
+    sources: clean ? sources : new Map(earlier),
   };
 }
 
@@ -139,9 +146,12 @@ export interface FileCheck {
  */
 export function checkFiles(state: InboxState, files: readonly InboxFile[]): FileCheck[] {
   let current = state;
+  let sources: LotSources = new Map();
   return files.map(({ name, text }) => {
-    const checked = checkBatch(current, text);
+    const checked = checkBatch(current, text, sources);
     current = checked.state;
+    // For the next file, a lot this one opened is an earlier batch's.
+    sources = new Map([...checked.sources.keys()].map((key) => [key, "an earlier batch"]));
     return { name, issues: checked.issues, notChecked: checked.notChecked, warnings: checked.warnings };
   });
 }
