@@ -105,6 +105,7 @@ export const openedKey = (currency: Currency, entryId: string): string => `${cur
 
 /** A lot that a command of the inbox opened, and which command. */
 export interface OpenedLot {
+  currency: Currency;
   ticker: Ticker;
   /** The 1-based position of the buy in its batch, and its line. */
   command: number;
@@ -337,7 +338,9 @@ export function setStop<C extends Currency>(
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
-  // The price is positive: the parser refuses anything else, and the handler does not check it again.
+  // The parser refuses it too, but the handler is also run by whoever builds a command without it (#132): a
+  // stop at or below zero is no stop (`stopOf`), so it would leave the position stopless with a command that says otherwise.
+  if (!(command.price > 0)) return refused(`the stop of ${printable(ticker)} must be greater than zero`);
   if (!silo.positions.some((p) => p.ticker === ticker)) {
     return refused(`cannot set a stop: there is no open position in ${printable(ticker)} in the ${currency} silo`);
   }
@@ -346,17 +349,26 @@ export function setStop<C extends Currency>(
 
 export function clearStop(state: InboxState, command: ClearStop, opened: OpenedLots = new Map()): HandlerResult {
   const { ticker } = command;
-  // A silo the portfolio does not have holds nothing; one that fails to read is the state's error, not an absent position.
+  // A silo the portfolio does not have holds nothing. One that fails to read may hold the ticker, so its error
+  // is what the command reports when no silo that reads settles it: a ticker held in a silo that reads is
+  // cleared there, whatever the state of the others.
   const silos: PortfolioSnapshot[] = [];
+  let unreadable: { reason: string } | undefined;
   for (const currency of CURRENCIES) {
     if (state[currency] === undefined) continue;
     const silo = siloOf(state, currency);
-    if (isRefusal(silo)) return silo;
-    if (silo.positions.some((p) => p.ticker === ticker)) silos.push(silo);
+    if (isRefusal(silo)) unreadable ??= silo;
+    else if (silo.positions.some((p) => p.ticker === ticker)) silos.push(silo);
   }
-  if (silos.length === 0) return refused(`cannot clear a stop: there is no open position in ${printable(ticker)}`);
   const stopped = silos.filter((silo) => silo.positions.some((p) => p.ticker === ticker && stopOf(p) !== null));
-  if (stopped.length === 0) return refused(`cannot clear a stop: ${printable(ticker)} has no stop to clear`);
+  if (stopped.length === 0) {
+    if (unreadable !== undefined) return unreadable;
+    return refused(
+      silos.length === 0
+        ? `cannot clear a stop: there is no open position in ${printable(ticker)}`
+        : `cannot clear a stop: ${printable(ticker)} has no stop to clear`,
+    );
+  }
   // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
   return { state: stopped.reduce((next, silo) => withSilo(next, withStop(silo, ticker, null, opened)), state) };
 }

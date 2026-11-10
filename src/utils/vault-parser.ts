@@ -70,7 +70,7 @@ export function assertSchemaVersion(md: string, file: string): void {
     );
   }
   throw new Error(
-    `${file}: unknown schema_version ${JSON.stringify(version)} (this engine reads version ${expected} of this file; see docs/input-format.md)`,
+    `${file}: unknown schema_version ${quoted(version)} (this engine reads version ${expected} of this file; see docs/input-format.md)`,
   );
 }
 

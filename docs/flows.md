@@ -378,20 +378,30 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      explicitly. A sale whose costs exceed its proceeds, or whose proceeds round to zero cents (under half a cent;
      unless it uses up a lot, which it may close for 0.00), is refused; a refusal about lots says whether they
      are the portfolio's, were opened by an earlier command of the batch ("command 2 of this batch") or by an
-     earlier file ("command 1 of inbox/a.yaml"), and a ticker none of them opened is the portfolio's alone.
+     earlier file ("command 1 of inbox/a.yaml"), and a ticker none of them opened is the portfolio's alone. When
+     no lot of the ticker is left, because the batch opened it and sold it out, the refusal says "the earlier
+     commands"; when an earlier file did, "an earlier file".
      - **What a failure leaves unknown.** A command that did not read, or that a handler refuses, leaves the cash
        and lots of its currency (both when its currency is unknown, and only for a silo the portfolio has)
        unknown: the later commands of that currency are not checked against them, so they report no misleading
        error (a refused buy does not make its sale fail with "no open lots"). A `set_stop` or `clear_stop` that
        fails changes no cash or lots: it leaves only the stop of its ticker unknown (in every currency for a
-       `clear_stop`), so the later cash and lot commands are still checked. A `clear_stop` names no currency: it
-       waits for either.
+       `clear_stop`), so the later cash and lot commands are still checked, and a later `set_stop` that succeeds
+       sets the stop of its ticker and silo for sure, so it lifts that unknown. A `clear_stop` names no currency:
+       it is not checked only when a command that could have changed the lots or the stop of its own ticker
+       (a buy or sale of it, or a command that did not read) was refused or not checked, not for a refusal of
+       another ticker or currency.
      - **What is listed instead.** Each command not checked is listed as "not checked" with the command that
-       blocked it, so the next check shows no error of the same batch that this one hid. A command whose refusal
-       an earlier file that was rejected could explain (that file touched its currency, and for a sale or a stop
-       its ticker) is listed as "not checked: depends on" that file, and so is the batch that holds it. Fixing the
-       errors listed can still reveal a new one: in a later file that depends on a rejected one but passed
-       against the state without it, and in an initial stop (below) of a currency that a refusal blocked.
+       blocked it, so nothing is skipped without a word. The errors listed are certain; fixing them can reveal
+       others in the commands listed as not checked: a `buy X` is checked once the refusal before it is fixed, a
+       `set_stop X 120` is listed although its stop is known (its position or silo is not), and a `clear_stop X`
+       listed because of a refusal is checked after it. A command whose refusal an earlier file that was rejected could explain is
+       listed as "not checked: depends on" that file, and so is the batch that holds it: a withdrawal or a buy
+       if that file changed the cash of its currency, a sale or a `set_stop` if it changed the lots of its
+       ticker, a `clear_stop` if it changed the lots or the stop of its ticker. A rejected file that only set or
+       cleared stops changed no cash or lots, so it explains none of the first three. Fixing the errors listed
+       can also reveal a new one in a later file that depends on a rejected one but passed against the state
+       without it, and in an initial stop (below) of a currency that a refusal blocked.
      - **Stops.** A stop is its own command: `buy` carries none, `set_stop` sets or moves it and `clear_stop`
        removes it; a stop that is not above zero is no stop. The initial stop of the lots a batch opened is the
        one rule of [the input format](input-format.md#inboxyaml): after the last command, a lot whose initial stop

@@ -26,7 +26,9 @@ const ok = (state: InboxState, command: Command): Required<InboxState> => {
 };
 /** The lots a command opened, as `inbox:check` keeps them: the key a handler gave and where the lot comes from. */
 const openedBy = (opened: string | undefined, over: Partial<OpenedLot> = {}): Map<string, OpenedLot> =>
-  new Map(opened === undefined ? [] : [[opened, { ticker: tk("SAP.DE"), command: 1, line: 3, ...over }]]);
+  new Map(
+    opened === undefined ? [] : [[opened, { currency: "EUR", ticker: tk("SAP.DE"), command: 1, line: 3, ...over }]],
+  );
 const reason = (state: InboxState, command: Command, opened?: OpenedLots): string => {
   const result = applyCommand(state, command, opened);
   assert.ok("reason" in result, `expected ${command.kind} to be refused`);
@@ -233,6 +235,13 @@ describe("inbox handlers", () => {
       assert.match(reason(stateOf(), setStopOf()), /no open position in SAP\.DE in the EUR silo/);
     });
 
+    it("refuses a price that is not above zero, whatever reaches the handler (the parser is not its only caller)", () => {
+      const state = held();
+      for (const price of [0, -5, Number.NaN]) {
+        assert.match(reason(state, setStopOf({ price })), /stop of SAP\.DE must be greater than zero/, String(price));
+      }
+    });
+
     it("prints the ticker escaped in its refusal, as any owner-supplied text (S4)", () => {
       const wild = "A\u001b[31m" as Ticker;
       assert.match(reason(stateOf(), setStopOf({ ticker: wild })), /no open position in A\\u001b\[31m in the EUR silo/);
@@ -314,10 +323,17 @@ describe("inbox handlers", () => {
       assert.equal(oneStopped.EUR.positions[0].stopLoss, null);
     });
 
-    it("reports the state's error for a silo that fails to read, not 'no open position'", () => {
-      const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] });
-      assert.match(reason(crossedState(held), clearStopOf()), /^there is no USD silo in the portfolio$/);
+    it("reports the state's error for a silo that fails to read, not 'no open position' or 'no stop to clear'", () => {
       assert.match(reason(crossedState(stateOf()), clearStopOf()), /^there is no USD silo in the portfolio$/);
+      const unstopped = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
+      assert.match(reason(crossedState(unstopped), clearStopOf()), /^there is no USD silo in the portfolio$/);
+    });
+
+    it("clears a ticker held in a silo that reads although the other silo does not", () => {
+      const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] });
+      const result = applyCommand(crossedState(held), clearStopOf());
+      assert.ok("state" in result, "reason" in result ? result.reason : "");
+      assert.equal(result.state.EUR?.positions[0].stopLoss, null);
     });
 
     it("works with the silos the portfolio has: a silo it does not have holds nothing", () => {
@@ -362,7 +378,8 @@ describe("inbox handlers", () => {
         const result = applyCommand(state, command, opened);
         assert.ok("state" in result, "reason" in result ? result.reason : "");
         state = result.state;
-        if (result.opened !== undefined) opened.set(result.opened, { ticker: tk("SAP.DE"), command: 1, line: 3 });
+        if (result.opened !== undefined)
+          opened.set(result.opened, { currency: "EUR", ticker: tk("SAP.DE"), command: 1, line: 3 });
       }
       return { state, opened };
     };

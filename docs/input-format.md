@@ -427,7 +427,9 @@ reported as one error, with the line the YAML reader gives. A command that does 
 refuses, leaves the cash and lots of its currency unknown (a `set_stop` or `clear_stop` that fails, only the
 stop of its ticker), so the later commands that depend on it are not checked against them: each is listed as
 not checked, with the command that blocked it, and is not an error. A refusal that a rejected file before it
-could explain is listed the same way, as depending on that file. Names and reasons taken from the file are
+could explain (by the cash, the lots or the stop it would have changed) is listed the same way, as depending on
+that file. Fixing the errors listed can reveal an error in a command listed as not checked, and an initial-stop
+error in a currency a refusal blocked. Names and reasons taken from the file are
 printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
 
 ## `watchlist.md`

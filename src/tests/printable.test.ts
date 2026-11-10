@@ -18,9 +18,16 @@ describe("quoted and printable", () => {
     assert.equal(printable(wild), quoted(wild).slice(1, -1));
   });
 
-  it("is the escaping the portfolio reader uses for the text it quotes: no JSON.stringify of its own", () => {
-    const source = readFileSync(new URL("../utils/vault-parser.ts", import.meta.url), "utf8");
-    // The one call left is the `schema_version`, which is any YAML value, not owner text.
-    assert.equal(source.match(/JSON\.stringify\(/g)?.length, 1);
+  it("also writes a value that is not text the way JSON does, so a YAML value can be quoted as it is", () => {
+    assert.equal(quoted(2), "2");
+    assert.equal(quoted({ a: "\u001b" }), '{"a":"\\u001b"}');
+    assert.equal(quoted(undefined), "undefined");
+  });
+
+  it("is the escaping the readers of owner text use: none has a JSON.stringify of its own", () => {
+    for (const file of ["vault-parser", "inbox-parse", "inbox-handlers", "inbox-check", "portfolio-lots"]) {
+      const source = readFileSync(new URL(`../utils/${file}.ts`, import.meta.url), "utf8");
+      assert.equal(source.match(/JSON\.stringify\(/g)?.length ?? 0, 0, file);
+    }
   });
 });

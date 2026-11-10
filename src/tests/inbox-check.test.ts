@@ -552,7 +552,7 @@ describe("inbox:check", () => {
         await drop(
           "a.yaml",
           batch(
-            "command: buy\nticker: ZZZ\ndate: 2026-09-15\nunits: 10\nprice: 100 USD", // 1: refused for cash, blocks USD
+            "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 10\nprice: 100 USD", // 1: refused for cash, blocks USD
             "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 100 EUR", // 2: the stop of 110 is not below it
             "command: clear_stop\nticker: TCK", // 3: would clear that stop; not checked
           ),
@@ -562,6 +562,65 @@ describe("inbox:check", () => {
         assert.match(lineOf(lines, 2)!, /not checked: command (1 was refused|3 was not checked), so/);
         assert.match(lineOf(lines, 3)!, /not checked: command 1 was refused/);
         assert.doesNotMatch(lines.join("\n"), /R would be zero or negative/);
+      });
+
+      it("a clear_stop is blocked by what concerns its own ticker, not by a refusal of another ticker or currency", async () => {
+        await withPortfolio(
+          portfolioMd({ eur: [{ ticker: "TCK", units: 1, price: 100, stop: 90 }], usd: [{ ...SAP }] }),
+        );
+        await drop(
+          "a.yaml",
+          batch(
+            "command: buy\nticker: ZZZ\ndate: 2026-09-15\nunits: 10\nprice: 100 USD", // 1: refused, blocks USD
+            "command: clear_stop\nticker: TCK", // 2: held in EUR only: checked, and valid
+            "command: clear_stop\nticker: SAP.DE", // 3: held in USD but not stopped: checked, has no stop
+            "command: clear_stop\nticker: ZZZ", // 4: the ticker of the refusal: not checked
+            "command: deposit\namount: 5 USD", // 5: the currency is blocked
+          ),
+        );
+        const { lines } = await checkInbox();
+        assert.equal(lineOf(lines, 2), undefined, lines.join("\n"));
+        assert.match(lineOf(lines, 3)!, /SAP\.DE has no stop to clear/);
+        assert.match(
+          lineOf(lines, 4)!,
+          /not checked: command 1 was refused, so the position it would change is unknown/,
+        );
+        assert.match(lineOf(lines, 5)!, /not checked: command 1 was refused/);
+      });
+
+      it("a clear_stop of the ticker of a command that was itself not checked is not checked either", async () => {
+        await drop(
+          "a.yaml",
+          batch(
+            "command: deposit\namount: 5 USD\nbogus: 1", // 1: unreadable, blocks USD
+            "command: buy\nticker: ZZZ\ndate: 2026-09-15\nunits: 1\nprice: 1 USD", // 2: not checked
+            "command: clear_stop\nticker: ZZZ", // 3: ZZZ may have been opened by 2
+          ),
+        );
+        const { lines } = await checkInbox();
+        assert.match(
+          lineOf(lines, 3)!,
+          /not checked: command 1 could not be read, so the position it would change is unknown/,
+        );
+      });
+
+      it("a set_stop that succeeds later lifts the stop block of its ticker and currency", async () => {
+        await drop(
+          "a.yaml",
+          batch(
+            setStop("TCK", "150 USD"), // 1: refused, no position yet; the stop of TCK is unknown
+            buyTck(100), // 2
+            setStop("TCK", "150 USD"), // 3: sets it for sure
+          ),
+        );
+        const { lines, exitCode } = await checkInbox();
+        assert.equal(exitCode, 1);
+        assert.match(lineOf(lines, 1)!, /no open position in TCK in the USD silo/);
+        assert.match(
+          lineOf(lines, 3)!,
+          /^inbox\/a\.yaml: command 3, line 11: the set_stop at 150 USD would be the initial stop of the buy of TCK \(command 2/,
+        );
+        assert.doesNotMatch(lines.join("\n"), /not checked/);
       });
 
       it("an unreadable clear_stop leaves the stop of its ticker unknown in every currency", async () => {
@@ -697,6 +756,47 @@ describe("inbox:check", () => {
         assert.match(
           b,
           /not checked: depends on inbox\/a\.yaml, which was rejected, so the position it would change is unknown$/,
+        );
+      });
+
+      it("a file that holds only stop errors changes no cash or lots: the later cash errors are real", async () => {
+        await drop("a.yaml", batch(setStop("NOPE", "10 USD"), "command: clear_stop\nticker: NOPE"));
+        await drop("b.yaml", batch(buyTck(100, 10), "command: withdrawal\namount: 99999 EUR"));
+        const { lines } = await checkInbox();
+        const b = lines.filter((l) => l.startsWith("inbox/b.yaml"));
+        assert.equal(b.length, 2, lines.join("\n"));
+        assert.match(b[0], /more than the available cash/);
+        assert.match(b[1], /exceeds the available cash/);
+        assert.doesNotMatch(lines.join("\n"), /depends on/);
+      });
+
+      it("a file with a stop error and a buy still explains the cash errors after it", async () => {
+        await drop("a.yaml", batch(buyTck(100, 2), setStop("NOPE", "10 USD")));
+        await drop("b.yaml", batch("command: withdrawal\namount: 99999 USD"));
+        const { lines } = await checkInbox();
+        assert.match(
+          lines.find((l) => l.startsWith("inbox/b.yaml"))!,
+          /not checked: depends on inbox\/a\.yaml/,
+        );
+      });
+
+      it("a refused stop still explains a later clear_stop of the same ticker, and no other", async () => {
+        await drop("a.yaml", batch(setStop("NOPE", "10 USD")));
+        await drop("b.yaml", batch("command: clear_stop\nticker: NOPE", "command: clear_stop\nticker: OTHER"));
+        const { lines } = await checkInbox();
+        assert.match(
+          lineOf(
+            lines.filter((l) => l.startsWith("inbox/b.yaml")),
+            1,
+          )!,
+          /not checked: depends on inbox\/a\.yaml/,
+        );
+        assert.match(
+          lineOf(
+            lines.filter((l) => l.startsWith("inbox/b.yaml")),
+            2,
+          )!,
+          /no open position in OTHER$/,
         );
       });
 

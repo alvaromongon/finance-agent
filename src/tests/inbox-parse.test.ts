@@ -141,6 +141,13 @@ describe("inbox format", () => {
   });
 
   describe("stops are their own commands", () => {
+    it("tells a field named like an Object property from a removed one: it is an unknown field", () => {
+      for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+        const reason = problem(`command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 10 USD\n"${name}": 1`);
+        assert.equal(reason, `unknown field "${name}" for a buy`);
+      }
+    });
+
     it("refuses a stop on a buy, and says which command sets it", () => {
       assert.match(
         problem("command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1\nprice: 10 USD\nstop: 9 USD"),

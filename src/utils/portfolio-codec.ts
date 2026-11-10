@@ -101,12 +101,31 @@ interface Span {
 function spanOf(model: PortfolioModel, currency: Currency, kind: PortfolioSection): Span | null {
   const headingRe = new RegExp(`^##\\s+${currency}\\s+[—–-]\\s+${kind}\\b.*$`);
   const { lines } = model;
-  const heading = lines.findIndex((line) => headingRe.test(line.text));
+  const fenced = fencedLines(lines);
+  const heading = lines.findIndex((line, i) => !fenced[i] && headingRe.test(line.text));
   if (heading === -1) return null;
   const start = heading + 1;
   let end = start;
-  while (end < lines.length && !/^(?:##\s|---\s*$)/.test(lines[end].text)) end++;
+  while (end < lines.length && (fenced[end] || !/^(?:##\s|---\s*$)/.test(lines[end].text))) end++;
   return { heading, start, end };
+}
+
+/**
+ * For each line, whether it is inside a fenced code block (or is one of its fences): what is written there is an
+ * example in the owner's notes, not the structure of the file. A fence opens with three backticks or tildes and
+ * closes with the same kind; an unclosed one runs to the end of the file.
+ */
+function fencedLines(lines: readonly PortfolioLine[]): boolean[] {
+  let open: string | undefined;
+  return lines.map(({ text }) => {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(text)?.[1][0];
+    if (open === undefined) {
+      open = fence;
+      return fence !== undefined;
+    }
+    if (fence === open) open = undefined;
+    return true;
+  });
 }
 
 /** True if the silo has the section. */
@@ -124,7 +143,10 @@ export function siloHeadings(model: PortfolioModel, currency: Currency): string[
   // or in any case followed by the dash (`## usd — Cash`); `## usd plans` and `## USDT — Cash` are other headings.
   const capitals = new RegExp(`^##\\s+${currency}(?![\\p{L}\\p{N}])`, "u");
   const dashed = new RegExp(`^##\\s+${currency}\\s*[—–-]`, "i");
-  return model.lines.map((line) => line.text.trimEnd()).filter((text) => capitals.test(text) || dashed.test(text));
+  const fenced = fencedLines(model.lines);
+  return model.lines
+    .map((line) => line.text.trimEnd())
+    .filter((text, i) => !fenced[i] && (capitals.test(text) || dashed.test(text)));
 }
 
 /** The table of the section; `null` if the section does not exist. */
