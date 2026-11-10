@@ -3,10 +3,16 @@
 import { CURRENCIES, type Currency } from "../types.js";
 import { applyCommand, type Command, type InboxState } from "./inbox-handlers.js";
 import { parseBatch, type InboxIssue, type ParsedCommand } from "./inbox-parse.js";
+import { printable } from "./printable.js";
 
 export interface BatchCheck {
   /** Every problem of the batch; empty when the batch is clean. */
   issues: InboxIssue[];
+  /**
+   * The commands that were not checked, each with the command that blocked it (`reason`): the batch is not
+   * clean while any is listed, and fixing `issues` and checking again checks them.
+   */
+  notChecked: InboxIssue[];
   /**
    * What a clean batch leaves that the owner should know, and that does not stop it: a position it touched
    * that ends with no stop. Empty when the batch has issues.
@@ -19,18 +25,32 @@ export interface BatchCheck {
   state: InboxState;
 }
 
+/** The first command that left a silo's cash and lots unknown, and how. */
+interface Blocker {
+  position: number;
+  how: "was refused" | "could not be read";
+}
+
 /**
  * Checks one batch against `state`. The commands are checked in order, each against the state the ones
- * before it would produce, so a buy and its sale in one batch are valid. A command that does not parse, or
- * that a handler refuses, is reported with the rest and leaves the state as it was for the next one.
+ * before it would produce, so a buy and its sale in one batch are valid.
+ *
+ * A command that does not parse, or that a handler refuses, is reported with the rest. What it would have done
+ * to its currency's cash and lots is unknown (the lot a refused buy would have opened, the cash a refused
+ * deposit would have added), so the later commands of that currency are not checked against them: a cash or
+ * lot error that only the blocked command explains would be misleading (N8). Each is listed in `notChecked`
+ * with the command that blocked it, so nothing is skipped without a word and the next check shows no error that
+ * this one hid. A command that does not parse and has no readable currency blocks both silos.
  */
 export function checkBatch(state: InboxState, text: string): BatchCheck {
   const parsed = parseBatch(text);
   const issues = [...parsed.issues];
+  const notChecked: InboxIssue[] = [];
   let current = state;
-  // A command that did not parse might have changed the cash or the lots of its currency: what a later command
-  // of that currency finds there is unknown, so it is not checked against it (N8) rather than reported wrongly.
-  const unknown = new Set<Currency>();
+  const blocked = new Map<Currency, Blocker>();
+  const block = (currencies: readonly Currency[], blocker: Blocker): void => {
+    for (const currency of currencies) if (!blocked.has(currency)) blocked.set(currency, blocker);
+  };
   const opened = new Set<string>();
   const unread = new Map(parsed.unread.map((u) => [u.position, u.currencies]));
   const order = [...parsed.commands.map((c) => c.position), ...unread.keys()].sort((a, b) => a - b);
@@ -39,24 +59,40 @@ export function checkBatch(state: InboxState, text: string): BatchCheck {
     const read = byPosition.get(position);
     if (read === undefined) {
       const written = unread.get(position)!;
-      for (const currency of written.length > 0 ? written : CURRENCIES) unknown.add(currency);
+      block(written.length > 0 ? written : CURRENCIES, { position, how: "could not be read" });
       continue;
     }
-    // A clear_stop names no currency: it waits for every unknown one.
-    if ("currency" in read.command ? unknown.has(read.command.currency) : unknown.size > 0) continue;
+    // A clear_stop names no currency: it waits for the first blocked one.
+    const currency = "currency" in read.command ? read.command.currency : undefined;
+    const blocker = currency !== undefined ? blocked.get(currency) : blocked.values().next().value;
+    if (blocker !== undefined) {
+      notChecked.push({
+        command: position,
+        line: read.line,
+        reason: `not checked: command ${blocker.position} ${blocker.how}, so ${currency !== undefined ? `the ${currency} cash and lots` : "the position"} it would change ${currency !== undefined ? "are" : "is"} unknown`,
+      });
+      continue;
+    }
     const result = applyCommand(current, read.command, opened);
     if ("reason" in result) {
       issues.push({ command: position, line: read.line, reason: result.reason });
+      // A silo the portfolio does not have: nothing to be unknown about, every command of it is refused for that.
+      // A refused clear_stop names no currency and changes no cash or lots: it blocks nothing.
+      if (currency !== undefined && current[currency] !== undefined)
+        block([currency], { position, how: "was refused" });
     } else {
       current = result.state;
       if (result.opened !== undefined) opened.add(result.opened);
     }
   }
-  issues.sort((a, b) => (a.command ?? 0) - (b.command ?? 0));
+  const byCommand = (a: InboxIssue, b: InboxIssue): number => (a.command ?? 0) - (b.command ?? 0);
+  issues.sort(byCommand);
+  notChecked.sort(byCommand);
   const clean = issues.length === 0;
   return {
     issues,
-    warnings: clean ? withoutStop(current, parsed.commands) : [],
+    notChecked,
+    warnings: clean && notChecked.length === 0 ? withoutStop(current, parsed.commands) : [],
     state: clean ? current : state,
   };
 }
@@ -91,6 +127,8 @@ export interface InboxFile {
 export interface FileCheck {
   name: string;
   issues: InboxIssue[];
+  /** The commands of the file that were not checked; see `BatchCheck`. */
+  notChecked: InboxIssue[];
   warnings: InboxIssue[];
 }
 
@@ -104,24 +142,33 @@ export function checkFiles(state: InboxState, files: readonly InboxFile[]): File
   return files.map(({ name, text }) => {
     const checked = checkBatch(current, text);
     current = checked.state;
-    return { name, issues: checked.issues, warnings: checked.warnings };
+    return { name, issues: checked.issues, notChecked: checked.notChecked, warnings: checked.warnings };
   });
 }
 
-/** A file name as printed: JSON string escapes for every control character (an ANSI sequence must not reach the terminal), none for the rest (S4). */
-const printable = (name: string): string => JSON.stringify(name).slice(1, -1);
+const where = (command: number | null, line: number | null): string =>
+  [command === null ? "file" : `command ${command}`, line === null ? undefined : `line ${line}`]
+    .filter(Boolean)
+    .join(", ");
 
-const renderAll = (checks: readonly FileCheck[], pick: (c: FileCheck) => InboxIssue[], label: string): string[] =>
-  checks.flatMap((check) =>
-    pick(check).map(({ command, line, reason }) => {
-      const where = [command === null ? "file" : `command ${command}`, line === null ? undefined : `line ${line}`];
-      return `inbox/${printable(check.name)}: ${where.filter(Boolean).join(", ")}: ${label}${reason}`;
-    }),
+/**
+ * One line per issue and per command not checked, in the order of the file:
+ * `inbox/<file>: command <n>, line <l>: <reason>`.
+ */
+export function renderIssues(checks: readonly FileCheck[]): string[] {
+  return checks.flatMap(({ name, issues, notChecked }) =>
+    [...issues, ...notChecked]
+      .map((issue, index) => ({ issue, index }))
+      .sort((a, b) => (a.issue.command ?? 0) - (b.issue.command ?? 0) || a.index - b.index)
+      .map(({ issue: { command, line, reason } }) => `inbox/${printable(name)}: ${where(command, line)}: ${reason}`),
   );
-
-/** One line per issue: `inbox/<file>: command <n>, line <l>: <reason>`. */
-export const renderIssues = (checks: readonly FileCheck[]): string[] => renderAll(checks, (c) => c.issues, "");
+}
 
 /** One line per warning, like an issue with `warning: ` before the reason. */
-export const renderWarnings = (checks: readonly FileCheck[]): string[] =>
-  renderAll(checks, (c) => c.warnings, "warning: ");
+export function renderWarnings(checks: readonly FileCheck[]): string[] {
+  return checks.flatMap(({ name, warnings }) =>
+    warnings.map(
+      ({ command, line, reason }) => `inbox/${printable(name)}: ${where(command, line)}: warning: ${reason}`,
+    ),
+  );
+}

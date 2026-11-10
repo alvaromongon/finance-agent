@@ -5,7 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { money } from "../money.js";
-import { parseTicker as tk } from "../ticker.js";
+import { parseTicker as tk, type Ticker } from "../ticker.js";
 import { applyCommand, buy, deposit, sale, withdrawal, type InboxState } from "../utils/inbox-handlers.js";
 import type { Buy, ClearStop, Command, Sale, SetStop } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
@@ -425,6 +425,26 @@ describe("inbox handlers", () => {
     ok(state, { kind: "deposit", currency: "EUR", amount: eur(5) });
     ok(state, { kind: "withdrawal", currency: "EUR", amount: eur(5) });
     assert.equal(JSON.stringify(state), before);
+  });
+
+  it("prints a ticker escaped in every refusal that names it, as any owner-supplied text (S4)", () => {
+    // A `Ticker` is only made by parsing, which refuses control characters; a value cast past that must still
+    // not reach the terminal raw, whichever handler names it.
+    const wild = 'A\u001b[31m"\\' as Ticker;
+    const escaped = 'A\\u001b[31m\\"\\\\';
+    const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
+    const refusals = [
+      reason(stateOf(), buyOf({ ticker: wild, units: 1e-7, price: 0.01 })), // costs nothing
+      reason(stateOf({ eurCash: 1 }), buyOf({ ticker: wild })), // more than the cash
+      reason(stateOf(), saleOf({ ticker: wild })), // no open lot
+      reason(held, saleOf({ ticker: wild, lot: "x" })), // no open lot with that id
+      reason(held, saleOf({ units: 9, ticker: wild })), // no lot of it, whatever the units
+    ];
+    for (const text of refusals) {
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(text, /[\u0000-\u001f]/, text);
+      assert.ok(text.includes(escaped), text);
+    }
   });
 
   it("each handler is exported on its own", () => {

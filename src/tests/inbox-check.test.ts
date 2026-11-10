@@ -154,27 +154,98 @@ describe("inbox:check", () => {
       "a.yaml",
       batch(
         "command: withdrawal\namount: 9999 USD", // 1: over the cash
-        "command: sale\nticker: SAP.DE\ndate: 2026-09-20\nunits: 9\nprice: 1 USD", // 2: more than held
-        "command: deposit\namount: 10 USD", // 3: fine
-        "command: sale\nticker: ZZZ\ndate: 2026-09-20\nunits: 1\nprice: 1 USD", // 4: not held
-        "command: deposit\namount: 10 GBP", // 5: unknown currency
-        "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1e2\nprice: 1 USD", // 6: notation
+        "command: withdrawal\namount: 9999 EUR", // 2: over the cash of the other silo
+        "command: deposit\namount: 10 GBP", // 3: unknown currency
+        "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1e2\nprice: 1 USD", // 4: notation
       ),
     );
     const { lines, exitCode } = await checkInbox();
     assert.equal(exitCode, 1);
     assert.deepEqual(
-      lines.map((l) => l.replace(/:.*?(command \d+, line \d+).*$/, " $1")),
+      lines.slice(0, 4).map((l) => l.replace(/:.*?(command \d+, line \d+).*$/, " $1")),
       [
         "inbox/a.yaml command 1, line 3",
         "inbox/a.yaml command 2, line 5",
-        "inbox/a.yaml command 4, line 12",
-        "inbox/a.yaml command 5, line 17",
-        "inbox/a.yaml command 6, line 19",
-        lines[5],
+        "inbox/a.yaml command 3, line 7",
+        "inbox/a.yaml command 4, line 9",
       ],
     );
-    assert.match(lines[5], /^5 error\(s\) in 1 of 1 batch/);
+    assert.match(lines[4], /^4 error\(s\) in 1 of 1 batch/);
+    assert.equal(lines.length, 5);
+  });
+
+  describe("a command that cannot be checked is named, with the command that blocked it", () => {
+    const lineOf = (lines: string[], n: number) => lines.find((l) => l.includes(`command ${n},`));
+
+    it("a refused buy and its sale in one batch: the sale is not checked, and gives no 'no open lots' error", async () => {
+      // 1 is refused (more than the 500 USD of cash): the lot it would have opened is unknown, not absent.
+      const dear = "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 10\nprice: 100 USD";
+      await drop("a.yaml", batch(dear, SELL));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 1);
+      assert.match(lineOf(lines, 1)!, /^inbox\/a\.yaml: command 1, line 3: the buy of TCK costs 1000\.00 USD/);
+      assert.match(lineOf(lines, 2)!, /^inbox\/a\.yaml: command 2, line 8: not checked: command 1 was refused/);
+      assert.doesNotMatch(lines.join("\n"), /no open lot/);
+      assert.match(lines.at(-1)!, /^1 error\(s\) in 1 of 1 batch\(es\); 1 command\(s\) not checked\.$/);
+    });
+
+    it("a clear_stop names no currency: it waits for a blocked one, and a refused clear_stop blocks nothing", async () => {
+      const dear = "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 10\nprice: 100 USD";
+      await drop("a.yaml", batch(dear, "command: clear_stop\nticker: TCK"));
+      const blocked = await checkInbox();
+      assert.match(
+        lineOf(blocked.lines, 2)!,
+        /not checked: command 1 was refused, so the position it would change is unknown/,
+      );
+
+      await drop("a.yaml", batch("command: clear_stop\nticker: NOPE", "command: withdrawal\namount: 99999 USD"));
+      const refused = await checkInbox();
+      assert.ok(lineOf(refused.lines, 1));
+      assert.doesNotMatch(lineOf(refused.lines, 2)!, /not checked/);
+    });
+
+    it("an unreadable command blocks the commands of its currency, and says it was not read", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: deposit\namount: 10 USD\nbogus: 1", // 1: unknown field, USD
+          "command: withdrawal\namount: 99999 USD", // 2: not checked
+          "command: withdrawal\namount: 99999 EUR", // 3: other silo, checked
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 2)!, /not checked: command 1 could not be read/);
+      assert.match(lineOf(lines, 3)!, /exceeds the available cash/);
+    });
+
+    it("an unreadable command with no currency blocks both silos", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 5", "command: withdrawal\namount: 99999 EUR"));
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 2)!, /not checked: command 1 could not be read/);
+    });
+
+    it("names every command it skipped, so fixing the listed errors reveals no unannounced one", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: withdrawal\namount: 9999 USD", // 1: refused
+          "command: deposit\namount: 10 USD", // 2: not checked
+          "command: sale\nticker: ZZZ\ndate: 2026-09-20\nunits: 1\nprice: 1 USD", // 3: not checked
+          "command: withdrawal\namount: 9999 EUR", // 4: refused (EUR)
+          "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 1e2\nprice: 1 EUR", // 5: unreadable
+          "command: deposit\namount: 1 EUR", // 6: not checked
+        ),
+      );
+      const { lines } = await checkInbox();
+      const named = lines.filter((l) => /command \d/.test(l)).map((l) => /command (\d)/.exec(l)![1]);
+      assert.deepEqual(named, ["1", "2", "3", "4", "5", "6"], lines.join("\n"));
+      assert.match(lines.at(-1)!, /3 error\(s\) in 1 of 1 batch\(es\); 3 command\(s\) not checked\.$/);
+    });
+
+    it("a clean batch names none and the summary does not mention any", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
+      assert.match((await checkInbox()).lines[0], /^Inbox is clean/);
+    });
   });
 
   it("checks the currency of the silo: the EUR cash does not cover a USD withdrawal, nor does a USD amount touch EUR", async () => {
@@ -227,20 +298,48 @@ describe("inbox:check", () => {
     };
     const sap = portfolioMd({ usd: [SAP] });
 
+    // Each case is refused for its own reason: the pattern is that reason, not any refusal of the portfolio.
     it("a Lots row that does not read", async () => {
-      await refusedWith(sap.replace("| SAP.DE | lot-sapde |", "| ??? | lot-sapde |"), /USD.*Lots|lot-sapde|row/i);
+      await refusedWith(
+        sap.replace("| SAP.DE | lot-sapde |", "| ??? | lot-sapde |"),
+        /^Error: portfolio\.md \(USD\): Lots row 1 \(\?\?\?, lot-sapde\): Ticker "\?\?\?" does not read.*the row is skipped/,
+      );
+    });
+
+    it("a Positions row that does not read", async () => {
+      await refusedWith(
+        sap.replace("| SAP.DE | 5 | 180 | 180", "| ??? | 5 | 180 | 180"),
+        /^Error: ## USD — Positions: Ticker "\?\?\?": a ticker has letters, digits/,
+      );
+    });
+
+    it("a ticker on two rows of Positions", async () => {
+      const row = "| SAP.DE | 5 | 180 | 180 | 0 | — |";
+      await refusedWith(
+        sap.replace(row, `${row}\n${row}`),
+        /^Error: portfolio\.md \(USD\): SAP\.DE is on 2 rows of "## USD — Positions".*merge them into one row/,
+      );
     });
 
     it("a Cash cell too large to count", async () => {
-      await refusedWith(sap.replace("| Available cash | 500.00 |", "| Available cash | 1e307 |"), /too large to count/);
+      await refusedWith(
+        sap.replace("| Available cash | 500.00 |", "| Available cash | 1e307 |"),
+        /^Error: ## USD — Cash: Available cash "1e307" is too large to count in cents/,
+      );
     });
 
     it("a P/L cell too large to count", async () => {
-      await refusedWith(sap.replace("| 180 | 180 | 0 | — |", "| 180 | 180 | 1e307 | — |"), /too large to count/);
+      await refusedWith(
+        sap.replace("| 180 | 180 | 0 | — |", "| 180 | 180 | 1e307 | — |"),
+        /^Error: ## USD — Positions: SAP\.DE P\/L "1e307" is too large to count in cents/,
+      );
     });
 
     it("a Volume that is not the sum of the Units of its lots", async () => {
-      await refusedWith(sap.replace("| SAP.DE | 5 | 180 |", "| SAP.DE | 7 | 180 |"), /Volume 7 is not the sum/);
+      await refusedWith(
+        sap.replace("| SAP.DE | 5 | 180 |", "| SAP.DE | 7 | 180 |"),
+        /^Error: portfolio\.md \(USD\): SAP\.DE: Volume 7 is not the sum of the Units of its lots \(5\)/,
+      );
     });
 
     it("leaves the inbox untouched when it refuses", async () => {
@@ -261,6 +360,31 @@ describe("inbox:check", () => {
     assert.match(lines[0], /^inbox\/a\.yaml: command 2, line 5: there is no USD silo in the portfolio$/);
     assert.match(lines[1], /^inbox\/a\.yaml: command 3, line 7: there is no USD silo/);
     assert.equal(lines.length, 3);
+  });
+
+  describe("a silo whose headings are all misspelt is not an absent silo", () => {
+    const typo = () =>
+      portfolioMd()
+        .replace("## USD — Cash", "## USD — Caja")
+        .replace("## USD — Positions", "## USD — Posiciones")
+        .replace("## USD — Lots", "## USD — Lotes");
+
+    it("the check is refused naming the headings found, not 'there is no USD silo'", async () => {
+      await writeFile(join(vaultDir, "portfolio.md"), typo(), "utf8");
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD"));
+      await assert.rejects(checkInbox(), (err: Error) => {
+        assert.match(err.message, /missing section "## USD — Cash"/);
+        assert.match(err.message, /"## USD — Caja", "## USD — Posiciones", "## USD — Lotes"/);
+        assert.doesNotMatch(err.message, /no USD silo/);
+        return true;
+      });
+    });
+
+    it("the other flows still refuse the file", async () => {
+      await writeFile(join(vaultDir, "portfolio.md"), typo(), "utf8");
+      const { readPortfolio } = await import("../portfolio-store.js");
+      await assert.rejects(readPortfolio("USD"), /missing section "## USD — Cash"/);
+    });
   });
 
   it("a portfolio with no silo at all is refused, not checked", async () => {
@@ -286,14 +410,22 @@ describe("inbox:check", () => {
       );
       const { lines } = await checkInbox();
       const commands = lines.filter((l) => /command \d/.test(l)).map((l) => /command (\d)/.exec(l)![1]);
-      assert.deepEqual(commands, ["1", "2", "4"], lines.join("\n"));
-      assert.doesNotMatch(lines.join("\n"), /no open lot of TCK/);
+      assert.deepEqual(commands, ["1", "2", "3", "4"], lines.join("\n"));
+      assert.match(
+        lines.find((l) => l.includes("command 3,"))!,
+        /not checked/,
+      );
+      assert.doesNotMatch(lines.join("\n"), /no open lot/);
     });
 
     it("does not check any silo after a command whose currency is unknown", async () => {
       await drop("a.yaml", batch("command: deposit\namount: 5", "command: withdrawal\namount: 99999 EUR"));
       const { lines } = await checkInbox();
-      assert.equal(lines.filter((l) => /command \d/.test(l)).length, 1, lines.join("\n"));
+      assert.match(
+        lines.find((l) => l.includes("command 2,"))!,
+        /not checked/,
+      );
+      assert.doesNotMatch(lines.join("\n"), /exceeds the available cash/);
     });
 
     it("still checks the later commands of the other currency", async () => {

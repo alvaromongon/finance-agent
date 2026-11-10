@@ -363,10 +363,12 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Steps**:
   1. Read the `.yaml` and `.yml` files of `inbox/` in name order. With none, the check returns "nothing to
      check" before the portfolio is read. Otherwise read both silos of the portfolio through the
-     [state port](glossary.md#state-port); a silo the file has no section of is absent (each command of its
-     currency gets a reason), and a portfolio it cannot read whole stops the check: a `Positions` row or a `Lots`
-     table or row that does not read, a cash or P/L cell too large to count, or a `Volume` that is not the sum of
-     the units of its lots (what `decision:record` refuses, minus the checks that need the decision log).
+     [state port](glossary.md#state-port); a silo the file has no heading of at all is absent (each command of its
+     currency gets a reason), and a portfolio it cannot read whole stops the check: a silo whose headings are
+     all misspelt (the error names the headings found), a `Positions` row that does not read or a ticker on two
+     `Positions` rows, a `Lots` table or row that does not read, a cash or P/L cell too large to count, or a
+     `Volume` that is not the sum of the units of its lots (what `decision:record` refuses, minus the checks that
+     need the decision log).
   2. Read each file as a batch ([format](input-format.md#inboxyaml)): a file that is not YAML, or whose
      `schema_version` is not `1`, is one error; every command is read on its own, so one bad command does not hide
      the next.
@@ -374,14 +376,17 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
      explicitly. A sale whose costs exceed its proceeds, or that would leave the cash below zero, is refused. A
-     command that did not read leaves the cash and lots of its currency (both when its currency is unknown)
-     unknown: the later commands of that currency are not checked against them, so they report no misleading
-     error.
+     command that did not read, or that a handler refuses, leaves the cash and lots of its currency (both when
+     its currency is unknown) unknown: the later commands of that currency are not checked against them, so they
+     report no misleading error (a refused buy does not make its sale fail with "no open lots"). A `clear_stop`
+     names no currency, so it waits for either. Each is listed as "not checked" with the command that blocked it,
+     so fixing the errors listed and checking again reveals no unannounced one. A silo the portfolio does not have
+     blocks nothing: every command of it is refused for that.
      A stop is its own command: `buy` carries none, `set_stop` sets or moves it and `clear_stop` removes it
      ([the rule](input-format.md#inboxyaml)).
-  4. Print every error as file, command position, line and reason, and exit 1; exit 0 when there is none. A
-     clean batch whose commands leave a position with no stop gets a warning line for it, which does not change
-     the exit code.
+  4. Print every error, and every command not checked, as file, command position, line and reason, then a
+     summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
+     position with no stop gets a warning line for it, which does not change the exit code.
 - **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never reads the inbox, so a
   batch with errors does not affect its stop check.
 - **Not built yet**: applying a batch and moving it to `applied/` or `rejected/` (`inbox:ingest`).

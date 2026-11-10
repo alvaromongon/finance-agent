@@ -17,6 +17,7 @@ import {
   zero,
 } from "../money.js";
 import { planSale, SaleRefusal } from "./portfolio-lots.js";
+import { printable } from "./printable.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -184,14 +185,20 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
   if (command.units < UNITS_TOLERANCE) return refused(tooFewUnits(command.units));
-  const amount = countedInCents(command.units * command.price, `the amount of the buy of ${ticker}`, currency);
+  const amount = countedInCents(
+    command.units * command.price,
+    `the amount of the buy of ${printable(ticker)}`,
+    currency,
+  );
   if (amount === 0) {
-    return refused(`the buy of ${ticker} costs nothing: ${command.units} units at ${command.price} is below one cent`);
+    return refused(
+      `the buy of ${printable(ticker)} costs nothing: ${command.units} units at ${command.price} is below one cent`,
+    );
   }
-  const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${ticker}`);
+  const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${printable(ticker)}`);
   if (cost > silo.cash) {
     return refused(
-      `the buy of ${ticker} costs ${show(cost, currency)}, more than the available cash of ${show(silo.cash, currency)}`,
+      `the buy of ${printable(ticker)} costs ${show(cost, currency)}, more than the available cash of ${show(silo.cash, currency)}`,
     );
   }
   const held = silo.positions.find((p) => p.ticker === ticker);
@@ -226,7 +233,11 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
         pl: zero(currency),
         stopLoss: null,
       };
-  const paid = movedCash(silo, subtractCounted(zero(currency), cost, `the buy of ${ticker}`), `the buy of ${ticker}`);
+  const paid = movedCash(
+    silo,
+    subtractCounted(zero(currency), cost, `the buy of ${printable(ticker)}`),
+    `the buy of ${printable(ticker)}`,
+  );
   return {
     state: withSilo(state, {
       ...paid,
@@ -295,10 +306,14 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
   );
   if (command.lot !== undefined && !chosen.some((l) => l.units > 0)) {
     return refused(
-      `cannot sell lot ${JSON.stringify(command.lot)}: ${ticker} has no open lot with that id in the ${currency} silo`,
+      `cannot sell lot ${JSON.stringify(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
     );
   }
-  const amount = countedInCents(command.units * command.price, `the amount of the sale of ${ticker}`, currency);
+  const amount = countedInCents(
+    command.units * command.price,
+    `the amount of the sale of ${printable(ticker)}`,
+    currency,
+  );
   let shares: ReturnType<typeof planSale<C>>;
   try {
     shares = planSale(
@@ -314,14 +329,14 @@ export function sale<C extends Currency>(state: InboxState, command: Sale<C>): H
   const costs = command.costs ?? zero(currency);
   if (costs > amount) {
     return refused(
-      `the costs of ${show(costs, currency)} exceed the proceeds of ${show(amount, currency)} of the sale of ${ticker}`,
+      `the costs of ${show(costs, currency)} exceed the proceeds of ${show(amount, currency)} of the sale of ${printable(ticker)}`,
     );
   }
-  const received = subtractCounted(amount, costs, `the proceeds of the sale of ${ticker}`);
-  const credited = movedCash(silo, received, `the sale of ${ticker}`);
+  const received = subtractCounted(amount, costs, `the proceeds of the sale of ${printable(ticker)}`);
+  const credited = movedCash(silo, received, `the sale of ${printable(ticker)}`);
   if (credited.cash < 0) {
     return refused(
-      `the sale of ${ticker} would leave the ${currency} cash below zero (${show(credited.cash, currency)})`,
+      `the sale of ${printable(ticker)} would leave the ${currency} cash below zero (${show(credited.cash, currency)})`,
     );
   }
   const left = new Map(shares.map((share) => [share.lot.entryId, share.unitsLeft]));
