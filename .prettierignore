@@ -4,3 +4,5 @@ dist/
 examples/market/*.json
 src/tests/fixtures/*.json
 examples/brain/
+# Local reports of the html-presenter skill, excluded from git in .git/info/exclude
+.copilot/
