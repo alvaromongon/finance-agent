@@ -1,12 +1,18 @@
-// `inbox:check` without the I/O (#131): a batch (the text of one inbox file) against a state, and the files of
-// the inbox in order. Pure; `inbox.ts` reads the files and the portfolio and prints what this returns.
-import { CURRENCIES, type Currency } from "../types.js";
+// The shared runner of the inbox (#131, #132): a batch (the text of one inbox file) against a state, and the files
+// of the inbox in order. Pure; `inbox.ts` reads the files and the portfolio, and `inbox:check` prints what this
+// returns while `inbox:ingest` writes the state it ends with: one code path, `check` being `ingest` without the write.
+import { createHash } from "node:crypto";
+import { CURRENCIES, type Currency, type Lot } from "../types.js";
 import type { Ticker } from "../ticker.js";
+import type { Money } from "../money.js";
+import { uniqueDecisionIds } from "./decision-id.js";
+import type { SaleShare } from "./portfolio-lots.js";
 import {
   applyCommand,
   initialStopBreaches,
   openedKey,
-  stopOf,
+  takeEntryCosts,
+  type BatchContext,
   type Command,
   type InboxState,
   type InitialStopBreach,
@@ -17,6 +23,7 @@ import {
 } from "./inbox-handlers.js";
 import { parseBatch, type CommandKind, type InboxIssue, type ParsedBatch, type ParsedCommand } from "./inbox-parse.js";
 import { printable } from "./printable.js";
+import { stopOf } from "./stop.js";
 
 export type { StopSource, StopSources };
 
@@ -37,6 +44,17 @@ export interface RejectedFile {
   footprint: readonly Footprint[];
 }
 
+/**
+ * What a batch is run with besides the state, from whoever runs it (`check` and `ingest` give the same): the
+ * `version` of the rules, the ids of the whole decision history (closed lots included, so no lot opened gets one of
+ * them) and what the exits of the history already took of each lot's entry costs.
+ */
+export interface RunContext {
+  rulesVersion: string;
+  takenIds: ReadonlySet<string>;
+  entryCostsTaken: ReadonlyMap<string, Money>;
+}
+
 /** What the files before the batch under check left behind. */
 export interface Earlier {
   /** The lots the clean files opened and that are still open. */
@@ -44,8 +62,43 @@ export interface Earlier {
   stops: StopSources;
   rejected: readonly RejectedFile[];
   /** `openedKey(currency, ticker)` of every ticker the clean files opened, also when all of it was sold since. */
-  tickers?: ReadonlySet<string>;
+  tickers: ReadonlySet<string>;
+  /** The ids taken so far: the history's, and those the clean files gave to their lots. */
+  takenIds: ReadonlySet<string>;
+  /** The entry costs taken so far: the history's, and those the exits of the clean files took. */
+  entryCostsTaken: ReadonlyMap<string, Money>;
+  rulesVersion: string;
 }
+
+/** A buy of a clean batch, with the lot it opened as the batch leaves it (its initial stop is the final one). */
+export interface BuyTrade {
+  kind: "buy";
+  command: number;
+  line: number;
+  currency: Currency;
+  ticker: Ticker;
+  date: string;
+  units: number;
+  price: number;
+  costs?: Money;
+  lot: Lot;
+}
+
+/** A sale of a clean batch: the exit of each lot it touched, with the lot as the batch leaves it. */
+export interface SaleTrade {
+  kind: "sale";
+  command: number;
+  line: number;
+  currency: Currency;
+  ticker: Ticker;
+  date: string;
+  price: number;
+  stopExecuted: boolean;
+  exits: { share: SaleShare; lot: Lot }[];
+}
+
+/** What a clean batch bought and sold, in order: what `inbox:ingest` writes to the decision log. */
+export type Trade = BuyTrade | SaleTrade;
 
 export interface BatchCheck {
   /** Every problem of the batch; empty when the batch is clean. */
@@ -69,6 +122,11 @@ export interface BatchCheck {
   opened: ReadonlyMap<string, OpenedLot>;
   /** The stops a clean batch set or cleared; none when it is not clean. */
   stops: StopSources;
+  /** What a clean batch bought and sold, in order; none when it is not clean. */
+  trades: Trade[];
+  /** The ids taken after a clean batch (those of its lots too), and the entry costs its exits took. */
+  takenIds: ReadonlySet<string>;
+  entryCostsTaken: ReadonlyMap<string, Money>;
   /** What the batch changes, for the files after it if it is rejected. */
   footprint: readonly Footprint[];
 }
@@ -92,8 +150,6 @@ interface StopBlock {
   blocker: Blocker;
 }
 
-const NOTHING: Earlier = { lots: new Map(), stops: new Map(), rejected: [] };
-
 /**
  * Checks one batch against `state`. The commands are checked in order, each against the state the ones
  * before it would produce, so a buy and its sale in one batch are valid.
@@ -115,8 +171,48 @@ const NOTHING: Earlier = { lots: new Map(), stops: new Map(), rejected: [] };
  * lots or stop, against what the command reads) is not checked either: the file is checked without what that
  * file would have changed, and the owner will fix the file first.
  */
-export function checkBatch(state: InboxState, text: string, earlier: Earlier = NOTHING): BatchCheck {
+export function checkBatch(state: InboxState, text: string, earlier: Earlier): BatchCheck {
   const parsed = parseBatch(text);
+  // The ids come from the one source of decision ids, never repeating one of the history's or the state's.
+  const takenIds = new Set(earlier.takenIds);
+  for (const silo of Object.values(state)) for (const l of silo.lots) takenIds.add(l.entryId);
+  const nextId = uniqueDecisionIds(takenIds, createHash("sha256").update(text).digest("hex"));
+  const entryCostsTaken = new Map(earlier.entryCostsTaken);
+  /** The lots this batch opened, as the batch leaves them: a `set_stop` later in it can change their initial stop. */
+  const lastSeen = new Map<string, Lot>();
+  const bought: { command: number; line: number; key: string; read: Extract<Command, { kind: "buy" }> }[] = [];
+  const sold: { command: number; line: number; read: Extract<Command, { kind: "sale" }>; exits: SaleShare[] }[] = [];
+  const trades = (): Trade[] => {
+    const final = (key: string, lot: Lot): Lot => lastSeen.get(key) ?? lot;
+    return [
+      ...bought.map((b): Trade => ({
+        kind: "buy",
+        command: b.command,
+        line: b.line,
+        currency: b.read.currency,
+        ticker: b.read.ticker,
+        date: b.read.date,
+        units: b.read.units,
+        price: b.read.price,
+        ...(b.read.costs !== undefined ? { costs: b.read.costs } : {}),
+        lot: lastSeen.get(b.key)!,
+      })),
+      ...sold.map((s): Trade => ({
+        kind: "sale",
+        command: s.command,
+        line: s.line,
+        currency: s.read.currency,
+        ticker: s.read.ticker,
+        date: s.read.date,
+        price: s.read.price,
+        stopExecuted: s.read.stopExecuted,
+        exits: s.exits.map((share) => ({
+          share,
+          lot: final(openedKey(s.read.currency, share.lot.entryId), share.lot),
+        })),
+      })),
+    ].sort((a, b) => a.command - b.command);
+  };
   const issues = [...parsed.issues];
   const notChecked: InboxIssue[] = [];
   let current = state;
@@ -201,10 +297,15 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
       continue;
     }
     const before = current;
-    const result = applyCommand(current, command, opened, earlier.tickers, {
-      at: { command: position, line: read.line },
-      stops,
-    });
+    const context: BatchContext = {
+      opened,
+      earlierTickers: earlier.tickers,
+      newEntryId: (date, ticker) => nextId(date, ticker, "entry"),
+      rulesVersion: earlier.rulesVersion,
+      entryCostsTaken,
+      record: { at: { command: position, line: read.line }, stops },
+    };
+    const result = applyCommand(current, command, context);
     if ("reason" in result) {
       // A refusal in a silo the portfolio has, that the rejected file before it could explain, is not an error of this one.
       const rejected =
@@ -245,6 +346,17 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
       const lot = { currency: command.currency, ticker: command.ticker, command: position, line: read.line };
       opened.set(result.opened, lot);
       own.set(result.opened, lot);
+      bought.push({ command: position, line: read.line, key: result.opened, read: command });
+    }
+    if (result.exits !== undefined && command.kind === "sale") {
+      takeEntryCosts(entryCostsTaken, result.exits, command.currency);
+      sold.push({ command: position, line: read.line, read: command, exits: [...result.exits] });
+    }
+    // The lots of this batch as they are now: the last value of one a later command sells out is the one recorded.
+    for (const key of own.keys()) {
+      const [currencyOfKey, ...id] = key.split("/");
+      const seen = current[currencyOfKey as Currency]?.lots.find((l) => l.entryId === id.join("/"));
+      if (seen !== undefined) lastSeen.set(key, seen);
     }
   }
   // The initial stop of a lot is the position's stop after the whole batch, so it is judged here, not per command (#159).
@@ -313,6 +425,9 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier = N
     state: clean ? current : state,
     opened: clean ? own : new Map(),
     stops: clean ? new Map([...stops].filter(([key, source]) => earlier.stops.get(key) !== source)) : new Map(),
+    trades: clean ? trades() : [],
+    takenIds: clean ? takenIds : earlier.takenIds,
+    entryCostsTaken: clean ? entryCostsTaken : earlier.entryCostsTaken,
     footprint: footprintOf(parsed),
   };
 }
@@ -419,10 +534,8 @@ function withoutStop(
     .sort(byCommand);
 }
 
-export interface InboxFile {
-  name: string;
-  text: string;
-}
+/** A file of the inbox: its text, or why it could not be read (a symbolic link, which is reported and never followed). */
+export type InboxFile = { name: string; text: string } | { name: string; problem: string };
 
 export interface FileCheck {
   name: string;
@@ -430,25 +543,64 @@ export interface FileCheck {
   /** The commands of the file that were not checked; see `BatchCheck`. */
   notChecked: InboxIssue[];
   warnings: InboxIssue[];
+  /** True for a file that checks clean: `inbox:ingest` applies it. A file that could not be read is never clean. */
+  clean: boolean;
+  /** What a clean file bought and sold, in order. */
+  trades: Trade[];
+  /** The text of the file, absent for one that could not be read. */
+  text?: string;
+}
+
+/** What running the files of the inbox over a state gives: the check of each, and the state the clean ones leave. */
+export interface InboxRun {
+  checks: FileCheck[];
+  state: InboxState;
 }
 
 /**
- * Checks the files of the inbox in name order. Each file is a batch checked against the state the clean
- * batches before it would produce (a rejected batch contributes nothing, as when they are applied), so the
- * result predicts what applying the inbox would do. A batch with a command not checked counts as rejected.
+ * Runs the files of the inbox in name order: the one runner of `inbox:check` and `inbox:ingest`. Each file is a
+ * batch checked against the state the clean batches before it would produce (a rejected batch contributes
+ * nothing, as when they are applied), so the result is what applying the inbox does. A batch with a command not
+ * checked counts as rejected; so does a file that could not be read, which any later file may depend on.
  */
-export function checkFiles(state: InboxState, files: readonly InboxFile[]): FileCheck[] {
+export function runFiles(state: InboxState, files: readonly InboxFile[], run: RunContext): InboxRun {
   let current = state;
   const lots = new Map<string, OpenedLot>();
   const tickers = new Set<string>();
   const stops = new Map<string, StopSource | null>();
   const rejected: RejectedFile[] = [];
-  return files.map(({ name, text }) => {
-    const checked = checkBatch(current, text, { lots, stops, rejected, tickers });
-    if (checked.issues.length > 0 || checked.notChecked.length > 0) {
+  let takenIds: ReadonlySet<string> = run.takenIds;
+  let entryCostsTaken: ReadonlyMap<string, Money> = run.entryCostsTaken;
+  const checks = files.map((file): FileCheck => {
+    const { name } = file;
+    if ("problem" in file) {
+      rejected.push({ file: name, footprint: [{ currencies: CURRENCIES, kind: null, ticker: null }] });
+      return {
+        name,
+        issues: [{ command: null, line: null, reason: file.problem }],
+        notChecked: [],
+        warnings: [],
+        clean: false,
+        trades: [],
+      };
+    }
+    const { text } = file;
+    const checked = checkBatch(current, text, {
+      lots,
+      stops,
+      rejected,
+      tickers,
+      takenIds,
+      entryCostsTaken,
+      rulesVersion: run.rulesVersion,
+    });
+    const clean = checked.issues.length === 0 && checked.notChecked.length === 0;
+    if (!clean) {
       rejected.push({ file: name, footprint: checked.footprint });
     } else {
       current = checked.state;
+      takenIds = checked.takenIds;
+      entryCostsTaken = checked.entryCostsTaken;
       // For the next files, a lot or a stop this one left is the file's.
       for (const [key, lot] of checked.opened) {
         lots.set(key, { ...lot, file: name });
@@ -463,8 +615,17 @@ export function checkFiles(state: InboxState, files: readonly InboxFile[]): File
         if (!current[lot.currency]?.lots.some((l) => openedKey(lot.currency, l.entryId) === key)) lots.delete(key);
       }
     }
-    return { name, issues: checked.issues, notChecked: checked.notChecked, warnings: checked.warnings };
+    return {
+      name,
+      issues: checked.issues,
+      notChecked: checked.notChecked,
+      warnings: checked.warnings,
+      clean,
+      trades: checked.trades,
+      text,
+    };
   });
+  return { checks, state: current };
 }
 
 const where = (command: number | null, line: number | null): string =>

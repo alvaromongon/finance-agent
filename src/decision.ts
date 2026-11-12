@@ -40,9 +40,9 @@ import {
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { portfolioWhere } from "./utils/portfolio-where.js";
-import { lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
+import { entryCostsTaken, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
 import { changeLots, LotsMovedError, readPortfolio, requireReadable, type PositionChange } from "./portfolio-store.js";
-import { addCounted, exactAmount, isCountedRefusal, zero, type Money } from "./money.js";
+import { exactAmount, isCountedRefusal } from "./money.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 import { tickerFileStem, type Ticker } from "./ticker.js";
@@ -379,24 +379,6 @@ function withLots(
   return { lots, change: { ...change, volume, avgPrice } };
 }
 
-/** What the exits already written took of each lot's entry costs, by entry id. */
-function entryCostsTaken(history: readonly Decision[], currency: Currency): Map<string, Money> {
-  const taken = new Map<string, Money>();
-  for (const d of history) {
-    if (d.type === "exit" && d.related_id && d.entry_costs != null) {
-      taken.set(
-        d.related_id,
-        addCounted(
-          taken.get(d.related_id) ?? zero(currency),
-          d.entry_costs,
-          `the entry_costs the exits of entry ${d.related_id} took together`,
-        ),
-      );
-    }
-  }
-  return taken;
-}
-
 /** ATR14 of the asset to evaluate the stop distance. Best-effort. */
 async function fetchAtr(provider: OwnerDecisionProvider, ticker: Ticker): Promise<number | null> {
   try {
@@ -476,7 +458,7 @@ function planOwnerSale(
         costs: input.costs,
         pnl: input.pnl,
       },
-      entryCostsTaken(history, input.currency),
+      entryCostsTaken(history),
     );
   } catch (err) {
     // The refusal of an amount says what it is; that nothing was recorded is said here, where it is true.

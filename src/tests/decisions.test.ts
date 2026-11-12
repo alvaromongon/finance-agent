@@ -366,6 +366,23 @@ describe("twoMonthRuleWarning (art. 33.5.f LIRPF)", () => {
     assert.match(w!, /antes del 2026-10-31/);
   });
 
+  it("lists every losing sale in the window, each with its amount, date and the date its window ends (#90)", () => {
+    const history = [
+      exit({ id: "x1", date: "2026-08-31", pnl: money(-30, "EUR") }),
+      exit({ id: "x2", date: "2026-09-02", pnl: money(-12.5, "EUR") }),
+      exit({ id: "x3", date: "2026-09-03", pnl: money(40, "EUR") }),
+      exit({ id: "x4", date: "2026-05-01", pnl: money(-99, "EUR") }),
+    ];
+    const w = twoMonthRuleWarning(history, tk("ADBE"), "2026-09-09", "real")!;
+    assert.match(w, /-30 USD\) el 2026-08-31.*antes del 2026-10-31/s);
+    assert.match(w, /-12\.5 USD\) el 2026-09-02.*antes del 2026-11-02/s);
+    assert.doesNotMatch(w, /-99|2026-05-01|\b40\b/);
+  });
+
+  it("a loss that rounds to 0 cents is not a loss", () => {
+    assert.equal(twoMonthRuleWarning([exit({ pnl: money(-0.004, "EUR") })], tk("ADBE"), "2026-09-09", "real"), null);
+  });
+
   it("does not warn in demo, out of the window, with a gain or without pnl", () => {
     assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-09-09", "demo"), null);
     assert.equal(twoMonthRuleWarning([exit()], tk("ADBE"), "2026-10-31", "real"), null);

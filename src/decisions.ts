@@ -10,8 +10,9 @@
 // brain. The schema is minimal on purpose: each later issue adds its optional
 // fields once it has a consumer.
 import { messages, type Messages } from "./i18n/index.js";
-import { randomUUID } from "node:crypto";
-import { checkTicker, parseTicker, tickerIdPart, type Ticker } from "./ticker.js";
+import { checkTicker, parseTicker, type Ticker } from "./ticker.js";
+import { newDecisionId } from "./utils/decision-id.js";
+import { entryAfterExit } from "./utils/portfolio-lots.js";
 import {
   CONVICTION_POINTS,
   CONVICTIONS,
@@ -255,11 +256,7 @@ export const isAssumptionList = (v: unknown): v is string[] => isStringList(v) &
  */
 export const tradeUnits = (d: Decision): number => d.units ?? d.amount! / d.price!;
 
-/**
- * The one rule "a lot cannot be sold before it was bought" (the same day is a round trip), for the
- * validation of a recorded exit and for the refusal of a sale before it is recorded.
- */
-export const entryAfterExit = (entryDate: string, exitDate: string): boolean => entryDate > exitDate;
+export { entryAfterExit };
 
 /**
  * What is wrong with the lot snapshot (`entry_*` and `related_id`) of a decision, if it has one: an empty
@@ -517,11 +514,7 @@ export function validateDecision(raw: unknown): Decision {
   };
 }
 
-/** Readable unique id: date, asset (or silo) and type, plus a random suffix. */
-export function newDecisionId(date: string, subject: string, type: DecisionType): string {
-  const slug = tickerIdPart(subject);
-  return `${date.replace(/-/g, "")}-${slug}-${type}-${randomUUID().slice(0, 8)}`;
-}
+export { newDecisionId };
 
 /**
  * Builds and validates a decision. It drops `undefined` fields so the JSON
@@ -631,7 +624,7 @@ export function twoMonthRuleWarning(
   m: Messages = messages(),
 ): string | null {
   if (accountEnv !== "real") return null;
-  const loss = history
+  const losses = history
     .filter(
       (d) =>
         d.type === "exit" &&
@@ -641,9 +634,8 @@ export function twoMonthRuleWarning(
         d.date <= date &&
         addMonths(d.date, 2) > date,
     )
-    .at(-1);
-  if (!loss) return null;
-  return m.twoMonthRule(ticker, loss.pnl!, loss.currency, loss.date, addMonths(loss.date, 2));
+    .map((d) => ({ pnl: d.pnl!, currency: d.currency, date: d.date, until: addMonths(d.date, 2) }));
+  return losses.length === 0 ? null : m.twoMonthRule(ticker, losses);
 }
 
 function addMonths(date: string, months: number): string {

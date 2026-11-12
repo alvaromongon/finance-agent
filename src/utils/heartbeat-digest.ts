@@ -20,6 +20,7 @@ import { formatNumber, messages, type Messages } from "../i18n/index.js";
 import { STOP_ATR_BY_HORIZON, type TightStop } from "./atr-stop.js";
 import { describeSetup, type SetupEvaluation } from "./setups/index.js";
 import type { StopBreach } from "./stop-breach.js";
+import type { Ticker } from "../ticker.js";
 import type { Currency, Signal } from "../types.js";
 
 export interface HeartbeatDigest {
@@ -45,6 +46,11 @@ export interface HeartbeatDigest {
    * 0 or absent) and named here, in every digest while they last (not deduplicated).
    */
   unreadableCells: string[];
+  /**
+   * The open positions of the silo with no stop (`positionsWithoutStop`, #132): risk watch cannot protect them.
+   * Named in every digest while they last (not deduplicated), until a `set_stop` gives them one.
+   */
+  noStop: { ticker: Ticker; currency: Currency }[];
   tightStops: TightStop[];
   /** The day's armed breakouts (ADR-0013): the only thing actionable without the reasoner. */
   armed: SetupEvaluation[];
@@ -52,12 +58,12 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops and the lots, ticker and unreadable-cell warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop and the lots, ticker and unreadable-cell warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
   return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
 }
 
-/** The digest without what was already sent today. Crossed stops and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops, positions without a stop and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
@@ -94,6 +100,9 @@ export function renderHeartbeatDigest(
   }
   if (d.unreadableCells.length > 0) {
     sections.push({ label: t.labels.unreadableCells, tickers: [], lines: unreadableCellsSection(d, m) });
+  }
+  if (d.noStop.length > 0) {
+    sections.push({ label: t.labels.noStop, tickers: d.noStop.map((p) => p.ticker), lines: noStopSection(d, m) });
   }
   if (d.tightStops.length > 0) {
     sections.push({
@@ -145,6 +154,11 @@ function lotsSection(d: HeartbeatDigest, m: Messages): string[] {
 function unreadableCellsSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [...t.unreadableCellsIntro, ...d.unreadableCells.map((w) => `- ${w}`), ...t.unreadableCellsOutro];
+}
+
+function noStopSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [...t.noStopIntro, ...d.noStop.map((p) => t.noStopLine(p.ticker, p.currency)), ...t.noStopOutro];
 }
 
 function tickersSection(d: HeartbeatDigest, m: Messages): string[] {

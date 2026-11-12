@@ -16,6 +16,7 @@ parentheses so a code comment that cites it can be found here.
 | [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`           |
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize` |
 | [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                   |
+| [Apply the inbox](#apply-the-inbox)                           | `inbox:ingest`                                                  |
 | [Evaluate decisions](#evaluate-decisions)                     | `decisions:evaluate`, `decisions:chart`, `screening:outcomes`   |
 | [Email delivery](#email-delivery)                             | `outbox:send` and every flow that sends                         |
 
@@ -44,13 +45,16 @@ parentheses so a code comment that cites it can be found here.
      (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
      cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
      briefing and the screening log the same warning.
-  3. Fetch prices ([market data](#market-data-freshness)) and write them into `portfolio.md`
-     (current price and P/L). This happens before the market-session guard on purpose. The write
+  3. Fetch prices ([market data](#market-data-freshness)) and write them into the portfolio
+     (current price and P/L; with the [store](glossary.md#store), into it, regenerating `portfolio.md`; the rest of
+     this step describes the old file, which is the state until the first `inbox:ingest`). This happens before the market-session guard on purpose. The write
      goes through the file's one codec and edits the priced cells in place, then replaces the file
      atomically (a temporary file renamed over it), so every other line stays where it was (notes and spacing included); every `Positions` row of a ticker that has a
      price and a readable `Volume` and `Avg price` is updated, its ticker written in upper case.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
+     4'. Name every open position with no stop (`stopOf`: a stop that is not above zero is none) in the digest, with its
+     silo, in every run while it lasts (not deduplicated), before the session guard.
      4a. Check the [lots](glossary.md#lot), from `portfolio.md` alone (it does not read the decision
      log), after the stops are detected: a `Lots` row the reader skipped (named with the reason), a
      `Lots` table that does not read or is missing, a ticker on several `Positions` rows, and each
@@ -78,7 +82,7 @@ parentheses so a code comment that cites it can be found here.
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
-  12. Send the digest (crossed stops, a problem with the lots, a ticker or a money cell that cannot be read, tight stops, armed setups, escalations) with only what is new
+  12. Send the digest (crossed stops, positions without a stop, a problem with the lots, a ticker or a money cell that cannot be read, tight stops, armed setups, escalations) with only what is new
       since the last send today (crossed stops and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads `portfolio.md`, `watchlist.md`, `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md` and the last log of each ticker. Writes `portfolio.md` (prices),
@@ -228,7 +232,12 @@ them. It needs one history request per position with a stop; without ATR the pos
     owner's total and the computed sum (costs, FX) is shared by units, in whole cents (largest
     remainder), so the exits add up to the owner's total and a losing lot stays a loss (lots bought
     at 100 and 130, sold together at 120 with +50 given: the exits get +100 and −50, and the
-    two-month warning cites the −50). The lots a sale uses up are removed
+    two-month warning cites the −50). Each lot's entry costs stay with the lot (#90): an exit's `pnl` is its computed
+    result minus its own share of the entry costs, plus its units' share of what remains of the difference
+    (lots A, 5 units at 100 with entry costs of 20, and B, 5 units at 130, sold together at 120 with +30 given: the
+    exits get +80 and −50). A lot's sign is kept before costs and FX, which can change it. The two-month warning
+    lists every losing sale of the ticker in the window (amount, currency, date and the date its window ends); a loss
+    that rounds to 0 cents is not a loss. The lots a sale uses up are removed
     from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
     the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
   - A sale of a ticker with no lots, of more units than are open, with no `portfolio.md`, or dated
@@ -418,7 +427,40 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      naming the silo, which does not change the exit code.
 - **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never reads the inbox, so a
   batch with errors does not affect its stop check.
-- **Not built yet**: applying a batch and moving it to `applied/` or `rejected/` (`inbox:ingest`).
+- **Applying** what it accepts is [`inbox:ingest`](#apply-the-inbox), which runs the same steps.
+
+## Apply the inbox
+
+- **Starts with**: the same as [Check the inbox](#check-the-inbox), then `npm run inbox:ingest`. No LLM, no network.
+- **Steps**:
+  1. Read the files of `inbox/`: a regular file only, opened without following a link and read from the handle that
+     was checked; a symbolic link, a folder or a named pipe called like a batch is reported and never read. A symbolic
+     link as `inbox/` itself is refused. With none, "nothing to apply".
+  2. Read the state once, through the [state port](glossary.md#state-port): the [store](glossary.md#store), or, while
+     there is none, `portfolio.md` read whole (a row that does not read is refused, not dropped, so a position is
+     never lost on the way). First write to the decision log the lines an earlier run committed to the store and did
+     not get to write (the ones the log lacks by id), then read the decision history, whose ids no new lot may take.
+     Without a `version` in `strategies/base.md` nothing is applied (the lots carry it): the run fails.
+  3. Run the files in name order with the [same code as the check](#check-the-inbox) (`runFiles`): each command checked
+     by its handler against the state the ones before it produce, a refused batch contributing nothing. The handlers
+     also give each buy its lot (an id from the one source of decision ids, the rules version, `no_stop` while it has
+     no stop) and each sale the exits of its lots, with the entry costs earlier exits took (from the history and from
+     the batches before) and its own proceeds (`units × price`).
+  4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
+     the batches applied whose files are not moved yet, and the decision-log lines of their trades (an `entry` per buy
+     and an `exit` per lot sold). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
+     from the store (the store is written first, the view after it).
+  5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
+     (command position, line, reason), never over a file already there. Then the store forgets the batches moved.
+  6. Print what was applied, the warnings (a position with no stop), each error and what was left unread; exit 1 if any
+     batch was rejected or left unread, 0 otherwise.
+- **Writes**: `state/portfolio.json` and `portfolio.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
+  `inbox/`. A batch with an error changes none of them.
+- **When it fails**: a transient failure (the store or the log cannot be written, a file cannot be moved) leaves the
+  files in `inbox/` and throws; the next run finishes it without applying anything twice (the store remembers the batches
+  it applied, and the lines it owes the log).
+- **Never**: touches the stop check. The [heartbeat](#heartbeat) never reads the inbox, so a rejected batch cannot
+  stop it; it reads the state last applied, and a refused batch leaves it as it was.
 
 ## Evaluate decisions
 

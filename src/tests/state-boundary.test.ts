@@ -19,7 +19,8 @@ const SRC = join(import.meta.dirname, "..");
 /**
  * The storage layer, relative to `src/`: the modules that may read or write a state file and parse what
  * it stores. `portfolio-store.ts` is the portfolio state port; the others are its parsers, codec and
- * writer and the vault reader/writer of the other files.
+ * writer, the engine's own JSON store of the portfolio and its generated view (`portfolio-json.ts`, #132), and
+ * the vault reader/writer of the other files.
  */
 const STORAGE_LAYER: readonly string[] = [
   "vault-io.ts",
@@ -27,6 +28,7 @@ const STORAGE_LAYER: readonly string[] = [
   "utils/vault-parser.ts",
   "utils/portfolio-codec.ts",
   "utils/portfolio-writer.ts",
+  "utils/portfolio-json.ts",
   "utils/parse.ts",
   "utils/fs-text.ts",
   "inbox-store.ts",
@@ -41,10 +43,13 @@ const ALLOWLIST: Readonly<Record<string, { slices: string; why: string }>> = {
   "claude-analyst.ts": { slices: "#142", why: "reads the strategy file (configuration)" },
   "decisions-chart.ts": { slices: "#143", why: "writes the chart file (a report, not state)" },
   "decisions-evaluate.ts": { slices: "#143", why: "writes the evaluation file (a report, not state)" },
-  "demo.ts": { slices: "#132", why: "rewrites last_manual_sync in the copy of portfolio.md it runs on" },
+  "demo.ts": {
+    slices: "#143",
+    why: "copies the example brain to a temporary directory and reads the outbox of its copy",
+  },
   "monday-briefing.ts": {
-    slices: "#132, #140, #143",
-    why: "puts portfolio.md and watchlist.md as text in the prompt; reads the theses and logs; writes the report",
+    slices: "#140, #143",
+    why: "puts watchlist.md as text in the prompt; reads the theses and logs; writes the report",
   },
   "providers/fixtures.ts": { slices: "#143", why: "reads market fixture files (not state)" },
   "screening-outcomes.ts": { slices: "#143", why: "reads screening-log.md and writes its report" },
@@ -132,6 +137,19 @@ describe("the state boundary: only the storage layer reads or writes state or pa
         file,
       );
     }
+  });
+
+  it("no flow reads portfolio.md as a source: nothing outside the storage layer opens the file (#132)", () => {
+    // `portfolio.md` is the view the port generates from the store; the port is the only door to the state.
+    const named = sources(SRC)
+      .filter((file) => !STORAGE_LAYER.includes(file))
+      .filter((file) => {
+        const code = readFileSync(join(SRC, file), "utf8")
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/^\s*\/\/.*$/gm, "");
+        return /\b(?:join|resolve|readFile|readTextFile|safeRead|writeFile)\([^)]*["']portfolio\.md["']/.test(code);
+      });
+    assert.deepEqual(named, []);
   });
 
   it("reports the length of the allowlist: the early measure of the milestone", (t) => {
