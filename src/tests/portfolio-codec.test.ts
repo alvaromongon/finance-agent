@@ -14,6 +14,7 @@ import {
   sectionBody,
   sectionRange,
   serializePortfolio,
+  siloHeadings,
   setTableRows,
 } from "../utils/portfolio-codec.js";
 
@@ -237,6 +238,15 @@ describe("portfolio codec: sections", () => {
     assert.equal(sectionBody(md, "USD", "Lots"), "");
     assert.ok(hasSection(parsePortfolio(md), "EUR", "Positions"));
     assert.ok(!hasSection(parsePortfolio(md), "USD", "Positions"));
+  });
+
+  it("a heading inside a fenced code block is not a heading: it neither starts a section nor ends one", () => {
+    const fenced = "x\n```\n## USD — Cash\n```\n## EUR — Cash\n\n| a |\n|---|\n| 1 |\n```\n## notes\n---\n```\n| 2 |\n";
+    const model = parsePortfolio(fenced);
+    assert.ok(!hasSection(model, "USD", "Cash"));
+    assert.deepEqual(siloHeadings(model, "USD"), []);
+    assert.deepEqual(readTable(model, "EUR", "Cash")?.rows, [["1"], ["2"]]);
+    assert.ok(sectionBody(fenced, "EUR", "Cash").endsWith("| 2 |\n"));
   });
 
   it("sectionRange gives character offsets from the end of the heading to the next boundary", () => {

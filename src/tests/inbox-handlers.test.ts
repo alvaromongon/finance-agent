@@ -15,8 +15,9 @@ import {
   saleShares,
   withdrawal,
   type InboxState,
+  type StopSource,
 } from "../utils/inbox-handlers.js";
-import type { Buy, ClearStop, Command, LotSources, Sale, SetStop } from "../utils/inbox-handlers.js";
+import type { Buy, ClearStop, Command, OpenedLot, OpenedLots, Sale, SetStop } from "../utils/inbox-handlers.js";
 import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
 
 /** The state after a command the handler accepts; the states of these tests have both silos. */
@@ -25,8 +26,13 @@ const ok = (state: InboxState, command: Command): Required<InboxState> => {
   assert.ok("state" in result, `expected ${command.kind} to be accepted: ${"reason" in result ? result.reason : ""}`);
   return result.state as Required<InboxState>;
 };
-const reason = (state: InboxState, command: Command, sources?: LotSources): string => {
-  const result = applyCommand(state, command, new Set(), sources);
+/** The lots a command opened, as `inbox:check` keeps them: the key a handler gave and where the lot comes from. */
+const openedBy = (opened: string | undefined, over: Partial<OpenedLot> = {}): Map<string, OpenedLot> =>
+  new Map(
+    opened === undefined ? [] : [[opened, { currency: "EUR", ticker: tk("SAP.DE"), command: 1, line: 3, ...over }]],
+  );
+const reason = (state: InboxState, command: Command, opened?: OpenedLots): string => {
+  const result = applyCommand(state, command, opened);
   assert.ok("reason" in result, `expected ${command.kind} to be refused`);
   return result.reason;
 };
@@ -214,7 +220,7 @@ describe("inbox handlers", () => {
     it("gives the lots the same batch opened that initial stop, not the older ones", () => {
       const first = applyCommand(held(), buyOf());
       assert.ok("state" in first && first.opened !== undefined);
-      const second = applyCommand(first.state, setStopOf({ price: 172 }), new Set([first.opened]));
+      const second = applyCommand(first.state, setStopOf({ price: 172 }), openedBy(first.opened));
       assert.ok("state" in second);
       const next = second.state as Required<InboxState>;
       assert.deepEqual(
@@ -227,10 +233,21 @@ describe("inbox handlers", () => {
       assert.equal(next.EUR.positions[0].stopLoss, 172);
     });
 
-    it("refuses a ticker with no open position, and a price that is not positive", () => {
+    it("refuses a ticker with no open position", () => {
       assert.match(reason(stateOf(), setStopOf()), /no open position in SAP\.DE in the EUR silo/);
-      assert.match(reason(held(), setStopOf({ price: 0 })), /price must be greater than zero/);
-      assert.match(reason(held(), setStopOf({ price: Number.NaN })), /price must be greater than zero/);
+    });
+
+    it("refuses a price that is not above zero, whatever reaches the handler (the parser is not its only caller)", () => {
+      const state = held();
+      for (const price of [0, -5, Number.NaN]) {
+        assert.match(reason(state, setStopOf({ price })), /stop of SAP\.DE must be greater than zero/, String(price));
+      }
+    });
+
+    it("prints the ticker escaped in its refusal, as any owner-supplied text (S4)", () => {
+      const wild = "A\u001b[31m" as Ticker;
+      assert.match(reason(stateOf(), setStopOf({ ticker: wild })), /no open position in A\\u001b\[31m in the EUR silo/);
+      assert.match(reason(stateOf(), clearStopOf({ ticker: wild })), /no open position in A\\u001b\[31m$/);
     });
 
     it("does not touch a position of another silo, and checks the currency explicitly", () => {
@@ -255,7 +272,7 @@ describe("inbox handlers", () => {
       const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168, entryId: "old" })] });
       const bought = applyCommand(held, buyOf());
       assert.ok("state" in bought && bought.opened !== undefined);
-      const cleared = applyCommand(bought.state, clearStopOf(), new Set([bought.opened]));
+      const cleared = applyCommand(bought.state, clearStopOf(), openedBy(bought.opened));
       assert.ok("state" in cleared);
       const next = cleared.state as Required<InboxState>;
       assert.equal(next.EUR.positions[0].stopLoss, null);
@@ -272,7 +289,7 @@ describe("inbox handlers", () => {
       const other = stateOf({}, { EUR: [lot("EUR", { ticker: "OTHER", units: 1 })] });
       const bought = applyCommand(other, buyOf());
       assert.ok("state" in bought && bought.opened !== undefined);
-      const opened = new Set([bought.opened]);
+      const opened = openedBy(bought.opened);
       const stopped = applyCommand(bought.state, setStopOf({ price: 170 }), opened);
       assert.ok("state" in stopped);
       const cleared = applyCommand(stopped.state, clearStopOf(), opened);
@@ -285,12 +302,61 @@ describe("inbox handlers", () => {
       assert.equal(next.EUR.positions.find((p) => p.ticker === "SAP.DE")?.stopLoss, null);
     });
 
-    it("checks the currency of a silo explicitly: a silo of another currency is not touched", () => {
+    it("clears the stop in every silo that holds the ticker with one, and leaves the others", () => {
+      const both = stateOf(
+        {},
+        {
+          EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })],
+          USD: [lot("USD", { ticker: "SAP.DE", units: 2, initialStop: 168 })],
+        },
+      );
+      const next = ok(both, clearStopOf());
+      assert.deepEqual([next.EUR.positions[0].stopLoss, next.USD.positions[0].stopLoss], [null, null]);
+      const oneStopped = ok(
+        stateOf(
+          {},
+          {
+            EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })],
+            USD: [lot("USD", { ticker: "SAP.DE", units: 2 })],
+          },
+        ),
+        clearStopOf(),
+      );
+      assert.equal(oneStopped.EUR.positions[0].stopLoss, null);
+    });
+
+    it("reports the state's error for a silo that fails to read, not 'no open position' or 'no stop to clear'", () => {
+      assert.match(reason(crossedState(stateOf()), clearStopOf()), /^there is no USD silo in the portfolio$/);
+      const unstopped = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
+      assert.match(reason(crossedState(unstopped), clearStopOf()), /^there is no USD silo in the portfolio$/);
+    });
+
+    it("clears a ticker held in a silo that reads although the other silo does not", () => {
       const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] });
-      const crossed = crossedState(held);
-      const next = ok(crossed, clearStopOf());
-      assert.equal(next.EUR.positions[0].stopLoss, null);
-      assert.equal(next.USD, crossed.USD);
+      const result = applyCommand(crossedState(held), clearStopOf());
+      assert.ok("state" in result, "reason" in result ? result.reason : "");
+      assert.equal(result.state.EUR?.positions[0].stopLoss, null);
+    });
+
+    it("works with the silos the portfolio has: a silo it does not have holds nothing", () => {
+      const { USD: _usd, ...eurOnly } = stateOf(
+        {},
+        { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168 })] },
+      );
+      const next = applyCommand(eurOnly, clearStopOf());
+      assert.ok("state" in next);
+      assert.match(reason(eurOnly, clearStopOf({ ticker: tk("NOPE") })), /no open position in NOPE$/);
+    });
+
+    it("counts a stop that is not above zero as no stop, like the rest of the check", () => {
+      const zero = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
+      zero.EUR.positions[0] = { ...zero.EUR.positions[0], stopLoss: 0 };
+      assert.match(reason(zero, clearStopOf()), /SAP\.DE has no stop to clear/);
+      const bought = ok(zero, buyOf());
+      assert.deepEqual(
+        bought.EUR.lots.map((l) => l.initialStop),
+        [null, null],
+      );
     });
 
     it("is refused for a position without a stop, and for a ticker with no position", () => {
@@ -309,55 +375,67 @@ describe("inbox handlers", () => {
     /** The state after the commands, with the keys of the lots they opened. */
     const run = (...commands: Command[]) => {
       let state: InboxState = held();
-      const opened = new Set<string>();
-      for (const command of commands) {
-        const result = applyCommand(state, command, opened);
+      const opened = new Map<string, OpenedLot>();
+      const stops = new Map<string, StopSource | null>();
+      for (const [i, command] of commands.entries()) {
+        const result = applyCommand(state, command, opened, new Set(), {
+          at: { command: i + 1, line: 3 * (i + 1) },
+          stops,
+        });
         assert.ok("state" in result, "reason" in result ? result.reason : "");
         state = result.state;
-        if (result.opened !== undefined) opened.add(result.opened);
+        if (result.opened !== undefined)
+          opened.set(result.opened, { currency: "EUR", ticker: tk("SAP.DE"), command: 1, line: 3 });
       }
-      return { state, opened };
+      return { state, opened, stops };
     };
 
     it("names a lot the batch opened whose initial stop is at or above its entry price", () => {
-      const { state, opened } = run(buyOf({ price: 180 }), setStopOf({ price: 180 }));
-      assert.deepEqual(initialStopBreaches(state, opened), [
-        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 180 },
+      const { state, opened, stops } = run(buyOf({ price: 180 }), setStopOf({ price: 180 }));
+      assert.deepEqual(initialStopBreaches(state, opened, stops), [
+        {
+          currency: "EUR",
+          ticker: "SAP.DE",
+          entryId: "20260915-sapde-entry",
+          entryPrice: 180,
+          stop: 180,
+          setBy: { command: 2, line: 6 },
+        },
       ]);
       const above = run(buyOf({ price: 180 }), setStopOf({ price: 200 }));
-      assert.equal(initialStopBreaches(above.state, above.opened).length, 1);
+      assert.equal(initialStopBreaches(above.state, above.opened, above.stops).length, 1);
     });
 
     it("accepts a stop below the entry price, and a stop above the entry of a lot the batch did not open", () => {
       const below = run(buyOf({ price: 180 }), setStopOf({ price: 179 }));
-      assert.deepEqual(initialStopBreaches(below.state, below.opened), []);
+      assert.deepEqual(initialStopBreaches(below.state, below.opened, below.stops), []);
       const trailing = run(setStopOf({ price: 200 }));
-      assert.deepEqual(initialStopBreaches(trailing.state, trailing.opened), []);
+      assert.deepEqual(initialStopBreaches(trailing.state, trailing.opened, trailing.stops), []);
     });
 
     it("judges the stop the position ends the batch with: a later set_stop or a clear_stop replaces it", () => {
       const fixed = run(buyOf({ price: 180 }), setStopOf({ price: 190 }), setStopOf({ price: 170 }));
-      assert.deepEqual(initialStopBreaches(fixed.state, fixed.opened), []);
+      assert.deepEqual(initialStopBreaches(fixed.state, fixed.opened, fixed.stops), []);
       const cleared = run(buyOf({ price: 180 }), setStopOf({ price: 190 }), clearStopOf());
-      assert.deepEqual(initialStopBreaches(cleared.state, cleared.opened), []);
+      assert.deepEqual(initialStopBreaches(cleared.state, cleared.opened, cleared.stops), []);
     });
 
     it("a scale-in under a stop at or above the new price takes that stop, unless a set_stop moves it below", () => {
-      const trailing = () =>
-        stateOf(
-          {},
-          { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, initialStop: 168, entryId: "old", entryPrice: 150 })] },
-        );
-      const raised = ok(trailing(), setStopOf({ price: 190 }));
+      const raised = ok(held(), setStopOf({ price: 190 }));
       const bought = applyCommand(raised, buyOf({ price: 180 }));
       assert.ok("state" in bought && bought.opened !== undefined);
-      const opened = new Set([bought.opened]);
-      assert.deepEqual(initialStopBreaches(bought.state, opened), [
-        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 190 },
+      const opened = openedBy(bought.opened);
+      const stops = new Map<string, StopSource | null>();
+      // The stop the position already had is not the batch's: no source (`setBy: null`, the portfolio's).
+      assert.deepEqual(initialStopBreaches(bought.state, opened, stops), [
+        { currency: "EUR", ticker: "SAP.DE", entryId: "20260915-sapde-entry", entryPrice: 180, stop: 190, setBy: null },
       ]);
-      const moved = applyCommand(bought.state, setStopOf({ price: 175 }), opened);
+      const moved = applyCommand(bought.state, setStopOf({ price: 175 }), opened, new Set(), {
+        at: { command: 2, line: 6 },
+        stops,
+      });
       assert.ok("state" in moved);
-      assert.deepEqual(initialStopBreaches(moved.state, opened), []);
+      assert.deepEqual(initialStopBreaches(moved.state, opened, stops), []);
     });
   });
 
@@ -452,7 +530,23 @@ describe("inbox handlers", () => {
       const state = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" })] });
       assert.match(
         reason(state, saleOf({ units: 0.0001, price: 0.04 })),
-        /sale of SAP\.DE yields nothing: 0\.0001 units at 0\.04 is below one cent/,
+        /sale of SAP\.DE yields nothing: 0\.0001 units at 0\.04 EUR is below half a cent/,
+      );
+    });
+
+    it("prints the ticker of a sub-cent refusal escaped and the price with its currency, for a buy and a sale alike", () => {
+      const wild = "A\u001b[31m" as Ticker;
+      const state = stateOf(
+        {},
+        { EUR: [{ ...lot("EUR", { ticker: "SAP.DE", units: 1, entryPrice: 2, entryId: "a" }), ticker: wild }] },
+      );
+      assert.match(
+        reason(state, saleOf({ ticker: wild, units: 0.0001, price: 0.04 })),
+        /^the sale of A\\u001b\[31m yields nothing: 0\.0001 units at 0\.04 EUR is below half a cent$/,
+      );
+      assert.match(
+        reason(stateOf(), buyOf({ ticker: wild, units: 0.0001, price: 0.04 })),
+        /^the buy of A\\u001b\[31m costs nothing: 0\.0001 units at 0\.04 EUR is below half a cent$/,
       );
     });
 
@@ -516,7 +610,7 @@ describe("inbox handlers", () => {
         lot("EUR", { ticker: "SAP.DE", units: 0.0001, entryPrice: 2, entryId: "d2", date: "2026-09-02" }),
       ];
       const proceeds = 0.0002 * 0.04; // 0.000008: zero cents, but 800 at 8 decimals
-      const shares = saleShares(dust, saleOf({ units: 0.0002, price: 0.04 }), proceeds, new Map());
+      const shares = saleShares(dust, saleOf({ units: 0.0002, price: 0.04 }), proceeds);
       assert.deepEqual(
         shares.map((share) => share.amount),
         [0.000004, 0.000004],
@@ -533,20 +627,60 @@ describe("inbox handlers", () => {
       assert.deepEqual(after.positions, []);
     });
 
-    it("says where the lots a refusal talks about come from: the portfolio or the commands that opened them (#149)", () => {
+    describe("says where the lots a refusal talks about come from (#149)", () => {
       const state = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, entryId: "a" })] });
-      assert.match(reason(state, saleOf({ units: 3 })), /only 2 are open in portfolio\.md/);
       const mixed = ok(state, buyOf({ units: 1, date: "2026-09-16" }));
-      const opened = mixed.EUR.lots.find((l) => l.entryId !== "a")!;
-      const labelled = new Map([[`EUR/${opened.entryId}`, "command 1 of this batch"]]);
-      assert.match(
-        reason(mixed, saleOf({ units: 4 }), labelled),
-        /only 3 are open in portfolio\.md and command 1 of this batch/,
-      );
-      assert.match(
-        reason(mixed, saleOf({ units: 2, lot: opened.entryId }), labelled),
-        /only 1 are open in command 1 of this batch/,
-      );
+      const key = `EUR/${mixed.EUR.lots.find((l) => l.entryId !== "a")!.entryId}`;
+
+      it("names the portfolio, the commands that opened the lots, or both", () => {
+        assert.match(reason(state, saleOf({ units: 3 })), /only 2 are open in portfolio\.md$/);
+        const here = openedBy(key);
+        assert.match(
+          reason(mixed, saleOf({ units: 4 }), here),
+          /only 3 are open in portfolio\.md and command 1 of this batch$/,
+        );
+        assert.match(
+          reason(mixed, saleOf({ units: 2, lot: key.slice(4) }), here),
+          /only 1 are open in command 1 of this batch$/,
+        );
+      });
+
+      it("names the file of a lot an earlier file opened", () => {
+        const earlier = openedBy(key, { file: "a\u001b.yaml", command: 2 });
+        assert.match(
+          reason(mixed, saleOf({ units: 2, lot: key.slice(4) }), earlier),
+          /only 1 are open in command 2 of inbox\/a\\u001b\.yaml$/,
+        );
+      });
+
+      it("says nothing of the commands for a ticker they did not open, though they opened another in the currency", () => {
+        const bought = ok(stateOf(), buyOf({ ticker: tk("TCK") }));
+        const opened = openedBy(`EUR/${bought.EUR.lots[0].entryId}`, { ticker: tk("TCK") });
+        assert.match(reason(bought, saleOf(), opened), /no open lots for SAP\.DE in portfolio\.md$/);
+        // The same ticker, sold out by the commands: they are named, with the portfolio.
+        const sold = ok(bought, saleOf({ ticker: tk("TCK"), units: 2 }));
+        assert.match(
+          reason(sold, saleOf({ ticker: tk("TCK") }), opened),
+          /no open lots for TCK in portfolio\.md and the earlier commands$/,
+        );
+      });
+
+      it("calls the lots an earlier file opened and sold out 'an earlier file', not the earlier commands", () => {
+        const bought = ok(stateOf(), buyOf({ ticker: tk("TCK") }));
+        const earlier = openedBy(`EUR/${bought.EUR.lots[0].entryId}`, { ticker: tk("TCK"), file: "a.yaml" });
+        const sold = ok(bought, saleOf({ ticker: tk("TCK"), units: 2 }));
+        assert.match(reason(sold, saleOf({ ticker: tk("TCK") }), earlier), /in portfolio\.md and an earlier file$/);
+      });
+
+      it("is worked out only for a refusal that names it", () => {
+        const throwing = new Map<string, OpenedLot>();
+        Object.defineProperty(throwing, "get", {
+          value: () => {
+            throw new Error("looked at the sources");
+          },
+        });
+        assert.match(reason(state, saleOf({ units: 1, costs: eur(500) }), throwing), /costs of 500\.00 EUR exceed/);
+      });
     });
 
     it("recomputes the position's volume and average price from the lots left (N1)", () => {

@@ -373,10 +373,10 @@ case-insensitively.
 | ------------ | ---------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `deposit`    | `amount`                           |                                 | Adds to the cash of the amount's currency.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `withdrawal` | `amount`                           |                                 | Refused if it exceeds the available cash of its currency.                                                                                                                                                                                                                                                                                                                                                                                           |
-| `buy`        | `ticker`, `date`, `units`, `price` | `costs`                         | Refused if `units × price + costs` exceeds the available cash of its currency. Also refused if it costs less than one cent or has fewer units than 1e-8. Opens a lot; buying a ticker already held is a scale-in. It has no `stop`: a batch that gives one is refused, with an error that names `set_stop`.                                                                                                                                         |
+| `buy`        | `ticker`, `date`, `units`, `price` | `costs`                         | Refused if `units × price + costs` exceeds the available cash of its currency. Also refused if it costs less than half a cent (it rounds to zero cents) or has fewer units than 1e-8. Opens a lot; buying a ticker already held is a scale-in. It has no `stop`: a batch that gives one is refused, with an error that names `set_stop`.                                                                                                            |
 | `sale`       | `ticker`, `date`, `units`, `price` | `costs`, `lot`, `stop_executed` | Refused if the ticker has no open lot, or fewer open units than sold, if its costs exceed its proceeds, or if its proceeds round to zero cents (under half a cent), unless it uses up every remaining unit of each lot it sells: that sale credits 0.00 and closes every lot it sells, which is how a dust lot is removed. Sells oldest lot first, or only the lot whose entry id is `lot`. `stop_executed: true` marks a stop the broker executed. |
 | `set_stop`   | `ticker`, `price`                  | `date`                          | Sets or moves the one stop of a position, in the currency of `price`. Refused if the ticker has no open position after the commands before it in the batch.                                                                                                                                                                                                                                                                                         |
-| `clear_stop` | `ticker`                           | `date`                          | Removes the stop of a position; it has no amount, so it acts on the silo that holds the ticker. Refused if the ticker has no open position or the position has no [stop](glossary.md#stop).                                                                                                                                                                                                                                                         |
+| `clear_stop` | `ticker`                           | `date`                          | Removes the stop of a position; it has no amount, so it acts on every silo that holds the ticker with a [stop](glossary.md#stop) (the warning names them). Refused if the ticker has no open position or none has a stop.                                                                                                                                                                                                                           |
 
 **A stop is its own command.** A position has one [stop](glossary.md#stop), and a buy never changes it.
 The initial stop of a lot (the base of [R](glossary.md#r)) is the stop of the position right after the batch
@@ -389,11 +389,14 @@ earlier R.
 That initial stop must be below the entry price of its lot, so that R is never zero or negative: a batch
 where a lot it opened would end with an initial stop at or above its entry price is refused, whether the
 stop comes from a `set_stop` of the batch or, in a scale-in with no `set_stop`, from the stop the position
-already had. The error names the `set_stop` (or `portfolio.md`), the buy and both prices. A `set_stop`
-above the entry price of a position with no lot opened in the batch is accepted: that is a trailing stop.
+already had. One error per `set_stop` (or per position, when the stop is not the batch's) names the lots it
+breaks, their entry prices and the stop, and where it comes from: the `set_stop`, a command of an earlier file, or
+`portfolio.md`. A `set_stop` above the entry price of a position with no lot opened in the batch is accepted:
+that is a trailing stop.
 The rule was approved by the owner on 2026-11-10 in [#159](https://github.com/alvaromongon/finance-agent/issues/159),
-without a migration. `inbox:check` warns, without failing, about every position a batch touches that ends with no
-stop; the digest will name every position without a stop (#132).
+without a migration. `inbox:check` warns, without failing, about every position a batch touches (by a buy, a
+sale, a `set_stop` or a `clear_stop`) that ends with no stop, naming its silo; a stop that is not above zero is
+no stop. The digest will name every position without a stop (#132).
 
 ```yaml
 commands:
@@ -420,7 +423,14 @@ against the state the clean batches before it would produce; a batch with errors
 `inbox:check` reports every error of every batch, not only the first, each as the file, the command (its
 position in the batch, from 1), the line in the file where the command starts and the reason. The exit code is
 non-zero when there is any error and zero when the inbox is clean or empty. A file that is not valid YAML is
-reported as one error, with the line the YAML reader gives. A command that does not read, or that a handler refuses, leaves the cash and lots of its currency unknown, so the later commands of that currency are not checked against them: each is listed as not checked, with the command that blocked it, and is not an error. Names and reasons taken from the file are printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
+reported as one error, with the line the YAML reader gives. A command that does not read, or that a handler
+refuses, leaves the cash and lots of its currency unknown (a `set_stop` or `clear_stop` that fails, only the
+stop of its ticker), so the later commands that depend on it are not checked against them: each is listed as
+not checked, with the command that blocked it, and is not an error. A refusal that a rejected file before it
+could explain (by the cash, the lots or the stop it would have changed) is listed the same way, as depending on
+that file. Fixing the errors listed can reveal an error in a command listed as not checked, and an initial-stop
+error in a currency a refusal blocked. Names and reasons taken from the file are
+printed escaped, never as raw control characters. The YAML is read with the failsafe schema: every value is text.
 
 ## `watchlist.md`
 

@@ -439,6 +439,46 @@ describe("assertPortfolioSections", () => {
       );
     });
 
+    it("is absent when the only lines that look like its headings are not headings: indented, or with no dash", () => {
+      const eurOnly = PORTFOLIO_MD.split("## USD — Cash")[0];
+      for (const lookalike of ["  ## USD — Cash", "## usd plans", "## USDT — Cash", "### USD — Cash"]) {
+        const md = `${eurOnly}\n\`\`\`\n${lookalike}\n\`\`\`\n`;
+        assert.throws(() => assertPortfolioSections(md, "USD"), SiloAbsentError, lookalike);
+      }
+    });
+
+    it("is not absent when its headings are misspelt in the dash or the spaces: they are still named", () => {
+      for (const typo of ["USD—Cash", "USD Cash", "USD: Cash", "USD -Cash"]) {
+        const md = PORTFOLIO_MD.replaceAll("## USD — Cash", `## ${typo}`)
+          .replaceAll("## USD — Positions", `## ${typo.replace("Cash", "Positions")}`)
+          .replaceAll("## USD — Lots", `## ${typo.replace("Cash", "Lots")}`);
+        assert.throws(
+          () => assertPortfolioSections(md, "USD"),
+          (err: unknown) => {
+            assert.ok(err instanceof Error && !(err instanceof SiloAbsentError), typo);
+            assert.ok(err.message.includes(`"## ${typo}"`), `${typo}: ${err.message}`);
+            return true;
+          },
+          typo,
+        );
+      }
+    });
+
+    it("names the headings found also when only some of its sections are missing", () => {
+      const md = PORTFOLIO_MD.replace("## USD — Cash", "## USD — Caja");
+      assert.throws(
+        () => assertPortfolioSections(md, "USD"),
+        (err: unknown) => {
+          assert.ok(err instanceof Error && !(err instanceof SiloAbsentError));
+          assert.match(
+            err.message,
+            /missing section "## USD — Cash".*the headings of that silo in the file are "## USD — Caja"/,
+          );
+          return true;
+        },
+      );
+    });
+
     it("is not absent when its heading is in lower case", () => {
       const md = PORTFOLIO_MD.replaceAll("## USD —", "## usd —");
       assert.throws(

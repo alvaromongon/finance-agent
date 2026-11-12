@@ -221,6 +221,35 @@ describe("planSale: an amount too large to count in cents, or entry units of 0, 
     );
   });
 
+  it("names a lot's entry id escaped in a refusal, as any owner-supplied text (S4)", () => {
+    assert.throws(
+      () => planSale([lot("x\u001b[31m", 10, { entryUnits: 0, entryCosts: money(5, "EUR") })], sale(4), new Map()),
+      (err: Error) => {
+        // eslint-disable-next-line no-control-regex
+        assert.doesNotMatch(err.message, /[\u0000-\u001f]/);
+        assert.match(err.message, /lot x\\u001b\[31m \(TCK\)/);
+        return true;
+      },
+    );
+  });
+
+  it("names the file of the lots one way, whichever refusal, unless the caller says where they come from", () => {
+    const refusal = (fn: () => unknown): SaleRefusal => {
+      try {
+        fn();
+      } catch (err) {
+        if (err instanceof SaleRefusal) return err;
+      }
+      throw new Error("expected a SaleRefusal");
+    };
+    const none = refusal(() => planSale([], sale(1), new Map()));
+    const tooMany = refusal(() => planSale([lot("a", 2)], sale(3), new Map()));
+    assert.match(none.message, /no open lots for TCK in portfolio\.md$/);
+    assert.match(tooMany.message, /only 2 are open in portfolio\.md$/);
+    assert.match(none.named("command 1 of this batch"), /in command 1 of this batch$/);
+    assert.match(tooMany.named("command 1 of this batch"), /open in command 1 of this batch$/);
+  });
+
   it("a lot whose Entry units are 0 and is used up, or has no entry costs, is sold as before", () => {
     assert.equal(
       planSale([lot("zero-2", 10, { entryUnits: 0, entryCosts: money(5, "EUR") })], sale(10), new Map())[0].entryCosts,

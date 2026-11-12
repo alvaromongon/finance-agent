@@ -9,8 +9,9 @@
 import yaml from "js-yaml";
 import { CURRENCIES, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
-import { checkTicker } from "../ticker.js";
+import { checkTicker, type Ticker } from "../ticker.js";
 import type { Command } from "./inbox-handlers.js";
+import { quoted } from "./printable.js";
 
 /** The `schema_version` of the inbox format this engine reads. */
 export const INBOX_SCHEMA_VERSION = "1";
@@ -32,11 +33,17 @@ export interface ParsedCommand {
 /**
  * A command that did not parse. What it would have done to the state is unknown, so the commands after it are
  * not checked against the cash and lots of `currencies`: the ones it was written in, or both silos when none of
- * its amounts read (N8: a later command must not report a cash or lot error that only this one explains).
+ * its amounts read (N8: a later command must not report a cash or lot error that only this one explains). A
+ * `set_stop` or `clear_stop` changes no cash or lots: only the stop of its `ticker` (any, when it did not
+ * read) is unknown.
  */
 export interface UnreadCommand {
   position: number;
   currencies: Currency[];
+  /** The command's kind, when it read that far. */
+  kind?: CommandKind;
+  /** The ticker, when it read that far. */
+  ticker?: Ticker;
 }
 
 export interface ParsedBatch {
@@ -47,7 +54,8 @@ export interface ParsedBatch {
 }
 
 const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale", "set_stop", "clear_stop"] as const;
-const FIELDS: Record<(typeof COMMAND_KINDS)[number], readonly string[]> = {
+export type CommandKind = (typeof COMMAND_KINDS)[number];
+const FIELDS: Record<CommandKind, readonly string[]> = {
   deposit: ["command", "amount"],
   withdrawal: ["command", "amount"],
   buy: ["command", "ticker", "date", "units", "price", "costs"],
@@ -56,16 +64,24 @@ const FIELDS: Record<(typeof COMMAND_KINDS)[number], readonly string[]> = {
   clear_stop: ["command", "ticker", "date"],
 };
 
+/** Fields that used to exist: a command that still carries one is told where it went. */
+const REMOVED_FIELDS: ReadonlyMap<CommandKind, ReadonlyMap<string, string>> = new Map([
+  [
+    "buy",
+    new Map([["stop", 'a buy carries no "stop": set it with a set_stop command (docs/input-format.md › `inbox/`)']]),
+  ],
+]);
+
 const DECIMAL = /^\d+(\.\d+)?$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** A plain decimal number in text, or why not. */
 function decimal(raw: string, what: string): number | string {
   if (!DECIMAL.test(raw)) {
-    return `${what} must be a plain decimal number (digits with an optional decimal point: no sign, thousands separator or exponent); got: ${JSON.stringify(raw)}`;
+    return `${what} must be a plain decimal number (digits with an optional decimal point: no sign, thousands separator or exponent); got: ${quoted(raw)}`;
   }
   const n = Number(raw);
-  if (!canCountInCents(n)) return `${what} is too large to count; got: ${JSON.stringify(raw)}`;
+  if (!canCountInCents(n)) return `${what} is too large to count; got: ${quoted(raw)}`;
   return n;
 }
 
@@ -73,18 +89,18 @@ function decimal(raw: string, what: string): number | string {
 function amountWithCurrency(raw: string, what: string, cents: boolean): { value: number; currency: Currency } | string {
   const parts = raw.trim().split(/\s+/);
   if (parts.length === 1 && DECIMAL.test(parts[0])) {
-    return `${what} needs its currency: write it as "${parts[0]} EUR" or "${parts[0]} USD"; got: ${JSON.stringify(raw)}`;
+    return `${what} needs its currency: write it as "${parts[0]} EUR" or "${parts[0]} USD"; got: ${quoted(raw)}`;
   }
   if (parts.length !== 2) {
-    return `${what} must be a plain decimal number and its currency, such as 100.50 EUR; got: ${JSON.stringify(raw)}`;
+    return `${what} must be a plain decimal number and its currency, such as 100.50 EUR; got: ${quoted(raw)}`;
   }
   const [number, code] = parts;
   const currency = CURRENCIES.find((c) => c === code);
-  if (currency === undefined) return `${what} has an unknown currency ${JSON.stringify(code)} (EUR or USD)`;
+  if (currency === undefined) return `${what} has an unknown currency ${quoted(code)} (EUR or USD)`;
   const value = decimal(number, what);
   if (typeof value === "string") return value;
   if (cents && (number.split(".")[1]?.length ?? 0) > 2) {
-    return `${what} must not have more than two decimals; got: ${JSON.stringify(raw)}`;
+    return `${what} must not have more than two decimals; got: ${quoted(raw)}`;
   }
   return { value, currency };
 }
@@ -101,6 +117,8 @@ function isDate(raw: string): boolean {
 interface Unread {
   problems: string[];
   currencies: Currency[];
+  commandKind?: CommandKind;
+  ticker?: Ticker;
 }
 
 /** One command's mapping read into a command, or every problem found in it. */
@@ -118,7 +136,7 @@ function readCommand(raw: unknown): Command | Unread {
       problems: [
         fields.command === undefined
           ? `missing field "command" (${COMMAND_KINDS.join(", ")})`
-          : `unknown command ${JSON.stringify(fields.command)} (${COMMAND_KINDS.join(", ")})`,
+          : `unknown command ${quoted(fields.command)} (${COMMAND_KINDS.join(", ")})`,
       ],
       currencies: [],
     };
@@ -126,14 +144,13 @@ function readCommand(raw: unknown): Command | Unread {
   const problems: string[] = [];
   /** The currencies of the amounts that read, in the order written: what is left to say about a command that fails. */
   const seen: Currency[] = [];
-  const unread = (): Unread => ({ problems, currencies: seen });
+  let tickerRead: Ticker | undefined;
+  const unread = (): Unread => ({ problems, currencies: seen, commandKind: kind, ticker: tickerRead });
   for (const name of Object.keys(fields)) {
-    // Printed as JSON: a name written in the file may hold control characters (S4).
-    if (kind === "buy" && name === "stop") {
-      problems.push('a buy carries no "stop": set it with a set_stop command (docs/input-format.md › `inbox/`)');
-    } else if (!FIELDS[kind].includes(name)) {
-      problems.push(`unknown field ${JSON.stringify(name)} for a ${kind}`);
-    }
+    const removed = REMOVED_FIELDS.get(kind)?.get(name);
+    if (removed !== undefined) problems.push(removed);
+    // Printed escaped: a name written in the file may hold control characters (S4).
+    else if (!FIELDS[kind].includes(name)) problems.push(`unknown field ${quoted(name)} for a ${kind}`);
   }
 
   /** The text of a field: undefined (and a problem when `required`) if absent or not text. */
@@ -165,7 +182,7 @@ function readCommand(raw: unknown): Command | Unread {
   const date = (required = true): string | undefined => {
     const value = text("date", required);
     if (value !== undefined && !isDate(value)) {
-      problems.push(`"date" must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(value)}`);
+      problems.push(`"date" must be a calendar date as YYYY-MM-DD; got: ${quoted(value)}`);
       return undefined;
     }
     return value;
@@ -179,6 +196,7 @@ function readCommand(raw: unknown): Command | Unread {
       problems.push(checked.problem);
       return undefined;
     }
+    tickerRead = checked.ticker;
     return checked.ticker;
   };
   const units = (): number | undefined => {
@@ -186,7 +204,7 @@ function readCommand(raw: unknown): Command | Unread {
     if (value === undefined) return undefined;
     const n = decimal(value, '"units"');
     if (typeof n === "string") problems.push(n);
-    else if (n <= 0) problems.push(`"units" must be greater than zero; got: ${JSON.stringify(value)}`);
+    else if (n <= 0) problems.push(`"units" must be greater than zero; got: ${quoted(value)}`);
     else return n;
     return undefined;
   };
@@ -249,7 +267,7 @@ function readCommand(raw: unknown): Command | Unread {
   const lot = text("lot", false);
   const executed = text("stop_executed", false);
   if (executed !== undefined && executed !== "true" && executed !== "false") {
-    problems.push(`"stop_executed" must be true or false; got: ${JSON.stringify(executed)}`);
+    problems.push(`"stop_executed" must be true or false; got: ${quoted(executed)}`);
   }
   if (problems.length > 0 || !t || !when || !n || !price || !currency) return unread();
   return {
@@ -315,9 +333,7 @@ export function parseBatch(text: string): ParsedBatch {
         commands: [],
         unread: [],
         // The reason can quote the file: printed as JSON, so no control character reaches the terminal (S4).
-        issues: [
-          { command: null, line: (err.mark?.line ?? 0) + 1, reason: `not valid YAML: ${JSON.stringify(err.reason)}` },
-        ],
+        issues: [{ command: null, line: (err.mark?.line ?? 0) + 1, reason: `not valid YAML: ${quoted(err.reason)}` }],
       };
     }
     throw err;
@@ -339,12 +355,12 @@ export function parseBatch(text: string): ParsedBatch {
     return { commands: [], unread: [], issues };
   } else if (top.schema_version !== INBOX_SCHEMA_VERSION) {
     fileIssue(
-      `schema_version ${JSON.stringify(top.schema_version)} is not the version this engine reads (${INBOX_SCHEMA_VERSION})`,
+      `schema_version ${quoted(top.schema_version)} is not the version this engine reads (${INBOX_SCHEMA_VERSION})`,
     );
     return { commands: [], unread: [], issues };
   }
   for (const name of Object.keys(top)) {
-    if (name !== "schema_version" && name !== "commands") fileIssue(`unknown field ${JSON.stringify(name)}`);
+    if (name !== "schema_version" && name !== "commands") fileIssue(`unknown field ${quoted(name)}`);
   }
   if (!Array.isArray(top.commands) || top.commands.length === 0) {
     fileIssue('"commands" must be a list with at least one command');
@@ -363,7 +379,7 @@ export function parseBatch(text: string): ParsedBatch {
     const read = readCommand(raw);
     if ("problems" in read) {
       for (const reason of read.problems) issues.push({ command: position, line, reason });
-      unread.push({ position, currencies: read.currencies });
+      unread.push({ position, currencies: read.currencies, kind: read.commandKind, ticker: read.ticker });
     } else {
       commands.push({ position, line, command: read });
     }
