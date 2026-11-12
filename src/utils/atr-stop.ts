@@ -13,6 +13,7 @@
 // protect a thesis, it only guarantees the exit.
 import type { Currency, Horizon, Position } from "../types.js";
 import { atr14d } from "./technicals.js";
+import { stopOf } from "./stop.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Ticker } from "../ticker.js";
 
@@ -96,8 +97,8 @@ export function detectTightStops(
   const tight: TightStop[] = [];
 
   for (const position of positions) {
-    const { stopLoss } = position;
-    if (stopLoss == null || stopLoss <= 0) continue;
+    const stopLoss = stopOf(position);
+    if (stopLoss === null) continue;
 
     const price = prices.get(position.ticker);
     if (price == null || price <= stopLoss) continue;
@@ -148,7 +149,7 @@ export async function fetchAtrForPositions(
   if (!provider.getHistorical) return atrByTicker;
 
   for (const position of positions) {
-    if (position.stopLoss == null || position.stopLoss <= 0) continue;
+    if (stopOf(position) === null) continue;
     try {
       const bars = await provider.getHistorical(position.ticker, "1y");
       const atr = atr14d(bars);

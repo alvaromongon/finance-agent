@@ -1,22 +1,37 @@
 // The portfolio state port (ADR-0015, ADR-0017): the one way every flow reads and writes the portfolio
 // (cash, positions, lots). It gives one model, `PortfolioSnapshot<C>`, in which every amount is
 // `Money<C>` of the silo's currency, and takes changes as that model's values (lots, a position change,
-// prices), never as text. Today the file behind it is `portfolio.md`; no flow knows that: the text
-// parsers, the codec and the writer are used here and nowhere else (`state-boundary.test.ts` fails when
-// another module reads or writes a state file or parses a stored number).
+// prices), never as text. No flow knows what is behind it: the text parsers, the codec and the writer are
+// used here and nowhere else (`state-boundary.test.ts` fails when another module reads or writes a state
+// file or parses a stored number).
+//
+// Two modes (#132, expand-contract of spec #124). With the engine's own store, `state/portfolio.json`, the
+// store is the state: every read and write goes through it, and `portfolio.md` is a view generated from it
+// after each write that nothing reads. Without the store (nobody has run `inbox:ingest` yet) the state is
+// still the old `portfolio.md` and everything behaves as before; the first `inbox:ingest` seeds the store from
+// it, and #143 removes the old way.
 //
 // One read, `readPortfolio`, for every flow. What it could not read is in its result: `lotsProblem` (the
 // `Lots` table as such), `portfolio.skippedLotRows` (rows of it), `skippedRows` (`Positions` rows) and
 // `unreadableCells`. Each flow keeps its own behaviour on them: the heartbeat reports them and goes on, the
 // briefings and the screening ignore the `Lots` and warn of the rest (`ignoringLots`), `decision:record` and
 // the evaluation refuse (`requireReadable`).
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { config } from "./config.js";
 import type { Ticker } from "./ticker.js";
 import type { Currency, Lot, PortfolioSnapshot } from "./types.js";
 import { applyLotChange, applyPrices, type PositionChange } from "./utils/portfolio-writer.js";
 import { portfolioWhere } from "./utils/portfolio-where.js";
+import {
+  decodeStore,
+  encodeStore,
+  renderView,
+  withLotChange,
+  withPrices,
+  type PortfolioStore,
+} from "./utils/portfolio-json.js";
+import { volumeMismatches } from "./utils/lots-check.js";
 import {
   assertPortfolioSections,
   assertSchemaVersion,
@@ -30,7 +45,7 @@ import {
   SiloAbsentError,
 } from "./utils/vault-parser.js";
 
-export type { PositionChange };
+export type { PortfolioStore, PositionChange };
 
 /** What `readPortfolio` returns: the silo's model and what of the file could not be read into it. */
 export interface PortfolioRead<C extends Currency = Currency> {
@@ -48,7 +63,38 @@ export interface PortfolioRead<C extends Currency = Currency> {
 }
 
 const projectDir = () => config.paths.vaultProjectDir;
+/** The old state file, and, once the store exists, its generated view. */
 const portfolioPath = () => join(projectDir(), "portfolio.md");
+/** The engine's own store of the portfolio: JSON written only by the engine. */
+const storePath = () => join(projectDir(), "state", "portfolio.json");
+const STORE_WHERE = "state/portfolio.json";
+
+/** The store, or `null` while there is none (the state is still `portfolio.md`). A store that does not read is refused. */
+async function readStore(): Promise<PortfolioStore | null> {
+  let text: string;
+  try {
+    text = await readFile(storePath(), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  return decodeStore(text, STORE_WHERE);
+}
+
+/** The store, or `null` while there is none: for the run that finishes what an earlier `inbox:ingest` left in it. */
+export const readStoreIfAny = readStore;
+
+/** What `readPortfolio` returns for a silo of the store: it reads whole by construction, so nothing is skipped. */
+function readFromStore<C extends Currency>(store: PortfolioStore, currency: C, warn: boolean): PortfolioRead<C> {
+  const portfolio: PortfolioSnapshot<C> | undefined = store.silos[currency];
+  if (portfolio === undefined) {
+    throw new SiloAbsentError(
+      `${STORE_WHERE}: there is no ${currency} silo in the portfolio (see docs/input-format.md)`,
+    );
+  }
+  if (warn) warnIfStale(portfolio.syncedAt);
+  return { portfolio, lotsProblem: null, skippedRows: [], unreadableCells: [] };
+}
 
 /** What the flows that skip a row they cannot read do with the reason (ADR-0016). */
 const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING: ${message}`);
@@ -61,6 +107,8 @@ const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING:
  * update; it does not block the run.
  */
 export async function readPortfolio<C extends Currency>(currency: C): Promise<PortfolioRead<C>> {
+  const store = await readStore();
+  if (store !== null) return readFromStore(store, currency, true);
   return parsePortfolioText(await readFile(portfolioPath(), "utf8"), currency);
 }
 
@@ -70,7 +118,27 @@ export async function readPortfolio<C extends Currency>(currency: C): Promise<Po
  * silo is refused like any file that is not the portfolio.
  */
 export async function readBothPortfolios(): Promise<{ EUR?: PortfolioRead<"EUR">; USD?: PortfolioRead<"USD"> }> {
-  const raw = await readFile(portfolioPath(), "utf8");
+  const store = await readStore();
+  if (store !== null) {
+    let warn = true;
+    const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined => {
+      if (store.silos[currency] === undefined) return undefined;
+      const read = readFromStore(store, currency, warn);
+      warn = false;
+      return read;
+    };
+    const eur = silo("EUR");
+    const usd = silo("USD");
+    if (eur === undefined && usd === undefined) {
+      throw new SiloAbsentError(`${STORE_WHERE}: the portfolio has no silo (see docs/input-format.md)`);
+    }
+    return { ...(eur ? { EUR: eur } : {}), ...(usd ? { USD: usd } : {}) };
+  }
+  return silosOfText(await readFile(portfolioPath(), "utf8"));
+}
+
+/** Both silos of a `portfolio.md` text already read (a stale file warns once); see `readBothPortfolios`. */
+function silosOfText(raw: string): { EUR?: PortfolioRead<"EUR">; USD?: PortfolioRead<"USD"> } {
   let warn = true;
   const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined => {
     try {
@@ -90,6 +158,21 @@ export async function readBothPortfolios(): Promise<{ EUR?: PortfolioRead<"EUR">
   };
 }
 
+/** Warns if the portfolio has gone more than `PORTFOLIO_STALE_DAYS` without an update, or tells none was ever recorded. */
+function warnIfStale(lastSync: string | null | undefined): void {
+  if (lastSync) {
+    const diffDays = (Date.now() - new Date(lastSync).getTime()) / 86_400_000;
+    if (diffDays > config.marketData.portfolioStaleDays) {
+      console.warn(
+        `[vault-io] WARNING: portfolio.md has not been updated for ${Math.floor(diffDays)} days.` +
+          ` See the guide: routines/portfolio-sync.md`,
+      );
+    }
+  } else {
+    console.warn("[vault-io] portfolio.md has no last_manual_sync field. Update it by hand.");
+  }
+}
+
 /**
  * The silo's model from a `portfolio.md` text already read, with the checks and warnings of
  * `readPortfolio`: `changeLots` parses the very text it will rewrite. Not exported: the text is the store's.
@@ -107,19 +190,7 @@ function parsePortfolioText<C extends Currency>(raw: string, currency: C, warnSt
   const frontmatter = extractFrontmatter(raw);
   const rawSync = frontmatter?.last_manual_sync as string | Date | null | undefined;
   const lastSync = rawSync instanceof Date ? rawSync.toISOString() : rawSync;
-  if (!warnStale) {
-    // The caller warned of this file already.
-  } else if (lastSync) {
-    const diffDays = (Date.now() - new Date(lastSync).getTime()) / 86_400_000;
-    if (diffDays > config.marketData.portfolioStaleDays) {
-      console.warn(
-        `[vault-io] WARNING: portfolio.md has not been updated for ${Math.floor(diffDays)} days.` +
-          ` See the guide: routines/portfolio-sync.md`,
-      );
-    }
-  } else {
-    console.warn("[vault-io] portfolio.md has no last_manual_sync field. Update it by hand.");
-  }
+  if (warnStale) warnIfStale(lastSync);
 
   const skippedRows: string[] = [];
   const unreadableCells: string[] = [];
@@ -211,6 +282,21 @@ export async function changeLots<C extends Currency>(
   change: PositionChange,
   { check, dryRun = false }: { check?: (read: PortfolioSnapshot<C>) => void; dryRun?: boolean } = {},
 ): Promise<void> {
+  const store = await readStore();
+  if (store !== null) {
+    const portfolio = readFromStore(store, currency, false).portfolio;
+    if (lotsKey(portfolio.lots) !== lotsKey(expected)) {
+      throw new LotsMovedError(`${portfolioWhere(currency)}: Lots changed meanwhile`);
+    }
+    check?.(portfolio);
+    if (!dryRun) {
+      await writeStore({
+        ...store,
+        silos: { ...store.silos, [currency]: withLotChange(portfolio, lots, change) },
+      });
+    }
+    return;
+  }
   const text = await readFile(portfolioPath(), "utf8");
   // The run read and warned of the file already: this read stays quiet.
   const portfolio = requireReadable(parsePortfolioText(text, currency, false));
@@ -228,6 +314,15 @@ export async function changeLots<C extends Currency>(
  * or there is no `portfolio.md`.
  */
 export async function refreshPrices(currency: Currency, prices: ReadonlyMap<Ticker, number>): Promise<void> {
+  const store = await readStore();
+  if (store !== null) {
+    const silo = store.silos[currency];
+    const priced = silo === undefined ? null : withPrices(silo, prices);
+    if (priced === null) return; // nothing changed
+    await writeStore({ ...store, silos: { ...store.silos, [currency]: priced } });
+    console.log(`[vault-io] portfolio.md: prices updated (${currency})`);
+    return;
+  }
   // As the file is, line ends included: the writer keeps every line it did not change.
   const raw = await readFile(portfolioPath(), "utf8").catch(() => null);
   if (!raw) return;
@@ -238,15 +333,107 @@ export async function refreshPrices(currency: Currency, prices: ReadonlyMap<Tick
   console.log(`[vault-io] portfolio.md: prices updated (${currency})`);
 }
 
-async function writeAtomically(text: string): Promise<void> {
+async function writeAtomically(text: string, target = portfolioPath()): Promise<void> {
   // A temp file in the same directory, renamed over the file, so a crash never leaves it truncated.
-  const target = portfolioPath();
   const temp = `${target}.${process.pid}.tmp`;
   try {
+    await mkdir(dirname(target), { recursive: true });
     await writeFile(temp, text, "utf8");
     await rename(temp, target);
   } catch (err) {
     await unlink(temp).catch(() => undefined);
     throw err;
   }
+}
+
+// ─── The engine's store ───────────────────────────────────────────────────────
+
+/**
+ * Writes the store, then the view generated from it. The store is the commit: if the view cannot be written the
+ * error is thrown after the state is safe, and the next write (or `rewriteView`) generates it again.
+ */
+async function writeStore(store: PortfolioStore): Promise<void> {
+  await writeAtomically(encodeStore(store), storePath());
+  await writeAtomically(renderView(store));
+}
+
+/** Generates the view again from the store, for a run that finds the state already written. */
+export async function rewriteView(store: PortfolioStore): Promise<void> {
+  await writeAtomically(renderView(store));
+}
+
+/**
+ * The portfolio as the view text, for the one flow that puts it in a prompt (the Monday briefing): with a store,
+ * generated from it now; without one, the text of `portfolio.md`; "" with neither.
+ */
+export async function readPortfolioView(): Promise<string> {
+  const store = await readStore();
+  if (store !== null) return renderView(store);
+  return readFile(portfolioPath(), "utf8").catch(() => "");
+}
+
+/**
+ * The silo as `inbox:ingest` works on it: refused, naming what is wrong, unless it reads whole. What
+ * `decision:record` refuses (`requireReadable`, then the checks of the lots that need no decision log: rows of
+ * `Lots` that do not read, a `Volume` that is not the sum of its lots) and the cells too large to count, which read
+ * as 0: a state with a guessed cash would give the owner a wrong "clean" and a store with a row lost.
+ */
+export function requireWhole<C extends Currency>(read: PortfolioRead<C>): PortfolioSnapshot<C> {
+  const portfolio = requireReadable(read);
+  const problems = [...read.unreadableCells, ...volumeMismatches(portfolio)];
+  if (problems.length > 0) {
+    throw new Error(
+      `${problems.join("\n")}\nFix portfolio.md by hand before checking the inbox (see docs/input-format.md)`,
+    );
+  }
+  return portfolio;
+}
+
+/**
+ * The store made from the old `portfolio.md`, read whole (`requireWhole`): what `inbox:ingest` applies batches to
+ * while there is no store. Nothing is written here. No `portfolio.md` is a portfolio with no silo: every command is
+ * refused for that.
+ */
+export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
+  let raw: string;
+  try {
+    raw = await readFile(portfolioPath(), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { silos: {}, unmoved: [], pendingDecisions: [] };
+    throw err;
+  }
+  const read = silosOfText(raw);
+  const accountEnv = extractFrontmatter(raw)?.account_env;
+  return {
+    silos: {
+      ...(read.EUR ? { EUR: requireWhole(read.EUR) } : {}),
+      ...(read.USD ? { USD: requireWhole(read.USD) } : {}),
+    },
+    ...(typeof accountEnv === "string" ? { accountEnv } : {}),
+    unmoved: [],
+    pendingDecisions: [],
+  };
+}
+
+/** Writes the store `inbox:ingest` ended with, and the view generated from it. */
+export async function saveStore(store: PortfolioStore): Promise<void> {
+  await writeStore(store);
+}
+
+/**
+ * Makes the store from the old `portfolio.md` now, with every silo synced at `syncedAt` (the demo, which runs on a
+ * copy of the example brain that must not warn of a stale portfolio). A store that exists is left as it is.
+ */
+export async function seedStore(syncedAt: Date): Promise<void> {
+  if ((await readStore()) !== null) return;
+  const store = await storeFromPortfolioFile();
+  const stamp = (silo: PortfolioSnapshot | undefined) =>
+    silo ? { ...silo, syncedAt: syncedAt.toISOString() } : undefined;
+  await writeStore({
+    ...store,
+    silos: {
+      ...(store.silos.EUR ? { EUR: stamp(store.silos.EUR) as PortfolioSnapshot<"EUR"> } : {}),
+      ...(store.silos.USD ? { USD: stamp(store.silos.USD) as PortfolioSnapshot<"USD"> } : {}),
+    },
+  });
 }

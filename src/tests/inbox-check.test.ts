@@ -986,6 +986,7 @@ describe("inbox:check", () => {
         "inbox.ts",
         "inbox-store.ts",
         "utils/inbox-check.ts",
+        "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",
         "utils/inbox-handlers.ts",
       ]);

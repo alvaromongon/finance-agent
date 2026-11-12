@@ -1,7 +1,10 @@
 # Input format
 
-The engine reads its state from Markdown files in the project directory
-(`VAULT_PROJECT_DIR`). This document is the contract for those files: their
+The engine reads its state from files in the project directory (`VAULT_PROJECT_DIR`). The portfolio
+is the engine's own store, `state/portfolio.json`, written only by the engine, and `portfolio.md` is a
+read-only view generated from it ([below](#stateportfoliojson)); until the first
+[`inbox:ingest`](#inboxyaml) makes the store, `portfolio.md` is still the state. The other files are
+Markdown. This document is the contract for those files: their
 structure is fixed, in English and versioned, and independent of the output
 language (`OUTPUT_LANGUAGE`). Prose around the parsed parts is free: write it in
 any language.
@@ -25,17 +28,18 @@ ships with a migration script, except where its section says otherwise. The
 `version` in `strategies/base.md` is the version of the trading rules, not of
 this format.
 
-| File                                   | Versioned                  | Version | Parsed parts                                                    |
-| -------------------------------------- | -------------------------- | ------- | --------------------------------------------------------------- |
-| `portfolio.md`                         | yes                        | **2**   | Frontmatter, `Cash`, `Positions` and `Lots` tables per currency |
-| `inbox/*.yaml`                         | yes                        | **1**   | Frontmatter-less YAML: `schema_version` and `commands`          |
-| `watchlist.md`                         | yes                        | 1       | First ` ```yaml ` block                                         |
-| `screening-universe.md`                | yes                        | 1       | Frontmatter, first ` ```yaml ` block                            |
-| `screening-log.md`                     | yes                        | 1       | The table                                                       |
-| `tesis/tesis-<slug>.md`                | yes                        | 1       | Frontmatter                                                     |
-| `logs/<YYYY-MM-DD>-<ticker>.md`        | no (written by the engine) | -       | Frontmatter                                                     |
-| `strategies/base.md`                   | no                         | -       | Frontmatter `version` (rules version) and text                  |
-| `portfolio-policy.md`, `routines/*.md` | no                         | -       | Text only, passed to the reasoning model                        |
+| File                                   | Versioned                   | Version | Parsed parts                                                    |
+| -------------------------------------- | --------------------------- | ------- | --------------------------------------------------------------- |
+| `portfolio.md`                         | yes                         | **2**   | Frontmatter, `Cash`, `Positions` and `Lots` tables per currency |
+| `state/portfolio.json`                 | yes (written by the engine) | **1**   | All of it: the engine's store of the portfolio                  |
+| `inbox/*.yaml`                         | yes                         | **1**   | Frontmatter-less YAML: `schema_version` and `commands`          |
+| `watchlist.md`                         | yes                         | 1       | First ` ```yaml ` block                                         |
+| `screening-universe.md`                | yes                         | 1       | Frontmatter, first ` ```yaml ` block                            |
+| `screening-log.md`                     | yes                         | 1       | The table                                                       |
+| `tesis/tesis-<slug>.md`                | yes                         | 1       | Frontmatter                                                     |
+| `logs/<YYYY-MM-DD>-<ticker>.md`        | no (written by the engine)  | -       | Frontmatter                                                     |
+| `strategies/base.md`                   | no                          | -       | Frontmatter `version` (rules version) and text                  |
+| `portfolio-policy.md`, `routines/*.md` | no                          | -       | Text only, passed to the reasoning model                        |
 
 Files that are only passed to the model as text are not parsed, so they carry
 no `schema_version`.
@@ -322,15 +326,84 @@ line in `logs/decisions.jsonl` (the ADR's dedicated commit, made when no
 automated run is in flight) together with its lot in `Lots` and `Volume` in
 `Positions`, in the same commit, so the log and the portfolio agree again.
 
+## `state/portfolio.json`
+
+The engine's [store](glossary.md#store) of the portfolio: cash, positions and lots of each silo it has, as JSON that
+only the engine writes. **Do not edit it**, and do not edit `portfolio.md` either: `inbox:ingest` and the flows that
+refresh prices write the store and generate `portfolio.md` from it, overwriting what is there. To change the portfolio,
+drop a batch of commands in `inbox/` ([below](#inboxyaml)). Commit `state/` with the rest of the data directory.
+
+```json
+{
+  "schema_version": 1,
+  "account_env": "demo",
+  "unmoved_batches": [],
+  "pending_decisions": [],
+  "silos": {
+    "EUR": {
+      "synced_at": "2026-11-12T09:00:00.000Z",
+      "cash": "1049.00 EUR",
+      "positions": [
+        {
+          "ticker": "SAP.DE",
+          "volume": "2",
+          "avg_price": "100",
+          "current_price": "100",
+          "pl": "0.00 EUR",
+          "stop_loss": "90"
+        }
+      ],
+      "lots": [
+        {
+          "entry_id": "20260915-sapde-entry-1d3e4b2e",
+          "ticker": "SAP.DE",
+          "date": "2026-09-15",
+          "units": "2",
+          "entry_units": "2",
+          "entry_price": "100",
+          "initial_stop": "90",
+          "entry_costs": "1.50 EUR",
+          "origin": "propietario",
+          "rules_version": "1.4",
+          "rules_violations": []
+        }
+      ]
+    }
+  }
+}
+```
+
+Numbers are plain decimal text, never an exponent (`0.00000001`, not `1e-8`), and every amount of money is its
+number and its currency (`1049.00 EUR`, whole cents, the silo's own currency); prices, units and stops carry no
+currency, the silo's is theirs. A silo the portfolio does not have is absent. `synced_at` is when a command last
+changed the silo. `unmoved_batches` and `pending_decisions` are what a run that stopped halfway left for the next
+one: the batches applied whose files are still in `inbox/`, and the decision-log lines of their trades not yet in
+`logs/decisions.jsonl`. The reader is strict: a number that is not plain decimal, an amount in another currency, a
+ticker that does not parse or another `schema_version` is refused, naming the file and the field, instead of read
+partially.
+
+**`portfolio.md` is generated from the store** in the tables of the format above (`Cash`, `Positions` and `Lots`
+per silo, EUR numbers with the decimal comma, USD with the point), with a note that it is generated. Nothing reads
+it as a source. While there is no store, `portfolio.md` is the state as before; the first `inbox:ingest` makes the
+store from it (it must read whole: a row that does not read is refused, not dropped), and from then on edits to
+`portfolio.md` are overwritten. Starting from scratch needs no `portfolio.md`: without one, and without a store,
+every command is refused for having no silo. This slice was approved by the owner on 2026-11-05 in
+[#132](https://github.com/alvaromongon/finance-agent/issues/132) for agent work, without a migration, as the rest of
+the inbox format (see [#124](https://github.com/alvaromongon/finance-agent/issues/124)).
+
 ## `inbox/*.yaml`
 
 The [inbox](glossary.md#inbox) is the `inbox/` folder of the project directory. Each `.yaml` or `.yml`
 file in it is one [batch](glossary.md#batch) of [commands](glossary.md#command) that the owner, an AI or a
 routine writes; other files there are not batches and are ignored. `npm run inbox:check` reads the batches
-and checks them against the current portfolio without writing anything (applying them is `inbox:ingest`,
-not built yet). It is a new file in the format, so it has no earlier version to migrate from: the format
-shipped without a migration, approved by the owner on 2026-11-03 in
-[#131](https://github.com/alvaromongon/finance-agent/issues/131) because nobody uses the system yet.
+and checks them against the current portfolio without writing anything; `npm run inbox:ingest` applies them,
+all or nothing per batch: a clean one changes the [store](#stateportfoliojson) and moves to `inbox/applied/`, a
+refused one changes nothing and moves to `inbox/rejected/` with `<file>.errors.txt` beside it, one line per error
+(`command <n>, line <l>: <reason>`). The two run the same code, so they accept and refuse the same batches. The
+engine never edits a batch. A name already taken in `applied/` or `rejected/` gets a counter
+(`2026-11-12-2.yaml`), so a file dropped again is a new batch and is applied again. It is a new file in the format,
+so it has no earlier version to migrate from: the format shipped without a migration, approved by the owner on
+2026-11-03 in [#131](https://github.com/alvaromongon/finance-agent/issues/131) because nobody uses the system yet.
 
 ```yaml
 schema_version: 1
@@ -394,9 +467,29 @@ breaks, their entry prices and the stop, and where it comes from: the `set_stop`
 `portfolio.md`. A `set_stop` above the entry price of a position with no lot opened in the batch is accepted:
 that is a trailing stop.
 The rule was approved by the owner on 2026-11-10 in [#159](https://github.com/alvaromongon/finance-agent/issues/159),
-without a migration. `inbox:check` warns, without failing, about every position a batch touches (by a buy, a
-sale, a `set_stop` or a `clear_stop`) that ends with no stop, naming its silo; a stop that is not above zero is
-no stop. The digest will name every position without a stop (#132).
+without a migration. `inbox:check` and `inbox:ingest` warn, without failing, about every position a batch touches (by a
+buy, a sale, a `set_stop` or a `clear_stop`) that ends with no stop, naming its silo; a stop that is not above zero is
+no stop (the one definition the stop checks and the heartbeat digest share). The digest names every position without
+a stop in every run while it lasts.
+
+**What a buy and a sale write.** A lot opened by a buy gets its `Entry id` from the one source of decision ids
+(`20260915-sapde-entry-1d3e4b2e`: date, ticker, type and a suffix), never an id the whole decision history holds, closed
+lots included, and the `Rules version` of `strategies/base.md` in force; a lot with no initial stop carries the rule
+violation `no_stop`. A sale takes the entry costs earlier exits already took of each lot, so the exits of a lot add up
+to its `Entry costs`. A sale dated before the buy of a lot it would consume is refused (the same day is allowed), in
+`check` and in `ingest`, and the `lot` of a sale must look like an entry id (letters, digits, `.`, `_` and `-`).
+`inbox:ingest` also appends the decision-log line of each trade (`source: portfolio-sync`): an `entry` per buy, with the
+lot's `Entry id` as its id, and an `exit` per lot a sale touched, as `decision:record` writes them, so the two read
+one history. A sale whose proceeds round to 0.00 (it must use up every lot it touches) credits 0.00 and records the
+exact amounts of its exits (their sum is the exact proceeds, not the cash credited); an exit whose share of the
+proceeds is 0 is not recorded as a decision (it needs an amount above zero) and its lot is closed all the same. Cash
+flows and `set_stop` are not written to the decision log.
+
+**The folder is not trusted.** A batch must be a regular file: a symbolic link (or a folder or named pipe with a batch's
+name) is never followed or read, and is reported, by `check` and `ingest`, as an error that names it; `ingest` leaves
+it in `inbox/` and still applies the others (a later file that could depend on it is listed as not checked, like one
+that depends on a rejected file). A symbolic link as `inbox/` itself, or as `inbox/applied/` or `inbox/rejected/`, is
+refused, and a file name from the folder is never joined into a path before it is checked to be a plain file name.
 
 ```yaml
 commands:

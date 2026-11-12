@@ -1,12 +1,12 @@
 // The command handlers of the inbox (#131, spec #124, ADR-0018): one independent, pure handler per command,
 // `(state, command) -> new state or a reason`. No I/O, no clock, no config: `inbox:check` runs them over a
-// batch without writing anything, and `inbox:ingest` (#132) will run the same ones before it applies the batch.
+// batch without writing anything, and `inbox:ingest` (#132) runs the same ones, then applies the batch.
 //
 // The state is both silos of the portfolio. The currency is enforced by the type only where a silo is
 // picked at run time (`state[command.currency]`, #145), so every handler checks it explicitly before it
 // touches a silo (`siloOf`).
 import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
-import { tickerIdPart, type Ticker } from "../ticker.js";
+import type { Ticker } from "../ticker.js";
 import {
   addCounted,
   formatMoney,
@@ -17,8 +17,9 @@ import {
   type Money,
   zero,
 } from "../money.js";
-import { LOTS_SOURCE, planSale, SaleRefusal, type SaleShare } from "./portfolio-lots.js";
+import { entryAfterExit, LOTS_SOURCE, planSale, SaleRefusal, type SaleShare } from "./portfolio-lots.js";
 import { printable, quoted } from "./printable.js";
+import { stopOf } from "./stop.js";
 import { UNITS_TOLERANCE } from "./units.js";
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -97,9 +98,34 @@ export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
 
 /**
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
- * (`opened`, see `openedKey`): the batch records those, so a `set_stop` knows which lots are the batch's own.
+ * (`opened`, see `openedKey`, and `lot`, the lot itself): the batch records those, so a `set_stop` knows which
+ * lots are the batch's own and `inbox:ingest` has the lot to write down. A sale says the exit of each lot it
+ * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again.
  */
-export type HandlerResult = { state: InboxState; opened?: string } | { reason: string };
+export type HandlerResult =
+  { state: InboxState; opened?: string; lot?: Lot; exits?: readonly SaleShare[] } | { reason: string };
+
+/** The id of the lot a buy opens: from the one source of decision ids, never one the history or the state holds. */
+export type NewEntryId = (date: string, ticker: Ticker) => string;
+
+/**
+ * What the handlers need besides the state and the command, from whoever runs the batch (`inbox:check`,
+ * `inbox:ingest`). No field has a default: a caller that leaves one out does not compile (`opened`, found in #151).
+ */
+export interface BatchContext {
+  /** The lots the commands before this one opened, see `OpenedLots`: the stops and the words of a sale refusal. */
+  opened: OpenedLots;
+  /** `openedKey(currency, ticker)` of the tickers earlier files opened, even if sold out since, for the same words. */
+  earlierTickers: ReadonlySet<string>;
+  /** The ids of the lots a buy opens. */
+  newEntryId: NewEntryId;
+  /** `version` of `strategies/base.md`, written into the lot a buy opens. */
+  rulesVersion: string;
+  /** What the exits written so far took of each lot's entry costs, by entry id: a sale does not take it twice. */
+  entryCostsTaken: ReadonlyMap<string, Money>;
+  /** Where a `set_stop` or `clear_stop` writes who changed the stop. */
+  record?: StopRecord;
+}
 
 /** Identifies a lot across silos: entry ids are only unique within one. */
 export const openedKey = (currency: Currency, entryId: string): string => `${currency}/${entryId}`;
@@ -154,10 +180,6 @@ export interface StopRecord {
   at: Pick<StopSource, "command" | "line">;
   stops: Map<string, StopSource | null>;
 }
-
-/** A stop is a price; a position with none, or a stop that is not above zero, has no stop. */
-export const stopOf = (position: Pick<Position, "stopLoss">): number | null =>
-  position.stopLoss !== null && position.stopLoss > 0 ? position.stopLoss : null;
 
 const refused = (reason: string): { reason: string } => ({ reason });
 
@@ -227,16 +249,13 @@ export function withdrawal<C extends Currency>(state: InboxState, command: Withd
   };
 }
 
-/** The id of the lot a buy opens: its date and ticker, with a counter when one is already taken. */
-function newEntryId(date: string, ticker: Ticker, taken: ReadonlySet<string>): string {
-  const base = `${date.replace(/-/g, "")}-${tickerIdPart(ticker)}-entry`;
-  if (!taken.has(base)) return base;
-  let n = 2;
-  while (taken.has(`${base}-${n}`)) n += 1;
-  return `${base}-${n}`;
-}
+/** The rule an entry id must follow before it reaches a path or a cell: what `newDecisionId` writes, and the example ids. */
+const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-export function buy<C extends Currency>(state: InboxState, command: Buy<C>): HandlerResult {
+/** The rule violations a lot carries from its stop: `no_stop` while it has none (ADR-0009 §5), nothing otherwise. */
+const violationsOf = (initialStop: number | null): string[] => (initialStop === null ? ["no_stop"] : []);
+
+export function buy<C extends Currency>(state: InboxState, command: Buy<C>, context: BatchContext): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
@@ -258,19 +277,18 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
   const held = silo.positions.find((p) => p.ticker === ticker);
   const lot: Lot<C> = {
     ticker,
-    entryId: newEntryId(command.date, ticker, new Set(silo.lots.map((l) => l.entryId))),
+    entryId: context.newEntryId(command.date, ticker),
     date: command.date,
     units: command.units,
     entryUnits: command.units,
     entryPrice: command.price,
     // A buy never changes the stop: the lot starts with the one the position has (a `set_stop` later in
-    // the batch replaces it), or none, and then it carries `no_stop` when the batch is applied (#132).
+    // the batch replaces it), or none, and then it carries `no_stop` (`withStop` keeps that true).
     initialStop: held ? stopOf(held) : null,
     entryCosts: command.costs ?? null,
     origin: "propietario",
-    // The rules version is filled when the batch is applied (#132); the check does not need it.
-    rulesVersion: "",
-    rulesViolations: [],
+    rulesVersion: context.rulesVersion,
+    rulesViolations: violationsOf(held ? stopOf(held) : null),
   };
   const position: Position<C> = held
     ? {
@@ -299,6 +317,7 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>): Han
       positions: held ? silo.positions.map((p) => (p === held ? position : p)) : [...silo.positions, position],
     }),
     opened: openedKey(currency, lot.entryId),
+    lot,
   };
 }
 
@@ -347,7 +366,9 @@ function withStop<C extends Currency>(
     ...silo,
     positions: silo.positions.map((p) => (p.ticker === ticker ? { ...p, stopLoss: stop } : p)),
     lots: silo.lots.map((l) =>
-      l.ticker === ticker && ownLot(opened, openedKey(silo.currency, l.entryId)) ? { ...l, initialStop: stop } : l,
+      l.ticker === ticker && ownLot(opened, openedKey(silo.currency, l.entryId))
+        ? { ...l, initialStop: stop, rulesViolations: violationsOf(stop) }
+        : l,
     ),
   };
 }
@@ -355,8 +376,7 @@ function withStop<C extends Currency>(
 export function setStop<C extends Currency>(
   state: InboxState,
   command: SetStop<C>,
-  opened: OpenedLots = new Map(),
-  record?: StopRecord,
+  { opened, record }: Pick<BatchContext, "opened" | "record">,
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
@@ -374,8 +394,7 @@ export function setStop<C extends Currency>(
 export function clearStop(
   state: InboxState,
   command: ClearStop,
-  opened: OpenedLots = new Map(),
-  record?: StopRecord,
+  { opened, record }: Pick<BatchContext, "opened" | "record">,
 ): HandlerResult {
   const { ticker } = command;
   // A silo the portfolio does not have holds nothing. One that fails to read may hold the ticker, so its error
@@ -404,13 +423,17 @@ export function clearStop(
 }
 
 /**
- * The exit of each lot a sale touches. Each exit gets its exact share of the proceeds, kept to 8 decimals
- * (ADR-0017), not of the proceeds in whole cents, so a dust lot does not get an amount of 0.
+ * The exit of each lot a sale touches. The proceeds are `units x price`, worked out here and not taken from the
+ * caller, so what is recorded cannot disagree with the command. The amount shared over the lots is `exactAmount`
+ * of them: the proceeds in whole cents (the exits add up to the cents the cash is credited), except proceeds
+ * under half a cent that are not dust, which keep their exact value to 8 decimals so that a lot of a few units
+ * of a low-priced asset does not get an amount of 0 (ADR-0017). Proceeds that are dust give 0. Each exit's share
+ * is kept to 8 decimals. `entryCostsTaken`: what the exits before already took of each lot's entry costs.
  */
 export function saleShares<C extends Currency>(
   chosen: readonly Lot<C>[],
   command: Sale<C>,
-  proceeds: number,
+  entryCostsTaken: ReadonlyMap<string, Money<C>>,
 ): SaleShare<C>[] {
   return planSale(
     chosen,
@@ -419,23 +442,42 @@ export function saleShares<C extends Currency>(
       currency: command.currency,
       units: command.units,
       price: command.price,
-      amount: exactAmount(proceeds),
+      amount: exactAmount(command.units * command.price),
       costs: command.costs,
     },
-    new Map(),
+    entryCostsTaken,
   );
+}
+
+/** `taken` with the entry costs the `exits` took added: the next sale of the batch starts from it. */
+export function takeEntryCosts(taken: Map<string, Money>, exits: readonly SaleShare[], currency: Currency): void {
+  for (const exit of exits) {
+    if (exit.entryCosts === undefined) continue;
+    taken.set(
+      exit.lot.entryId,
+      addCounted(
+        taken.get(exit.lot.entryId) ?? zero(currency),
+        exit.entryCosts,
+        `the entry costs the exits of lot ${printable(exit.lot.entryId)} took together`,
+      ),
+    );
+  }
 }
 
 export function sale<C extends Currency>(
   state: InboxState,
   command: Sale<C>,
-  opened: OpenedLots = new Map(),
-  earlierTickers: ReadonlySet<string> = new Set(),
+  { opened, earlierTickers, entryCostsTaken }: Pick<BatchContext, "opened" | "earlierTickers" | "entryCostsTaken">,
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   const { currency, ticker } = command;
   if (command.units < UNITS_TOLERANCE) return refused(tooFewUnits(command.units));
+  // The handler is also run by whoever builds a command without the parser (#132): the id is checked again before
+  // it is compared with the lots, so a malformed one is refused for what it is and never reaches a path or a cell.
+  if (command.lot !== undefined && !ENTRY_ID.test(command.lot)) {
+    return refused(`the lot ${quoted(command.lot)} of the sale of ${printable(ticker)} is not an entry id`);
+  }
   // Which lots are sold is this handler's to say; how many units they give, and the tolerance, are `planSale`'s.
   const chosen = silo.lots.filter(
     (l) => l.ticker === ticker && (command.lot === undefined || l.entryId === command.lot),
@@ -445,12 +487,15 @@ export function sale<C extends Currency>(
       `cannot sell lot ${quoted(command.lot)}: ${printable(ticker)} has no open lot with that id in the ${currency} silo`,
     );
   }
-  // Cents are for the cash credit and the costs check; the exact amount is for the exits #132 will write (ADR-0017).
-  const proceeds = command.units * command.price;
-  const amount = countedInCents(proceeds, `the amount of the sale of ${printable(ticker)}`, currency);
+  // Cents are for the cash credit and the costs check; the exact amount is for the exits `inbox:ingest` records (ADR-0017).
+  const amount = countedInCents(
+    command.units * command.price,
+    `the amount of the sale of ${printable(ticker)}`,
+    currency,
+  );
   let shares: SaleShare<C>[];
   try {
-    shares = saleShares(chosen, command, proceeds);
+    shares = saleShares(chosen, command, entryCostsTaken as ReadonlyMap<string, Money<C>>);
   } catch (err) {
     // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash. Where the
     // lots come from is worked out here, only for a refusal that names it.
@@ -468,6 +513,14 @@ export function sale<C extends Currency>(
       );
     }
     throw err;
+  }
+  // A lot cannot be sold before it was bought (the same day is a round trip), as `decision:record` refuses it too.
+  // It is checked after the lots, so that an unheld ticker or too many units report their real reason.
+  const early = shares.find((share) => entryAfterExit(share.lot.date, command.date));
+  if (early !== undefined) {
+    return refused(
+      `the sale of ${printable(ticker)} is dated ${command.date}, before lot ${quoted(early.lot.entryId)} was bought on ${early.lot.date}: a lot cannot be sold before it was bought`,
+    );
   }
   // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
   // A sale that uses up every lot it touches is the way out for dust lots, so it may credit 0.00 (#149, #162).
@@ -494,7 +547,7 @@ export function sale<C extends Currency>(
   const positions = silo.positions.flatMap((p) =>
     p.ticker !== ticker ? [p] : volume > UNITS_TOLERANCE ? [{ ...p, volume, avgPrice }] : [],
   );
-  return { state: withSilo(state, { ...credited, lots, positions }) };
+  return { state: withSilo(state, { ...credited, lots, positions }), exits: shares };
 }
 
 /** A lot the batch opened whose initial stop is not below its entry price, so its R would be zero or negative. */
@@ -536,19 +589,11 @@ export function initialStopBreaches(state: InboxState, opened: OpenedLots, stops
 }
 
 /**
- * Applies one command to the state: the new state, or the reason it is refused. `opened`: the lots the commands
- * before it opened, for the stops and for the words of a sale refusal; `earlierTickers` (`openedKey(currency,
- * ticker)`): the tickers earlier files opened, even if sold out since, for the same words; `record`: where a
- * `set_stop` or `clear_stop` writes who changed the stop. Never throws for an amount too large to
- * count.
+ * Applies one command to the state: the new state, or the reason it is refused. What the handlers need besides
+ * them is in `context` (see `BatchContext`, none of it optional but `record`). Never throws for an amount too
+ * large to count.
  */
-export function applyCommand(
-  state: InboxState,
-  command: Command,
-  opened: OpenedLots = new Map(),
-  earlierTickers: ReadonlySet<string> = new Set(),
-  record?: StopRecord,
-): HandlerResult {
+export function applyCommand(state: InboxState, command: Command, context: BatchContext): HandlerResult {
   try {
     switch (command.kind) {
       case "deposit":
@@ -556,13 +601,13 @@ export function applyCommand(
       case "withdrawal":
         return withdrawal(state, command);
       case "buy":
-        return buy(state, command);
+        return buy(state, command, context);
       case "sale":
-        return sale(state, command, opened, earlierTickers);
+        return sale(state, command, context);
       case "set_stop":
-        return setStop(state, command, opened, record);
+        return setStop(state, command, context);
       case "clear_stop":
-        return clearStop(state, command, opened, record);
+        return clearStop(state, command, context);
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

@@ -88,6 +88,7 @@ export const es: Messages = {
       lots: "problema con los lotes",
       tickers: "ticker que no se lee",
       unreadableCells: "celda que no se puede contar",
+      noStop: "posición sin stop",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -122,6 +123,19 @@ export const es: Messages = {
       ``,
       `Corrige \`Lots\` a mano: que exista y se lea, que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
       `\`Entry id\` sea una entrada del registro (\`logs/decisions.jsonl\`; ver \`docs/input-format.md\`).`,
+    ],
+    noStopIntro: [
+      `## Posiciones sin stop`,
+      ``,
+      `La vigilancia de riesgo no puede proteger una posición sin stop: nada le dice al heartbeat cuándo avisarte. Estas`,
+      `posiciones no tienen ninguno (un stop que no es mayor que cero es ninguno):`,
+      ``,
+    ],
+    noStopLine: (ticker, currency) => `- ${ticker} (silo ${currency})`,
+    noStopOutro: [
+      ``,
+      `Dale un stop a cada una con un comando \`set_stop\` en \`inbox/\` (ver \`docs/input-format.md\`). El aviso sigue en cada`,
+      `resumen hasta que lo hagas.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
@@ -582,7 +596,10 @@ export const es: Messages = {
     ],
   },
 
-  twoMonthRule: (ticker, pnl, currency, date, until) =>
-    `Regla de los dos meses (art. 33.5.f LIRPF): ${ticker} se vendió con pérdida (${pnl} ${currency}) el ${date}. ` +
-    `Recomprar antes del ${until} difiere esa pérdida.`,
+  twoMonthRule: (ticker, losses) =>
+    losses.length === 1
+      ? `Regla de los dos meses (art. 33.5.f LIRPF): ${ticker} se vendió con pérdida (${losses[0].pnl} ${losses[0].currency}) el ${losses[0].date}. ` +
+        `Recomprar antes del ${losses[0].until} difiere esa pérdida.`
+      : `Regla de los dos meses (art. 33.5.f LIRPF): ${ticker} se vendió con pérdida ${losses.length} veces: ` +
+        `${losses.map((l) => `(${l.pnl} ${l.currency}) el ${l.date}, se difiere si se recompra antes del ${l.until}`).join("; ")}.`,
 };

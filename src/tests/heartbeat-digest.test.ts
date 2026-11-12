@@ -76,6 +76,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   lotsWarnings: [],
   tickerWarnings: [],
   unreadableCells: [],
+  noStop: [],
   tightStops: [],
   armed: [],
   escalated: [],
@@ -203,6 +204,24 @@ describe("onlyNew / digestKeys", () => {
     assert.ok(email.body.includes(`- ${unreadableCells[0]}`));
     assert.deepEqual(digestKeys(withCells), []);
     assert.deepEqual(onlyNew(withCells, new Set()).unreadableCells, unreadableCells);
+  });
+
+  it("a position without a stop is named in every digest, with its silo, and is never marked as sent (#132)", () => {
+    const noStop = [
+      { ticker: tk("SAP"), currency: "EUR" as const },
+      { ticker: tk("KO"), currency: "USD" as const },
+    ];
+    const withNoStop = digest({ noStop });
+    const email = renderHeartbeatDigest(withNoStop)!;
+
+    assert.match(email.subject, /posición sin stop: SAP, KO/);
+    assert.match(email.body, /## Posiciones sin stop/);
+    assert.ok(email.body.includes("- SAP (silo EUR)"));
+    assert.ok(email.body.includes("- KO (silo USD)"));
+    assert.match(email.body, /set_stop/);
+    assert.deepEqual(digestKeys(withNoStop), []);
+    // Sent today or not, it is in the next digest too: it lasts as long as the position has no stop.
+    assert.deepEqual(onlyNew(withNoStop, new Set(["anything"])).noStop, noStop);
   });
 
   it("the crossed stop leaves no key: there is nothing to remember", () => {
