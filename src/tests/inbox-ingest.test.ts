@@ -599,6 +599,70 @@ describe("inbox:ingest", () => {
       assert.match(checked.lines.join("\n"), /inbox\/pipe\.yml is not a regular file/);
     });
 
+    it("a hidden file (macOS ._buy.yaml) is reported unread like a link, and neither stops the others nor crashes a later run", async () => {
+      await drop("._buy.yaml", batch("command: deposit\namount: 1 EUR"));
+      await drop(".fix.yml", "not even yaml: [");
+      await drop("1-ok.yaml", batch("command: deposit\namount: 5 EUR"));
+
+      const first = await inbox.ingestInbox();
+      assert.equal(first.exitCode, 1);
+      assert.match(first.lines.join("\n"), /inbox\/\._buy\.yaml is a hidden file/);
+      assert.match(first.lines.join("\n"), /2 file\(s\) left in inbox\/ unread/);
+      assert.deepEqual(await ls("inbox", "applied"), ["1-ok.yaml"]);
+      assert.deepEqual(await ls("inbox"), ["._buy.yaml", ".fix.yml", "applied"]);
+
+      const second = await inbox.ingestInbox();
+      assert.equal(second.exitCode, 1, "the same report, no throw");
+      assert.deepEqual(JSON.parse(await storeText()).unmoved_batches, []);
+      assert.equal(JSON.parse(await storeText()).silos.EUR.cash, "1005.00 EUR", "applied once");
+    });
+
+    it("a leftover errors file does not abort the ingest: the new errors are kept under the next name", async () => {
+      await mkdir(dir("inbox", "rejected"), { recursive: true });
+      await writeFile(dir("inbox", "rejected", "bad.yaml.errors.txt"), "an old one\n", "utf8");
+      await drop("a-ok.yaml", batch("command: deposit\namount: 5 EUR"));
+      await drop("bad.yaml", batch("command: withdrawal\namount: 99999 EUR"));
+      await drop("z-ok.yaml", batch("command: deposit\namount: 7 EUR"));
+
+      const result = await inbox.ingestInbox();
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(await ls("inbox", "applied"), ["a-ok.yaml", "z-ok.yaml"]);
+      assert.equal(await read("inbox", "rejected", "bad.yaml.errors.txt"), "an old one\n", "never overwritten");
+      assert.deepEqual(await ls("inbox", "rejected"), ["bad-2.yaml", "bad-2.yaml.errors.txt", "bad.yaml.errors.txt"]);
+      assert.match(await read("inbox", "rejected", "bad-2.yaml.errors.txt"), /exceeds the available cash/);
+      assert.deepEqual(JSON.parse(await storeText()).unmoved_batches, []);
+    });
+
+    it("the errors of a rejected batch whose name has a colon are written whole, without the file prefix", async () => {
+      await drop("a:b.yaml", batch("command: withdrawal\namount: 99999 EUR"));
+      await inbox.ingestInbox();
+      const errors = await read("inbox", "rejected", "a:b.yaml.errors.txt");
+      assert.match(errors, /^command 1, line \d+: the withdrawal/);
+      assert.doesNotMatch(errors, /inbox\//);
+    });
+
+    it("an entry of the waiting list whose file is gone is forgotten, also when nothing else is applied", async () => {
+      await drop("1-ok.yaml", batch("command: deposit\namount: 5 EUR"));
+      await inbox.ingestInbox();
+      const written = (await store.readStoreIfAny())!;
+      await store.saveStore({
+        ...written,
+        unmoved: [{ file: "gone.yaml", sha256: "0".repeat(64), at: "2026-11-01T00:00:00.000Z" }],
+      });
+
+      const empty = await inbox.ingestInbox();
+      assert.equal(empty.exitCode, 0);
+      assert.deepEqual(JSON.parse(await storeText()).unmoved_batches, [], "forgotten with an empty inbox");
+
+      await store.saveStore({
+        ...written,
+        unmoved: [{ file: "gone.yaml", sha256: "0".repeat(64), at: "2026-11-01T00:00:00.000Z" }],
+      });
+      await drop("bad.yaml", batch("command: withdrawal\namount: 99999 EUR"));
+      await inbox.ingestInbox();
+      assert.deepEqual(JSON.parse(await storeText()).unmoved_batches, [], "and with only a rejected batch");
+    });
+
     it("inbox/ itself being a symbolic link is refused", async () => {
       await rm(dir("inbox"), { recursive: true });
       await mkdir(dir("elsewhere"));

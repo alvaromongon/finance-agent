@@ -333,6 +333,12 @@ only the engine writes. **Do not edit it**, and do not edit `portfolio.md` eithe
 refresh prices write the store and generate `portfolio.md` from it, overwriting what is there. To change the portfolio,
 drop a batch of commands in `inbox/` ([below](#inboxyaml)). Commit `state/` with the rest of the data directory.
 
+`decision:record` keeps working beside the inbox until #152, and with the store it writes the store, never the cell of
+`portfolio.md`: a buy lowers the available cash by its amount and costs (refused, before anything is recorded, if the
+cash does not cover it), a sale raises it by the proceeds less the costs, a deposit and a withdrawal move it, and a
+conversion takes its amount from one silo and gives the other what arrived. A stop change is `set_stop` in a batch
+(`adjust_stop` only writes the log line).
+
 ```json
 {
   "schema_version": 1,
@@ -488,7 +494,8 @@ flows and `set_stop` are not written to the decision log.
 **The folder is not trusted.** A batch must be a regular file: a symbolic link (or a folder or named pipe with a batch's
 name) is never followed or read, and is reported, by `check` and `ingest`, as an error that names it; `ingest` leaves
 it in `inbox/` and still applies the others (a later file that could depend on it is listed as not checked, like one
-that depends on a rejected file). A symbolic link as `inbox/` itself, or as `inbox/applied/` or `inbox/rejected/`, is
+that depends on a rejected file). A hidden file (a name that starts with `.`, such as the `._buy.yaml` macOS writes
+beside a file copied to another volume) is reported the same way and left where it is. A symbolic link as `inbox/` itself, or as `inbox/applied/` or `inbox/rejected/`, is
 refused, and a file name from the folder is never joined into a path before it is checked to be a plain file name.
 
 ```yaml

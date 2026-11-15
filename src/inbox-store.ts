@@ -42,8 +42,11 @@ export async function readInbox(): Promise<InboxFile[]> {
   return Promise.all(names.map((name) => readBatch(dir, name)));
 }
 
-/** One batch file: opened without following a link and read from the handle that was checked. */
+/** One batch file: a hidden file is reported, never read; the rest opened without following a link and read from the handle that was checked. */
 async function readBatch(dir: string, name: string): Promise<InboxFile> {
+  // `moveBatch` refuses such a name, so the file could never be moved: it is reported and left where it is
+  // (macOS writes `._name.yaml` beside a file copied to a foreign volume).
+  if (name.startsWith(".")) return { name, problem: notRegular(name, "a hidden file") };
   let handle;
   try {
     // O_NONBLOCK: opening a named pipe would otherwise wait for a writer that never comes.
@@ -98,6 +101,16 @@ export async function moveBatch(
     const target = join(destinationDir, n === 1 ? name : numbered(name, n));
     if (!target.startsWith(`${destinationDir}${sep}`))
       throw new Error(`${printable(name)} would leave inbox/${folder}`);
+    // The errors file of a name taken by an earlier one (left there by hand, or by a run that stopped) is not written
+    // over, and a name is not reused with it: the next counter is tried.
+    if (
+      errors.length > 0 &&
+      (await lstat(`${target}.errors.txt`).then(
+        () => true,
+        () => false,
+      ))
+    )
+      continue;
     try {
       // A hard link never replaces what is there; the source goes once the file is in place.
       await link(source, target);

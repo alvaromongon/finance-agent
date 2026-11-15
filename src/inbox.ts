@@ -124,7 +124,11 @@ export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome>
   // The state is read once. A store that exists first gets what an earlier run left in it written to the log.
   const existing = await readStoreIfAny();
   const stored = existing === null ? null : await writePendingDecisions(existing);
-  if (all.length === 0) return { lines: ["Inbox is empty: nothing to apply."], exitCode: 0 };
+  if (all.length === 0) {
+    // Nothing is waiting to be moved if there is no file: the files an earlier run applied were moved away by hand.
+    if (stored !== null && stored.unmoved.length > 0) await saveStore({ ...stored, unmoved: [] });
+    return { lines: ["Inbox is empty: nothing to apply."], exitCode: 0 };
+  }
 
   const { run, history, rulesVersion, waiting, store } = await plan(
     all,
@@ -170,11 +174,12 @@ export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome>
     await moveBatch(
       c.name,
       "rejected",
-      renderIssues([c]).map((line) => line.replace(/^inbox\/[^:]*: /, "")),
+      renderIssues([c]).map((line) => line.slice(`inbox/${printable(c.name)}: `.length)),
     );
   }
   // Everything that had to be written and moved has been: the state no longer needs to remember it.
-  if (applied.length > 0 || stillWaiting.length > 0) {
+  // (An entry of the list whose file is gone or changed is forgotten too: nothing is left to move for it.)
+  if (applied.length > 0 || stillWaiting.length > 0 || store.unmoved.length > 0) {
     await saveStore({ ...committed, unmoved: [], pendingDecisions: [] });
   }
 

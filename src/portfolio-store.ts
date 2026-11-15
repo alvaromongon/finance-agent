@@ -32,6 +32,7 @@ import {
   type PortfolioStore,
 } from "./utils/portfolio-json.js";
 import { volumeMismatches } from "./utils/lots-check.js";
+import { addCounted, countedInCents, formatMoney } from "./money.js";
 import {
   assertPortfolioSections,
   assertSchemaVersion,
@@ -280,7 +281,11 @@ export async function changeLots<C extends Currency>(
   expected: readonly Lot<C>[],
   lots: readonly Lot<C>[],
   change: PositionChange,
-  { check, dryRun = false }: { check?: (read: PortfolioSnapshot<C>) => void; dryRun?: boolean } = {},
+  {
+    check,
+    dryRun = false,
+    cash,
+  }: { check?: (read: PortfolioSnapshot<C>) => void; dryRun?: boolean; cash?: number } = {},
 ): Promise<void> {
   const store = await readStore();
   if (store !== null) {
@@ -289,12 +294,10 @@ export async function changeLots<C extends Currency>(
       throw new LotsMovedError(`${portfolioWhere(currency)}: Lots changed meanwhile`);
     }
     check?.(portfolio);
-    if (!dryRun) {
-      await writeStore({
-        ...store,
-        silos: { ...store.silos, [currency]: withLotChange(portfolio, lots, change) },
-      });
-    }
+    // The store is the cash: the trade moves it as the inbox would, and a buy the cash cannot pay is refused here,
+    // before the log is written (the dry run), so nothing is recorded.
+    const changed = withCashChange(withLotChange(portfolio, lots, change), cash ?? 0);
+    if (!dryRun) await writeStore({ ...store, silos: { ...store.silos, [currency]: changed } });
     return;
   }
   const text = await readFile(portfolioPath(), "utf8");
@@ -306,6 +309,50 @@ export async function changeLots<C extends Currency>(
   check?.(portfolio);
   const edited = applyLotChange(text, currency, lots, change);
   if (!dryRun) await writeAtomically(edited);
+}
+
+/**
+ * The silo with its cash (and its total cash, when it has one) moved by `delta`, in cents. Refuses, in words, a
+ * movement that takes the available cash below zero: the cash is the store's, so there is no guessing it away.
+ */
+function withCashChange<C extends Currency>(silo: PortfolioSnapshot<C>, delta: number): PortfolioSnapshot<C> {
+  if (delta === 0) return silo;
+  const by = countedInCents(delta, `the ${silo.currency} cash movement`, silo.currency);
+  if (silo.cash + by < 0) {
+    throw new Error(
+      `${STORE_WHERE}: this needs ${formatMoney(Math.abs(by))} ${silo.currency}, more than the available cash of ` +
+        `${formatMoney(silo.cash)} ${silo.currency} (nothing was recorded)`,
+    );
+  }
+  return {
+    ...silo,
+    cash: addCounted(silo.cash, by, `the ${silo.currency} cash after the movement`),
+    ...(silo.totalCash !== undefined
+      ? { totalCash: addCounted(silo.totalCash, by, `the ${silo.currency} total cash after the movement`) }
+      : {}),
+  };
+}
+
+/**
+ * Moves the cash of the silos of the store, all in one write (a deposit, a withdrawal or a conversion told to
+ * `decision:record`); `false`, having done nothing, while there is no store (the cash is then the owner's cell of
+ * `portfolio.md`). With `dryRun` every refusal comes and nothing is written.
+ */
+export async function changeCash(
+  moves: readonly (readonly [Currency, number])[],
+  { dryRun = false } = {},
+): Promise<boolean> {
+  const store = await readStore();
+  if (store === null) return false;
+  let silos = store.silos;
+  for (const [currency, delta] of moves) {
+    silos = {
+      ...silos,
+      [currency]: withCashChange(readFromStore({ ...store, silos }, currency, false).portfolio, delta),
+    };
+  }
+  if (!dryRun) await writeStore({ ...store, silos });
+  return true;
 }
 
 /**
