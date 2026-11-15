@@ -32,7 +32,7 @@ import {
   readWatchlistSkippingBadTickers,
   retireWatchlistEntry,
 } from "./vault-io.js";
-import { ignoringLots, readPortfolio, refreshPrices } from "./portfolio-store.js";
+import { ignoringLots, readPortfolio, readPortfolioView, refreshPrices } from "./portfolio-store.js";
 import { buildBriefingDecisions, extractProposals, formatEngineTicketsSection } from "./utils/briefing-decisions.js";
 import { CUT_BOARD_HEADING, extractCutBoard } from "./utils/decisions-evaluation-render.js";
 import { siloValue } from "./utils/sizing.js";
@@ -125,7 +125,7 @@ export async function prepareBriefing(
 
   // Re-read with the prices already written: the prompt, the weight breakdown
   // and the USD buffer must all describe the same state.
-  const portfolioMd = await safeRead(join(vaultDir, "portfolio.md"));
+  const portfolioMd = await readPortfolioView();
   const [eurPortfolio, usdPortfolio] = await Promise.all([
     readPortfolio("EUR").then(ignoringLots),
     readPortfolio("USD").then(ignoringLots),

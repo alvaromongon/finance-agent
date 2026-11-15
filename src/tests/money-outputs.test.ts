@@ -69,15 +69,18 @@ const fakeProvider = {
   getHistorical: async () => bars(),
 };
 
+// The pnl of the first sale (160.09 given by the owner) is split since #90 with each lot's entry costs kept with the
+// lot: 52.66 + 68.68 + 38.75 = 160.09; before it, the whole difference to the computed results was shared by units
+// (52.81, 68.85, 38.43).
 const EXPECTED: unknown = {
   out: [
     [["entry", 100, 1.07, null, null, 3, null, 33.333]],
     [["entry", 287.7, 2.33, null, null, 7, null, 41.1]],
     [["entry", 100.01, null, null, null, 8.0008, null, 12.5]],
     [
-      ["exit", 150, 0.1, 52.81, 1.07, 3, 0, 50],
-      ["exit", 350, 0.24, 68.85, 2.33, 7, 0, 50],
-      ["exit", 50, 0.03, 38.43, null, 1, 7.0008, 50],
+      ["exit", 150, 0.1, 52.66, 1.07, 3, 0, 50],
+      ["exit", 350, 0.24, 68.68, 2.33, 7, 0, 50],
+      ["exit", 50, 0.03, 38.75, null, 1, 7.0008, 50],
     ],
     [["exit", 160.37, null, 121.06, null, 3.1445098039215686, 3.8562901960784313, 51]],
     [["deposit", 123.45, null, null, null, null, null, null]],
@@ -87,9 +90,9 @@ const EXPECTED: unknown = {
     ["entry", 100, 1.07, null, null, 3, null, 33.333],
     ["entry", 287.7, 2.33, null, null, 7, null, 41.1],
     ["entry", 100.01, null, null, null, 8.0008, null, 12.5],
-    ["exit", 150, 0.1, 52.81, 1.07, 3, 0, 50],
-    ["exit", 350, 0.24, 68.85, 2.33, 7, 0, 50],
-    ["exit", 50, 0.03, 38.43, null, 1, 7.0008, 50],
+    ["exit", 150, 0.1, 52.66, 1.07, 3, 0, 50],
+    ["exit", 350, 0.24, 68.68, 2.33, 7, 0, 50],
+    ["exit", 50, 0.03, 38.75, null, 1, 7.0008, 50],
     ["exit", 160.37, null, 121.06, null, 3.1445098039215686, 3.8562901960784313, 51],
     ["deposit", 123.45, null, null, null, null, null, null],
     ["fx_conversion", 100, 0.8, null, null, null, null, null],

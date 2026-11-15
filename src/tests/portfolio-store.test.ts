@@ -6,7 +6,7 @@
  */
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Lot } from "../types.js";
@@ -365,6 +365,156 @@ describe("the portfolio state port", () => {
     it("refuses a file in another schema_version", async () => {
       await put(portfolioMd([TCK_ROW], [TCK_LOT]).replace("schema_version: 2", "schema_version: 1"));
       await assert.rejects(() => store.refreshPrices("USD", prices), /schema_version/);
+    });
+  });
+
+  describe("with the engine's own store (#132, spec #124)", () => {
+    const storeFile = () => join(vaultDir, "state", "portfolio.json");
+    const seed = () => store.seedStore(new Date("2026-11-12T00:00:00Z"));
+    const stored = () => readFile(storeFile(), "utf8");
+
+    beforeEach(async () => {
+      await rm(join(vaultDir, "state"), { recursive: true, force: true });
+      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
+    });
+
+    it("is made from the old portfolio.md once: every silo synced at the given time, a store that exists is left alone", async () => {
+      await seed();
+      const doc = JSON.parse(await stored());
+      assert.deepEqual([doc.silos.EUR.synced_at, doc.silos.USD.synced_at], Array(2).fill("2026-11-12T00:00:00.000Z"));
+      assert.equal(doc.silos.USD.cash, "1000.00 USD");
+      assert.deepEqual(
+        doc.silos.USD.lots.map((l: { entry_id: string }) => l.entry_id),
+        ["lot-tck"],
+      );
+
+      const before = await stored();
+      await store.seedStore(new Date("2030-01-01T00:00:00Z"));
+      assert.equal(await stored(), before);
+    });
+
+    it("refuses to make it from a portfolio.md that does not read whole: a row lost on the way would stop being watched", async () => {
+      await put(portfolioMd(["| M&M.NS | 4 | 100 | 100 | 0 | 90 |", TCK_ROW], [TCK_LOT]));
+      await assert.rejects(() => store.seedStore(new Date()), /M&M\.NS/);
+      await assert.rejects(() => stat(storeFile()), { code: "ENOENT" });
+    });
+
+    it("is what every read gives from then on; portfolio.md is a view and is never read", async () => {
+      await seed();
+      await put("this is not a portfolio any more");
+      const usd = (await store.readPortfolio("USD")).portfolio;
+      assert.deepEqual(
+        [usd.cash, usd.positions.map((p) => p.ticker), usd.lots.map((l) => l.entryId)],
+        [1000, ["TCK"], ["lot-tck"]],
+      );
+      const both = await store.readBothPortfolios();
+      assert.deepEqual([both.EUR?.portfolio.cash, both.USD?.portfolio.cash], [500, 1000]);
+      assert.deepEqual(both.USD?.skippedRows, []);
+    });
+
+    it("says a silo it does not hold is absent, as the old file did", async () => {
+      await seed();
+      const doc = JSON.parse(await stored());
+      delete doc.silos.EUR;
+      await writeFile(storeFile(), JSON.stringify(doc), "utf8");
+      assert.deepEqual(Object.keys(await store.readBothPortfolios()), ["USD"]);
+      await assert.rejects(() => store.readPortfolio("EUR"), { name: "SiloAbsentError", message: /no EUR silo/ });
+    });
+
+    it("refuses a store it cannot read whole, naming the file and the field", async () => {
+      await seed();
+      const doc = JSON.parse(await stored());
+      doc.silos.USD.cash = "1000 USD";
+      await writeFile(storeFile(), JSON.stringify(doc), "utf8");
+      await assert.rejects(() => store.readPortfolio("USD"), /state\/portfolio\.json: silos\.USD\.cash/);
+    });
+
+    it("warns when the state has not changed for a long time, with the time of the store", async () => {
+      await store.seedStore(new Date("2020-01-01T00:00:00Z"));
+      await store.readPortfolio("USD");
+      assert.match(warnings.join("\n"), /portfolio\.md has not been updated for \d+ days/);
+    });
+
+    it("refreshes the prices in the store and regenerates the view, and writes nothing when no value changes", async () => {
+      await seed();
+      await store.refreshPrices("USD", new Map([[tk("TCK"), 110]]));
+      const { portfolio } = await store.readPortfolio("USD");
+      assert.deepEqual([portfolio.positions[0].currentPrice, portfolio.positions[0].pl], [110, 20]);
+      assert.match(await readFile(file(), "utf8"), /\| TCK \| 2 \| 100\.00 \| 110\.00 \| 20\.00 \| 80\.00 \|/);
+
+      const before = [await stored(), await readFile(file(), "utf8")];
+      await store.refreshPrices("USD", new Map([[tk("TCK"), 110]]));
+      await store.refreshPrices("USD", new Map());
+      assert.deepEqual([await stored(), await readFile(file(), "utf8")], before);
+    });
+
+    describe("changing the lots", () => {
+      const change = { ticker: tk("TCK"), volume: 1, avgPrice: 100 };
+      const lotAfter = (units: number): Lot<"USD"> => ({
+        ticker: tk("TCK"),
+        entryId: "lot-tck",
+        date: "2026-06-15",
+        units,
+        entryUnits: 2,
+        entryPrice: 100,
+        initialStop: 80,
+        entryCosts: null,
+        origin: "sistema",
+        rulesVersion: "1.0",
+        rulesViolations: [],
+      });
+
+      it("writes the lots and the position change to the store and the view, if the lots are the ones it was planned on", async () => {
+        await seed();
+        const { portfolio } = await store.readPortfolio("USD");
+        await store.changeLots("USD", portfolio.lots, [lotAfter(1)], change);
+        const after = (await store.readPortfolio("USD")).portfolio;
+        assert.deepEqual([after.lots.map((l) => l.units), after.positions.map((p) => p.volume)], [[1], [1]]);
+        assert.match(await readFile(file(), "utf8"), /\| TCK \| lot-tck \| 2026-06-15 \| 1 \| 2 \|/);
+      });
+
+      it("checks the very read it writes, refuses when the lots moved, and with dryRun writes nothing", async () => {
+        await seed();
+        const { portfolio } = await store.readPortfolio("USD");
+        const before = await stored();
+        await assert.rejects(
+          () =>
+            store.changeLots("USD", portfolio.lots, [lotAfter(1)], change, {
+              check: () => {
+                throw new Error("no");
+              },
+            }),
+          /no/,
+        );
+        await store.changeLots("USD", portfolio.lots, [lotAfter(1)], change, { dryRun: true });
+        await assert.rejects(
+          () => store.changeLots("USD", [lotAfter(7)], [lotAfter(1)], change),
+          (err: Error) => err instanceof store.LotsMovedError,
+        );
+        assert.equal(await stored(), before);
+      });
+    });
+
+    it("the view is the state in the tables the old reader reads: written, then read back, the model is the same", async () => {
+      await seed();
+      const { portfolio: fromStore } = await store.readPortfolio("USD");
+      const { portfolio: fromStoreEur } = await store.readPortfolio("EUR");
+      await rm(join(vaultDir, "state"), { recursive: true });
+      const viewRead = await store.readPortfolio("USD");
+      const viewReadEur = await store.readPortfolio("EUR");
+      assert.deepEqual(viewRead.portfolio, fromStore);
+      assert.deepEqual(viewReadEur.portfolio, fromStoreEur);
+      assert.deepEqual([viewRead.lotsProblem, viewRead.skippedRows, viewRead.unreadableCells], [null, [], []]);
+    });
+
+    it("gives the Monday briefing the view as text: generated from the store, the old file without one, nothing without either", async () => {
+      assert.match(await store.readPortfolioView(), /^---\nschema_version: 2/);
+      await seed();
+      await put("stale text");
+      assert.match(await store.readPortfolioView(), /Generated by the engine from `state\/portfolio\.json`/);
+      await rm(join(vaultDir, "state"), { recursive: true });
+      await rm(file());
+      assert.equal(await store.readPortfolioView(), "");
     });
   });
 });

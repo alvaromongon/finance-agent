@@ -11,7 +11,7 @@
 // leaves the machine. The environment is set here, before config.js loads,
 // and the local .env is not loaded, so it cannot point the demo at real data,
 // send real mail or change its thresholds.
-import { cp, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Currency } from "./types.js";
@@ -31,15 +31,6 @@ export async function runDemo(currency: Currency): Promise<DemoResult> {
   const dir = await mkdtemp(join(tmpdir(), "finance-agent-demo-"));
   await cp(join(EXAMPLES, "brain"), dir, { recursive: true });
 
-  // The copy is "synced" today, so the demo does not warn of a stale portfolio.
-  const portfolioPath = join(dir, "portfolio.md");
-  const portfolio = await readFile(portfolioPath, "utf8");
-  await writeFile(
-    portfolioPath,
-    portfolio.replace(/^last_manual_sync: .*$/m, `last_manual_sync: ${new Date().toISOString()}`),
-    "utf8",
-  );
-
   Object.assign(process.env, {
     // No local .env: its thresholds would change what the demo shows.
     DOTENV_CONFIG_PATH: join(dir, ".env-none"),
@@ -54,6 +45,11 @@ export async function runDemo(currency: Currency): Promise<DemoResult> {
     MAIL_TRANSPORT: "outbox",
     MAIL_REQUIRE_DELIVERY: "false",
   });
+
+  // The copy gets the engine's own store, synced today, so the demo does not warn of a stale portfolio and runs on
+  // the state the engine works on, with `portfolio.md` as the view it generates (#132).
+  const { seedStore } = await import("./portfolio-store.js");
+  await seedStore(new Date());
 
   const { runHeartbeat } = await import("./heartbeat-run.js");
   const { createMarketDataProvider } = await import("./providers/factory.js");

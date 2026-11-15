@@ -7,6 +7,22 @@ integrates with no broker: it cannot know that an order filled or a stop was hit
 hand it to a Claude Code session as its instructions. The file format is
 [`docs/input-format.md`](https://github.com/alvaromongon/finance-agent/blob/main/docs/input-format.md#portfoliomd).
 
+## Before you start: is there a store?
+
+The first `npm run inbox:ingest` makes the engine's own store (`state/portfolio.json`) from `portfolio.md`. From then
+on **`portfolio.md` is a view the engine generates, overwritten at every change: never edit it**, not its cash, not
+`last_manual_sync`, not a stop. What follows depends on which of the two states you are in:
+
+- **No store yet.** Follow this guide as written: `decision:record` keeps the [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot) and you keep the cells it does not
+  touch (`Available cash`, `Stop loss`, `last_manual_sync`) by hand.
+- **The store exists.** `decision:record` keeps working beside the inbox (until #152) and writes the store for you,
+  cash included: a buy lowers `Available cash` by its amount plus its costs (and is refused, with nothing recorded, if
+  the cash does not cover it), a sale raises it by the proceeds less the costs, a deposit and a withdrawal move it, and
+  a conversion takes `amount` from its [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo) and gives the other what arrived. So **nothing in the "You edit by hand"
+  column below applies**. A stop is set with a `set_stop` command in an `inbox/` batch
+  ([format](https://github.com/alvaromongon/finance-agent/blob/main/docs/input-format.md#inboxyaml)); the sync time
+  is the store's, set by `inbox:ingest`. A trade you never recorded is told the same way (a `buy` or a `sale` in a batch), not by editing `Lots`.
+
 ## The rule
 
 Every event at the broker is told to the engine through `npm run decision:record`, with the event
@@ -25,9 +41,11 @@ as JSON on stdin. That command appends to the
 | Stop change         | the log                                                                                                                              | the `Stop loss` cell           |
 | Any sync            | -                                                                                                                                    | `last_manual_sync`             |
 
+The "You edit by hand" column is for a portfolio with no store yet; once the store exists it is empty, as above.
+
 So you no longer edit position rows. What you do is **reconcile**: after the events, compare each
 position's `Volume` with your broker. If they differ (a split, a partial fill, a trade you never
-recorded), correct `Lots` by hand so that the `Units` of a ticker's lots add up to the broker's
+recorded), correct `Lots` by hand (no store yet; with the store, tell the engine the missing trade in a batch) so that the `Units` of a ticker's lots add up to the broker's
 figure, and commit that on its own, as a correction commit. Editing `Volume` alone does not work:
 `decision:record` refuses a portfolio whose `Volume` is not the sum of its lots' `Units`, or whose
 lots disagree with the log, and reports everything it found in one round.
@@ -60,10 +78,11 @@ log and `portfolio.md` together.
    the commands is the order of two trades on the same date. For a sale followed by a buy-back of
    the same ticker on the same day, record the sale first: the other way round, a sale larger than
    your older lots would consume the lot you have just bought.
-3. **A stop change:** record it, then edit the `Stop loss` cell.
-4. **Cash and timestamp:** set `Available cash` (and `Total cash`, if you keep it) to the
+3. **A stop change:** record it, then edit the `Stop loss` cell (with the store: a `set_stop` in an `inbox/` batch).
+4. **Cash and timestamp** (no store yet): set `Available cash` (and `Total cash`, if you keep it) to the
    broker's figures and `last_manual_sync` to now (ISO, UTC). This is the step that silences the
-   stale warning.
+   stale warning. With the store there is nothing to set: compare the cash `decision:record` left with your
+   broker's and, if they differ, tell the engine the difference (a deposit or a withdrawal).
 5. **Reconcile** each position's `Volume` against the broker (see above).
 
 Each command prints what it recorded and the rules it found broken; read that line, it is the
@@ -76,7 +95,8 @@ All examples run as `echo '<json>' | npm run decision:record`, or with the JSON 
 
 ### Deposit or withdrawal
 
-Money you moved between your bank and the broker. Add or subtract it in `Available cash`.
+Money you moved between your bank and the broker. With no store yet, add or subtract it in `Available cash` yourself;
+with the store, the command moves it.
 
 ```json
 { "type": "deposit", "currency": "EUR", "amount": 500, "date": "2026-10-12" }
@@ -91,7 +111,8 @@ Money you moved between your bank and the broker. Add or subtract it in `Availab
 `currency` is the silo the money **leaves**; `amount` is what you converted in that currency.
 Give the rate you got (`fx_rate`: target currency per unit of source, before the fee) or what
 arrived (`received`, in the target currency). Without `costs`, the fee defaults to
-`BROKER_FX_CONVERSION_PCT`. Reduce the cash of the source silo and add what arrived to the other.
+`BROKER_FX_CONVERSION_PCT`. With no store yet, reduce the cash of the source silo and add what arrived to the other
+yourself; with the store, the command does both.
 
 ```json
 { "type": "fx_conversion", "currency": "EUR", "amount": 1000, "received": 1160, "costs": 5 }
@@ -111,11 +132,12 @@ is measured against.
 `Positions` (with the stop as `Stop loss`), or, if you already hold the ticker, updates its
 `Volume` and its weighted `Avg price`. **A second buy of a held ticker is a new lot**, a trade of
 its own: its R is measured from its own price and stop, and the first lot is not touched. The
-engine does not touch cash: lower `Available cash` by what the buy cost.
+engine does not touch cash while there is no store: lower `Available cash` by what the buy cost. With the store the
+cash is lowered for you.
 
 When you add to a position you already hold (a scale-in), `decision:record` writes the second
 buy's `stop` into its lot only. It leaves the position's `Stop loss` cell as it was, so if the
-stop of the position changes with the buy, edit `Stop loss` by hand.
+stop of the position changes with the buy, edit `Stop loss` by hand (with the store: `set_stop` in an `inbox/` batch).
 
 Every buy is checked against the watchlist, the [setup](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#setup) and the stop, and the rules it breaks are
 recorded with it as these codes:
@@ -155,8 +177,8 @@ it net of fees (the two-month rule triggers on `pnl < 0`).
 
 ### Stop change
 
-`stop` is the new level. Record it, then edit the `Stop loss` cell of the position: this event
-changes no table. A stop that your broker executed is a sale: record an `exit` at the fill price
+`stop` is the new level. Record it, then edit the `Stop loss` cell of the position (with the store: a `set_stop` command
+in an `inbox/` batch): this event changes no table. A stop that your broker executed is a sale: record an `exit` at the fill price
 instead.
 
 ```json

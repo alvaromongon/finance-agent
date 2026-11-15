@@ -24,6 +24,7 @@
     "screening:outcomes": "tsx src/screening-outcomes.ts",
     "screening:summarize": "tsx src/weekly-screening.ts summarize",
     "inbox:check": "tsx src/inbox.ts check",
+    "inbox:ingest": "tsx src/inbox.ts ingest",
     "outbox:send": "tsx src/outbox.ts send",
     "pending:list": "tsx src/pending.ts list",
     "pending:show": "tsx src/pending.ts show",

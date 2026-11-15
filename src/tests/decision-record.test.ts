@@ -110,6 +110,7 @@ describe("decision:record (recordOwnerDecision)", () => {
 
   beforeEach(async () => {
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
+    await rm(join(vaultDir, "state"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "strategies"), { recursive: true });
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "0.2"\n---\n`, "utf8");
@@ -175,6 +176,67 @@ describe("decision:record (recordOwnerDecision)", () => {
       ],
     );
     assert.equal((await readLines()).filter((d) => d.type === "exit").length, 2);
+  });
+
+  describe("with the engine's store (#132): the cash stays consistent with the trade", () => {
+    const storeCash = async (currency: "EUR" | "USD"): Promise<string> =>
+      JSON.parse(await readFile(join(vaultDir, "state", "portfolio.json"), "utf8")).silos[currency].cash;
+    const seed = async () => (await import("../portfolio-store.js")).seedStore(new Date("2026-11-12T00:00:00Z"));
+    const entryOf = { type: "entry", ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440, costs: 2 };
+
+    it("a buy lowers the store's cash by amount and costs, and the view shows it", async () => {
+      await seed();
+      await recordAll(entryOf);
+      assert.equal(await storeCash("USD"), "498.00 USD");
+      assert.equal(await storeCash("EUR"), "1000.00 EUR");
+      assert.match(await readFile(join(vaultDir, "portfolio.md"), "utf8"), /\| Available cash \| \$498\.00 \|/);
+    });
+
+    it("a buy that costs more than the cash is refused before anything is recorded", async () => {
+      await seed();
+      await assert.rejects(recordAll({ ...entryOf, units: 3 }), /more than the available cash/);
+      assert.equal((await readLines()).length, 1, "only the proposal is in the log");
+      assert.equal(await storeCash("USD"), "1000.00 USD");
+    });
+
+    it("a sale raises the cash by the proceeds less the costs", async () => {
+      await seed();
+      await recordAll({ ...entryOf, costs: undefined });
+      await recordAll({ type: "exit", ticker: "ADBE", currency: "USD", price: 520, units: 1, costs: 3 });
+      assert.equal(await storeCash("USD"), "1017.00 USD");
+    });
+
+    it("a deposit and a withdrawal move the cash", async () => {
+      await seed();
+      await recordAll({ type: "deposit", currency: "EUR", amount: 250 });
+      assert.equal(await storeCash("EUR"), "1250.00 EUR");
+      await recordAll({ type: "withdrawal", currency: "EUR", amount: 50.5 });
+      assert.equal(await storeCash("EUR"), "1199.50 EUR");
+      await assert.rejects(
+        recordAll({ type: "withdrawal", currency: "EUR", amount: 5000 }),
+        /more than the available cash/,
+      );
+    });
+
+    it("a currency conversion takes the amount from the source silo and gives what arrived to the other", async () => {
+      await seed();
+      await recordAll({ type: "fx_conversion", currency: "EUR", amount: 100, received: 116, costs: 1 });
+      assert.equal(await storeCash("EUR"), "900.00 EUR");
+      assert.equal(await storeCash("USD"), "1116.00 USD");
+      await recordAll({ type: "fx_conversion", currency: "USD", amount: 200, fx_rate: 0.9, costs: 2 });
+      assert.equal(await storeCash("USD"), "916.00 USD");
+      assert.equal(await storeCash("EUR"), "1078.20 EUR", "(200 - 2) x 0.9 arrived");
+    });
+
+    it("a conversion the source silo cannot pay is refused before anything is recorded", async () => {
+      await seed();
+      await assert.rejects(
+        recordAll({ type: "fx_conversion", currency: "EUR", amount: 5000, received: 5800 }),
+        /more than the available cash/,
+      );
+      assert.equal((await readLines()).length, 1);
+      assert.equal(await storeCash("USD"), "1000.00 USD");
+    });
   });
 
   describe("portfolio.md is read again right before the record writes it (R1-E of #67)", () => {

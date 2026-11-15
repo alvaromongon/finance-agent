@@ -4,6 +4,7 @@
 import { config } from "./config.js";
 import type { Ticker } from "./ticker.js";
 import { siloValue } from "./utils/sizing.js";
+import { stopOf } from "./utils/stop.js";
 import type { PortfolioSnapshot, Position, Signal, TriggerKind, WatchlistEntry } from "./types.js";
 
 /**
@@ -43,7 +44,8 @@ export function riskTriggers(input: {
 }): TriggerKind[] {
   const { price, position, previousClose, stopProximityPct, bigMovePct } = input;
   const triggers: TriggerKind[] = [];
-  if (position?.stopLoss != null && price <= position.stopLoss * (1 + stopProximityPct / 100)) {
+  const stop = position ? stopOf(position) : null;
+  if (stop !== null && price <= stop * (1 + stopProximityPct / 100)) {
     triggers.push("approaching_stop");
   }
   if (

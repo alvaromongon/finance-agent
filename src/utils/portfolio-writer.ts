@@ -126,7 +126,7 @@ export function applyLotChange(md: string, currency: Currency, lots: readonly Lo
  * which would be ambiguous), at least `minDecimals` and at most 8 decimals so a low price keeps its
  * precision and float noise does not show.
  */
-function numberFormat(currency: Currency): (n: number, minDecimals: number) => string {
+export function numberFormat(currency: Currency): (n: number, minDecimals: number) => string {
   const separator = currency === "EUR" ? "," : ".";
   return (n, minDecimals) => {
     const [integer, fraction = ""] = n.toFixed(8).split(".");

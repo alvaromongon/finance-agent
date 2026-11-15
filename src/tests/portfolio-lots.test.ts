@@ -315,6 +315,60 @@ describe("planSale: what each exit carries", () => {
     );
   });
 
+  describe("an owner-given pnl keeps each lot's entry costs with the lot (#90)", () => {
+    // A: 5 units at 100 with entry costs of 20; B: 5 units at 130 with none; both sold at 120.
+    const lots = [
+      lot("a", 5, { entryPrice: 100, entryCosts: money(20, "EUR") }),
+      lot("b", 5, { entryPrice: 130, date: "2026-06-22" }),
+    ];
+    const pnls = (given?: number, over: Partial<SalePlanInput> = {}) =>
+      planSale(
+        lots,
+        sale(10, { price: 120, ...(given === undefined ? {} : { pnl: money(given, "EUR") }), ...over }),
+        new Map(),
+      ).map((s) => s.pnl);
+
+    it("+30 given: each exit is its result minus its own entry costs: +80 and -50 (not +90 and -60)", () =>
+      assert.deepEqual(pnls(30), [80, -50]));
+    it("what remains of the difference (exit costs, FX) is shared by units on top: +25 given", () =>
+      assert.deepEqual(pnls(25), [77.5, -52.5]));
+    it("with no pnl given, nothing changes: the computed results, before entry costs", () =>
+      assert.deepEqual(pnls(), [100, -50]));
+    it("the entry costs already taken by earlier exits are not taken twice", () => {
+      const taken = new Map([["a", money(15, "EUR")]]);
+      const shares = planSale(lots, sale(10, { price: 120, pnl: money(35, "EUR") }), taken);
+      // The sale uses lot a up: it takes the 5 that are left of its 20.
+      // Net of what is left of its entry costs: 100 - 5 = 95 and -50; the owner's 35 is 10 less than 45: -5 each.
+      assert.deepEqual(
+        shares.map((s) => s.pnl),
+        [90, -55],
+      );
+    });
+    it("a sale without entry costs gives the same exits as before", () => {
+      const plain = [lot("a", 5), lot("b", 5, { entryPrice: 130, date: "2026-06-22" })];
+      assert.deepEqual(
+        planSale(plain, sale(10, { price: 120, pnl: money(48, "EUR") }), new Map()).map((s) => s.pnl),
+        [99, -51],
+      );
+    });
+    it("the exits add up to the owner's total in whole cents, and a lot's sign can still flip with costs or FX", () => {
+      // +0.40 and +100 computed (units 1 and 1), owner gives +90: entry costs of 5 on the first lot.
+      const flip = [
+        lot("a", 1, { entryPrice: 99.6, entryCosts: money(5, "EUR") }),
+        lot("b", 1, { entryPrice: 0, date: "2026-06-22" }),
+      ];
+      const shares = planSale(flip, sale(2, { price: 100, pnl: money(90, "EUR") }), new Map());
+      assert.equal(
+        shares.reduce((sum, s) => sum + s.pnl, 0),
+        90,
+      );
+      assert.deepEqual(
+        shares.map((s) => s.pnl),
+        [-7.3, 97.3],
+      );
+    });
+  });
+
   describe("an owner-given pnl keeps each lot's own result and shares only the difference (#71)", () => {
     // Two lots of 5 units sold together at 120.
     const gain = [lot("a", 5, { entryPrice: 100 }), lot("b", 5, { entryPrice: 130, date: "2026-06-22" })];

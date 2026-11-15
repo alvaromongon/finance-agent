@@ -91,6 +91,7 @@ export const en = {
       lots: "problem with the lots",
       tickers: "ticker that does not read",
       unreadableCells: "cell that cannot be counted",
+      noStop: "position without a stop",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -100,8 +101,8 @@ export const en = {
       ``,
       `These positions trade **below their recorded stop-loss**.`,
       ``,
-      `The engine cannot know whether the broker already executed the stop: \`portfolio.md\` is`,
-      `synced by hand and its last sync is from **${syncedAt}**.`,
+      `The engine cannot know whether the broker already executed the stop: the portfolio is`,
+      `synced by you and its last sync is from **${syncedAt}**.`,
       `Check the account and, if the stop did not fire, decide with the discipline of`,
       `\`strategies/base.md\` (respect the stop even if the thesis is still alive).`,
       ``,
@@ -109,7 +110,7 @@ export const en = {
     breachHeader: [`| Ticker | Price | Stop | Below the stop | Unrealized P/L |`, `|---|---|---|---|---|`],
     breachOutro: [
       ``,
-      `After updating the account, reflect the change in \`portfolio.md\``,
+      `After updating the account, tell the engine what happened through \`inbox/\``,
       `(guide: \`routines/portfolio-sync.md\`) so the rest of the system stops`,
       `reasoning about a position that no longer exists.`,
     ],
@@ -125,6 +126,19 @@ export const en = {
       ``,
       `Fix \`Lots\` by hand: it must exist and be readable, each \`Volume\` must be the sum of the \`Units\` of its lots and`,
       `every \`Entry id\` must be an entry of the log (\`logs/decisions.jsonl\`; see \`docs/input-format.md\`).`,
+    ],
+    noStopIntro: [
+      `## Positions without a stop`,
+      ``,
+      `Risk watch cannot protect a position that has no stop: nothing tells the heartbeat when to warn you. These`,
+      `positions have none (a stop that is not above zero is none):`,
+      ``,
+    ],
+    noStopLine: (ticker: string, currency: string) => `- ${ticker} (${currency} silo)`,
+    noStopOutro: [
+      ``,
+      `Give each a stop with a \`set_stop\` command in \`inbox/\` (see \`docs/input-format.md\`). The warning stays in every`,
+      `digest until you do.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,
@@ -588,7 +602,10 @@ export const en = {
     ],
   },
 
-  twoMonthRule: (ticker: string, pnl: number, currency: string, date: string, until: string) =>
-    `Two-month rule (art. 33.5.f LIRPF): ${ticker} was sold at a loss (${pnl} ${currency}) on ${date}. ` +
-    `Buying it back before ${until} defers that loss.`,
+  twoMonthRule: (ticker: string, losses: readonly { pnl: number; currency: string; date: string; until: string }[]) =>
+    losses.length === 1
+      ? `Two-month rule (art. 33.5.f LIRPF): ${ticker} was sold at a loss (${losses[0].pnl} ${losses[0].currency}) on ${losses[0].date}. ` +
+        `Buying it back before ${losses[0].until} defers that loss.`
+      : `Two-month rule (art. 33.5.f LIRPF): ${ticker} was sold at a loss ${losses.length} times: ` +
+        `${losses.map((l) => `(${l.pnl} ${l.currency}) on ${l.date}, deferred if bought back before ${l.until}`).join("; ")}.`,
 };

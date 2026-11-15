@@ -238,7 +238,7 @@ export function assertLotsMatch(portfolio: PortfolioSnapshot, decisions: readonl
   const problems = lotsMismatches(portfolio, decisions);
   if (problems.length > 0) {
     throw new Error(
-      `${problems.join("\n")}\nFix Lots by hand in portfolio.md so each Volume is the sum of its lots' units and each open entry has its lot (ADR-0015; see docs/input-format.md)`,
+      `${problems.join("\n")}\nEach Volume must be the sum of its lots' units and each open entry must have its lot (ADR-0015). With state/portfolio.json the portfolio changes only through inbox/ (a lot a sale closed for 0.00 leaves no exit line in the log: correct it with a dedicated commit that edits the log); without it, fix Lots by hand in portfolio.md (see docs/input-format.md)`,
     );
   }
 }

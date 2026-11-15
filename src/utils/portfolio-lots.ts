@@ -40,6 +40,33 @@ export class SaleRefusal extends Error {
   }
 }
 
+/**
+ * The one rule "a lot cannot be sold before it was bought" (the same day is a round trip), for the
+ * validation of a recorded exit and for the refusal of a sale before it is recorded.
+ */
+export const entryAfterExit = (entryDate: string, exitDate: string): boolean => entryDate > exitDate;
+
+/**
+ * What the exits already written took of each lot's entry costs, by entry id: a sale does not take it twice. The
+ * history may hold both silos; an exit adds its costs in its own currency.
+ */
+export function entryCostsTaken(history: readonly Decision[]): Map<string, Money> {
+  const taken = new Map<string, Money>();
+  for (const d of history) {
+    if (d.type === "exit" && d.related_id && d.entry_costs != null) {
+      taken.set(
+        d.related_id,
+        addCounted(
+          taken.get(d.related_id) ?? zero(d.currency),
+          d.entry_costs,
+          `the entry_costs the exits of entry ${d.related_id} took together`,
+        ),
+      );
+    }
+  }
+  return taken;
+}
+
 /** The lot an entry opens: all the units it bought, with the entry's own data as its snapshot. */
 export function lotOfEntry<C extends Currency>(entry: Decision & { currency: C }, units: number): Lot<C> {
   return {
@@ -77,8 +104,9 @@ export interface SalePlanInput<C extends Currency = Currency> {
   /** Costs of the whole sale; absent if none were given. */
   costs?: Money<C>;
   /**
-   * Realized result of the whole sale if the owner gave it: each lot keeps its own computed result and
-   * the difference to the owner's total is shared by units. Otherwise each lot's own is computed.
+   * Realized result of the whole sale if the owner gave it: each lot keeps its own computed result, net of its
+   * share of the entry costs (they stay with their lot, #90), and the rest of the difference to the owner's
+   * total is shared by units. Otherwise each lot's own is computed, before entry costs.
    */
   pnl?: Money<C>;
 }
@@ -101,8 +129,9 @@ export interface SaleShare<C extends Currency = Currency> {
  * Consumes the ticker's lots first in, first out (oldest entry date first, ties in the order of the
  * table) until `sale.units` are sold. The amount and the costs of the sale are shared across the lots
  * pro rata to the units; each exit's result is its lot's own (from its entry price), plus, when the owner
- * gave the result of the whole sale, its units' share of the difference to the computed sum. The exits
- * add up to the sale (`shareMoney`: never a negative share).
+ * gave the result of the whole sale, its units' share of the difference to the computed sum, which counts each
+ * lot's share of its entry costs (below) as part of the lot's own result. The exits add up to the sale
+ * (`shareMoney`: never a negative share). A lot's sign is kept before costs and FX; they can change it.
  * The amount is shared exactly (not to the cent: a lot of a few units of a low-priced asset would get
  * 0.00); the costs and the result, which are settled money, go to the cent.
  * A lot's entry costs go pro rata too, and the exit that uses the lot up takes what is left of them
@@ -154,6 +183,9 @@ export function planSale<C extends Currency>(
     total === undefined ? taken.map(() => undefined) : shareMoney(total, weights);
   const amounts = shareExactAmount(sale.amount, weights);
   const costs = shareOf(sale.costs);
+  const entryCosts = taken.map((t) =>
+    entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? zero(sale.currency), sale.currency),
+  );
   // Each exit keeps its lot's own result (from the entry price). A result the owner gave for the whole
   // sale only moves them by the difference to the computed sum (costs, FX), shared by units in whole cents,
   // so a losing lot stays a loss when the sale as a whole is a gain.
@@ -164,12 +196,25 @@ export function planSale<C extends Currency>(
       sale.currency,
     ),
   );
+  // An owner-given result keeps each lot's entry costs with the lot (#90): the exit is its computed result minus
+  // its own share of them, and only what remains of the difference to the owner's total (exit costs, FX) is shared.
+  // Without it each exit is its computed result, before entry costs.
+  const net =
+    sale.pnl === undefined
+      ? computed
+      : computed.map((c, i) =>
+          subtractCounted(
+            c,
+            entryCosts[i] ?? zero(sale.currency),
+            `the result of ${lotName(taken[i].lot)} net of its entry costs`,
+          ),
+        );
   const difference =
     sale.pnl === undefined
       ? undefined
       : subtractCounted(
           sale.pnl,
-          sumCounted(computed, `the results of the lots of ${printable(sale.ticker)} sold together`, sale.currency),
+          sumCounted(net, `the results of the lots of ${printable(sale.ticker)} sold together`, sale.currency),
           `the difference between the pnl and the results of the lots of ${printable(sale.ticker)}`,
         );
   const adjustments = shareOf(difference);
@@ -178,8 +223,8 @@ export function planSale<C extends Currency>(
     ...t,
     amount: amounts[i],
     costs: costs[i],
-    pnl: addCounted(computed[i], adjustments[i] ?? zero(sale.currency), `the result of ${lotName(t.lot)}`),
-    entryCosts: entryCostsShare(t, priorEntryCosts.get(t.lot.entryId) ?? zero(sale.currency), sale.currency),
+    pnl: addCounted(net[i], adjustments[i] ?? zero(sale.currency), `the result of ${lotName(t.lot)}`),
+    entryCosts: entryCosts[i],
   }));
 }
 

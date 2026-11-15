@@ -15,6 +15,7 @@
 //   its stop for days without anyone looking.
 import type { Currency, Position } from "../types.js";
 import type { Ticker } from "../ticker.js";
+import { stopOf } from "./stop.js";
 
 export interface StopBreach {
   ticker: Ticker;
@@ -38,8 +39,8 @@ export function detectStopBreaches(positions: Position[], prices: Map<string, nu
   const breaches: StopBreach[] = [];
 
   for (const position of positions) {
-    const { stopLoss } = position;
-    if (stopLoss == null || stopLoss <= 0) continue;
+    const stopLoss = stopOf(position);
+    if (stopLoss === null) continue;
 
     const price = prices.get(position.ticker);
     if (price == null || price >= stopLoss) continue;

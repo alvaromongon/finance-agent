@@ -86,8 +86,8 @@ sale can share a batch.
 ### Inbox
 
 The folder where a person, an AI or a routine drops one file per [batch](#batch) of [commands](#command). The
-engine never edits a file there: it moves it to `applied/`, or to `rejected/` with the line and the
-reason.
+engine never edits a file there: `inbox:ingest` moves it to `applied/`, or to `rejected/` with the line and the
+reason of each error.
 
 ### Stop
 
@@ -105,8 +105,14 @@ A currency account (EUR or USD) managed on its own: its own cash, positions,
 
 The one module through which every flow reads and writes a piece of the engine's state, in the engine's own
 model and never as text: today `src/portfolio-store.ts` for the portfolio (cash, positions, lots), whose
-amounts are [money](#money) of the silo's currency. The file format behind it (`portfolio.md`) is known only to
-the storage layer, and a test fails when another module reads or writes a state file.
+amounts are [money](#money) of the silo's currency. The format behind it (the [store](#store), or `portfolio.md`
+until the first `inbox:ingest`) is known only to the storage layer, and a test fails when another module reads or
+writes a state file.
+
+### Store
+
+The engine's own file of the portfolio, `state/portfolio.json`, written only by the engine. `portfolio.md` is a
+view generated from it, read by nobody; to change the portfolio, drop a [batch](#batch) in the [inbox](#inbox).
 
 ### Heartbeat
 

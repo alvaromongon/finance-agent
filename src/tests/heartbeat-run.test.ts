@@ -139,6 +139,8 @@ describe("runHeartbeat", () => {
     delete process.env.SMTP_PASS;
     escalated.length = 0;
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
+    await rm(join(vaultDir, "state"), { recursive: true, force: true });
+    await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "strategies"), { recursive: true });
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "1.0"\n---\n`, "utf8");
@@ -180,6 +182,87 @@ describe("runHeartbeat", () => {
     assert.match(emails[0].subject, /stop ceñido: MSFT · ruptura armada: BO · a análisis: /);
     assert.deepEqual(escalated.map((s) => s.ticker).sort(), ["MSFT", "XOM"], "both escalated as before");
     assert.doesNotMatch(emails[0].subject, /pendiente de análisis/);
+  });
+
+  describe("a position without a stop (#132)", () => {
+    const NO_STOP_ROW = "| MSFT | 1 | 492.01 | 501.02 | +9.01 | — |";
+
+    it("is named in every digest, with its silo, while it lasts", async () => {
+      await setPortfolio(NO_STOP_ROW, [MSFT_LOT]);
+      await heartbeat();
+      await heartbeat();
+
+      const emails = await outbox();
+      assert.equal(emails.length, 2, "it is not deduplicated: the second run sends it again");
+      for (const email of emails) {
+        assert.match(email.subject, /posición sin stop: MSFT/);
+        assert.match(email.body, /## Posiciones sin stop/);
+        assert.match(email.body, /- MSFT \(silo USD\)/);
+      }
+    });
+
+    it("a stop of zero is no stop either: one definition for the digest and the stop checks", async () => {
+      await setPortfolio("| MSFT | 1 | 492.01 | 501.02 | +9.01 | 0.00 |", [MSFT_LOT]);
+      await heartbeat();
+      const [email] = await outbox();
+      assert.match(email.body, /- MSFT \(silo USD\)/);
+      assert.doesNotMatch(email.subject, /stop ceñido|stop cruzado/);
+    });
+
+    it("a position with a stop is not named", async () => {
+      await heartbeat();
+      for (const email of await outbox()) assert.doesNotMatch(email.body, /Posiciones sin stop/);
+    });
+  });
+
+  describe("risk watch never stops for a rejected batch (ADR-0015, ADR-0018)", () => {
+    const drop = async (name: string, text: string) => {
+      await mkdir(join(vaultDir, "inbox"), { recursive: true });
+      await writeFile(join(vaultDir, "inbox", name), text, "utf8");
+    };
+    const batch = (...commands: string[]) =>
+      `schema_version: 1\ncommands:\n${commands.map((c) => `  - ${c.replace(/\n/g, "\n    ")}`).join("\n")}\n`;
+
+    it("with a rejected batch present, the heartbeat still checks every stop of the state it last applied", async () => {
+      const { ingestInbox } = await import("../inbox.js");
+      await setPortfolio("", []);
+      await drop(
+        "1-buy.yaml",
+        batch(
+          "command: buy\nticker: CAT\ndate: 2026-10-01\nunits: 1\nprice: 218 USD",
+          "command: set_stop\nticker: CAT\nprice: 213 USD",
+        ),
+      );
+      await drop("2-bad.yaml", batch("command: withdrawal\namount: 99999 USD"));
+      const quiet = mock.method(console, "log", () => {});
+      const quietWarn = mock.method(console, "warn", () => {});
+      try {
+        const result = await ingestInbox();
+        assert.equal(result.exitCode, 1, "one batch was rejected");
+      } finally {
+        quiet.mock.restore();
+        quietWarn.mock.restore();
+      }
+      assert.deepEqual(await readdir(join(vaultDir, "inbox", "rejected")), ["2-bad.yaml", "2-bad.yaml.errors.txt"]);
+
+      await heartbeat();
+
+      const [email] = await outbox();
+      assert.match(
+        email.subject,
+        /stop cruzado: CAT/,
+        "the crossed stop is detected from the store, rejected batch or not",
+      );
+      assert.match(email.body, /CAT/);
+    });
+
+    it("a file in inbox/ that cannot be read does not touch the run either", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await drop("garbage.yaml", "commands: [\n");
+      await heartbeat();
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+    });
   });
 
   describe("a ticker that does not parse (ADR-0016): the row is skipped, the rest keeps working", () => {

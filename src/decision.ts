@@ -40,9 +40,16 @@ import {
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { assertLotsMatch } from "./utils/lots-check.js";
 import { portfolioWhere } from "./utils/portfolio-where.js";
-import { lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
-import { changeLots, LotsMovedError, readPortfolio, requireReadable, type PositionChange } from "./portfolio-store.js";
-import { addCounted, exactAmount, isCountedRefusal, zero, type Money } from "./money.js";
+import { entryCostsTaken, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
+import {
+  changeCash,
+  changeLots,
+  LotsMovedError,
+  readPortfolio,
+  requireReadable,
+  type PositionChange,
+} from "./portfolio-store.js";
+import { exactAmount, isCountedRefusal } from "./money.js";
 import { atr14d } from "./utils/technicals.js";
 import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
 import { tickerFileStem, type Ticker } from "./ticker.js";
@@ -180,7 +187,9 @@ export async function recordOwnerDecision(
 
   let decisions: Decision[];
   /** The change to the silo's lots and its position, handed to the portfolio store once the log is written. */
-  let lotChange: { lots: readonly Lot[]; change: PositionChange } | undefined;
+  let lotChange: { lots: readonly Lot[]; change: PositionChange; cash?: number } | undefined;
+  /** A deposit, a withdrawal or a conversion: the cash the store moves while it exists, with no lot to change. */
+  let cashFlow: (readonly [Currency, number])[] | undefined;
   switch (input.type) {
     case "entry": {
       const ticker = input.ticker!;
@@ -224,6 +233,8 @@ export async function recordOwnerDecision(
         newStopLoss: entry.stop_initial ?? null,
         currentPrice: entry.price,
       });
+      // The cash the store loses: the amount in whole cents and the costs.
+      lotChange.cash = -(Math.round(entry.amount! * 100) / 100 + (entry.costs ?? 0));
       break;
     }
     case "exit": {
@@ -261,6 +272,10 @@ export async function recordOwnerDecision(
         .map((lot) => ({ ...lot, units: left.get(lot.entryId) ?? lot.units }))
         .filter((lot) => lot.units > 0);
       lotChange = withLots(remaining, { ticker });
+      // The cash the store gains: the proceeds in whole cents, less the costs.
+      lotChange.cash =
+        Math.round(shares.reduce((sum, share) => sum + share.amount, 0) * 100) / 100 -
+        shares.reduce((sum, share) => sum + (share.costs ?? 0), 0);
       break;
     }
     case "adjust_stop": {
@@ -281,6 +296,13 @@ export async function recordOwnerDecision(
     }
     case "fx_conversion": {
       const { costs, fx_rate } = resolveFxConversion(input, config.broker.fxConversionPct);
+      // What arrived in the other silo: the owner's figure, or the amount net of the fee at the rate (the same two
+      // facts the log line is made of).
+      const arrived = input.received ?? (input.amount! - costs) * fx_rate;
+      cashFlow = [
+        [input.currency, -input.amount!],
+        [input.currency === "EUR" ? "USD" : "EUR", arrived],
+      ];
       decisions = [
         buildDecision({
           ...common,
@@ -305,10 +327,23 @@ export async function recordOwnerDecision(
           amount: input.amount,
         }),
       ];
+      cashFlow = [[input.currency, input.type === "deposit" ? input.amount! : -input.amount!]];
       break;
   }
 
   if (!lotChange) {
+    // With the store the cash is the store's: the flow moves it (the dry run first, so a refusal records nothing).
+    if (cashFlow !== undefined && (await changeCash(cashFlow, { dryRun: true }))) {
+      await appendDecisions(decisions);
+      await changeCash(cashFlow).catch((err: unknown) => {
+        throw new Error(
+          `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but the cash was not updated ` +
+            `(${(err as Error).message}); record the opposite flow or tell the inbox the correction`,
+          { cause: err },
+        );
+      });
+      return decisions;
+    }
     await appendDecisions(decisions);
     return decisions;
   }
@@ -318,7 +353,11 @@ export async function recordOwnerDecision(
   // themselves moved, the plan is stale: refuse it.
   const check = (portfolio: PortfolioSnapshot) => assertLotsMatch(portfolio, history);
   try {
-    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { check, dryRun: true });
+    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, {
+      check,
+      dryRun: true,
+      cash: lotChange.cash,
+    });
   } catch (err) {
     throw err instanceof LotsMovedError
       ? new Error(
@@ -333,7 +372,10 @@ export async function recordOwnerDecision(
   // the tried read and this one. The entry is in the log now, so whatever stops the write is reported as that,
   // never as "nothing was recorded".
   try {
-    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, { check });
+    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, {
+      check,
+      cash: lotChange.cash,
+    });
   } catch (err) {
     throw new Error(
       `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
@@ -377,24 +419,6 @@ function withLots(
   const volume = own.reduce((sum, lot) => sum + lot.units, 0);
   const avgPrice = volume > 0 ? own.reduce((sum, lot) => sum + lot.units * lot.entryPrice, 0) / volume : undefined;
   return { lots, change: { ...change, volume, avgPrice } };
-}
-
-/** What the exits already written took of each lot's entry costs, by entry id. */
-function entryCostsTaken(history: readonly Decision[], currency: Currency): Map<string, Money> {
-  const taken = new Map<string, Money>();
-  for (const d of history) {
-    if (d.type === "exit" && d.related_id && d.entry_costs != null) {
-      taken.set(
-        d.related_id,
-        addCounted(
-          taken.get(d.related_id) ?? zero(currency),
-          d.entry_costs,
-          `the entry_costs the exits of entry ${d.related_id} took together`,
-        ),
-      );
-    }
-  }
-  return taken;
 }
 
 /** ATR14 of the asset to evaluate the stop distance. Best-effort. */
@@ -476,7 +500,7 @@ function planOwnerSale(
         costs: input.costs,
         pnl: input.pnl,
       },
-      entryCostsTaken(history, input.currency),
+      entryCostsTaken(history),
     );
   } catch (err) {
     // The refusal of an amount says what it is; that nothing was recorded is said here, where it is true.

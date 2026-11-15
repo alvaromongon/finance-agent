@@ -61,7 +61,7 @@ Every variable is documented in [`.env.example`](.env.example). Copy it to `.env
 In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
-   - `portfolio.md`, which you keep in sync with your broker by hand, recording each trade and cash flow with `decision:record`: [Portfolio sync](examples/brain/routines/portfolio-sync.md);
+   - `portfolio.md`, which you keep in sync with your broker by hand, recording each trade and cash flow with `decision:record`: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on you change the portfolio with batches of commands in `inbox/`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson));
    - `watchlist.md`, `screening-universe.md` and the theses.
 
    The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
@@ -192,6 +192,7 @@ are possible.
 | `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart   |
 | `npm run decision:record`               | Records a trade or cash flow you made (JSON on stdin) |
 | `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio |
+| `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each  |
 | `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
 | `npm run outbox:send`                   | Sends the queued emails (relay)                       |
 | `npm run smoke-test`                    | Connectivity check                                    |

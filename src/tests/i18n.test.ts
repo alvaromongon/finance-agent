@@ -189,6 +189,7 @@ describe("English renders", () => {
       lotsWarnings: [],
       tickerWarnings: [],
       unreadableCells: [],
+      noStop: [],
       breaches: detectStopBreaches(
         [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
         new Map([["CAT", 210.77]]),
@@ -240,6 +241,7 @@ describe("English heartbeat digest, lots section", () => {
         lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"],
         tickerWarnings: [],
         unreadableCells: [],
+        noStop: [],
         breaches: [],
         tightStops: [],
         armed: [],

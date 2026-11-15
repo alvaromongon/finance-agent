@@ -25,6 +25,7 @@ import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
 import { volumeMismatches } from "./utils/lots-check.js";
 import { detectStopBreaches } from "./utils/stop-breach.js";
+import { positionsWithoutStop } from "./utils/stop.js";
 import { detectTightStops, fetchAtrForPositions } from "./utils/atr-stop.js";
 import { recordDecision } from "./decision.js";
 import { attachStrength } from "./utils/strength.js";
@@ -60,6 +61,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     lotsWarnings: [],
     tickerWarnings: [],
     unreadableCells: [],
+    noStop: [],
     tightStops: [],
     armed: [],
     escalated: [],
@@ -156,6 +158,8 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // guard (a close below the stop is just as urgent on a holiday) and outside
   // the escalation to the reasoner (no tokens, no cooldown wait).
   digest.breaches = detectStopBreaches(portfolio.positions, prices);
+  // A position with no stop is named in every digest (#132): there is no stop for the heartbeat to watch.
+  digest.noStop = positionsWithoutStop(portfolio.positions).map(({ ticker, currency }) => ({ ticker, currency }));
   if (digest.breaches.length > 0) {
     console.log(`[finance-agent] Crossed stop: ${digest.breaches.map((b) => b.ticker).join(", ")}`);
   }
