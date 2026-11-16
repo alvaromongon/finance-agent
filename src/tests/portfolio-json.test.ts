@@ -11,7 +11,6 @@ import {
   encodeStore,
   plainDecimal,
   renderView,
-  withLotChange,
   withPrices,
   type PortfolioStore,
 } from "../utils/portfolio-json.js";
@@ -46,6 +45,10 @@ const store = (): PortfolioStore => {
     accountEnv: "demo",
     unmoved: [{ file: "2026-11-12.yaml", sha256: "ab".repeat(32), at: "2026-11-12T10:00:00.000Z" }],
     pendingDecisions: ['{"id":"x","amount":1e-8}'],
+    resolvedRejections: [
+      { file: "a.yaml", sha256: "cd".repeat(32), how: "replaced", by: "b.yaml", at: "2026-11-13T10:00:00.000Z" },
+      { file: "c.yaml", sha256: "ef".repeat(32), how: "discarded", by: "d.yaml", at: "2026-11-13T11:00:00.000Z" },
+    ],
   };
 };
 
@@ -85,7 +88,12 @@ describe("the store text", () => {
   });
 
   it("keeps a silo the portfolio does not have absent", () => {
-    const only = { silos: { EUR: store().silos.EUR }, unmoved: [], pendingDecisions: [] } satisfies PortfolioStore;
+    const only = {
+      silos: { EUR: store().silos.EUR },
+      unmoved: [],
+      pendingDecisions: [],
+      resolvedRejections: [],
+    } satisfies PortfolioStore;
     const read = decodeStore(encodeStore(only), "state/portfolio.json");
     assert.deepEqual(Object.keys(read.silos), ["EUR"]);
     assert.equal(read.accountEnv, undefined);
@@ -138,6 +146,19 @@ describe("the store text", () => {
       mutate((d) => (d.pending_decisions = [1])),
       /pending_decisions\[0\]: must be text/,
     );
+    refuses(
+      mutate((d) => (d.resolved_rejections[0].how = "forgotten")),
+      /resolved_rejections\[0\]\.how: must be "replaced" or "discarded"/,
+    );
+    refuses(
+      mutate((d) => (d.resolved_rejections = "none")),
+      /resolved_rejections: must be a list/,
+    );
+  });
+
+  it("reads a store written before the rejected batches were settled as one that settled none", () => {
+    const old = mutate((d) => delete d.resolved_rejections);
+    assert.deepEqual(decodeStore(old, "state/portfolio.json").resolvedRejections, []);
   });
 });
 
@@ -157,7 +178,7 @@ describe("the Markdown view", () => {
   it("leaves out a silo the portfolio does not have, and makes a cell that would break a row harmless", () => {
     const { EUR } = store().silos;
     const odd = { ...EUR!, lots: [{ ...EUR!.lots[0], rulesVersion: "1.0|x\ny" }] };
-    const view = renderView({ silos: { EUR: odd }, unmoved: [], pendingDecisions: [] });
+    const view = renderView({ silos: { EUR: odd }, unmoved: [], pendingDecisions: [], resolvedRejections: [] });
     assert.doesNotMatch(view, /USD/);
     assert.match(view, /\| 1\.0\/x\/y \|/);
   });
@@ -165,35 +186,6 @@ describe("the Markdown view", () => {
 
 describe("the edits of a silo", () => {
   const silo = () => store().silos.EUR!;
-
-  it("withLotChange: the lots replace the silo's, the position of the ticker is changed, created or deleted", () => {
-    const sap = lot("EUR", { ticker: "SAP.DE", units: 3, entryPrice: 180, entryId: "second" });
-    const more = withLotChange(silo(), [...silo().lots, sap], { ticker: tk("SAP.DE"), volume: 5, avgPrice: 180 });
-    assert.equal(more.lots.length, 2);
-    assert.deepEqual(
-      more.positions.map((p) => [p.ticker, p.volume, p.avgPrice, p.stopLoss]),
-      [["SAP.DE", 5, 180, 168]],
-    );
-
-    const bought = lot("EUR", { ticker: "BMW.DE", units: 1, entryPrice: 90, entryId: "bmw" });
-    const created = withLotChange(silo(), [...silo().lots, bought], {
-      ticker: tk("BMW.DE"),
-      volume: 1,
-      avgPrice: 90,
-      newStopLoss: 80,
-      currentPrice: 91,
-    });
-    assert.deepEqual(
-      created.positions.map((p) => [p.ticker, p.volume, p.currentPrice, p.stopLoss]),
-      [
-        ["SAP.DE", 2, 180, 168],
-        ["BMW.DE", 1, 91, 80],
-      ],
-    );
-
-    const sold = withLotChange(silo(), [], { ticker: tk("SAP.DE"), volume: 0 });
-    assert.deepEqual([sold.lots, sold.positions], [[], []]);
-  });
 
   it("withPrices: current price and P/L of the priced positions, null when nothing changes", () => {
     const priced = withPrices(silo(), new Map([[tk("SAP.DE"), 171.25]]))!;

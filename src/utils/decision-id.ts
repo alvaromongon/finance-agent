@@ -1,4 +1,4 @@
-// The id of a decision, in one place (#132): the id `decision:record` gives a decision and the entry id of the lot
+// The id of a decision, in one place (#132): the id the engine gives a decision and the entry id of the lot
 // an `inbox:ingest` buy opens are the same kind of id, from this source, so no two decisions or lots of the whole
 // history share one (the lot's `Entry id` is the id of its `entry` decision, ADR-0015). Pure but for the random suffix.
 import { createHash, randomUUID } from "node:crypto";

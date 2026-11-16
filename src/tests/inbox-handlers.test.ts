@@ -47,6 +47,7 @@ const ctx = (over: Partial<BatchContext> = {}, state: InboxState = {}): BatchCon
     },
     rulesVersion: "1.0",
     entryCostsTaken: new Map(),
+    awaiting: new Set(),
     ...over,
   };
 };

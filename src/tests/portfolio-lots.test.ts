@@ -1,14 +1,12 @@
 /**
- * The pure core of `decision:record`'s lot keeping (ADR-0015, #42): which lots a sale consumes (first
- * in, first out) and what each exit carries, and the edits to the `Lots` and `Positions` tables of
- * portfolio.md. Hand-calculated expectations; the recorder itself is tested in measurable-exits.test.ts
- * and decision-record.test.ts.
+ * The pure core of the lot keeping (ADR-0015, #42): which lots a sale consumes (first in, first out) and
+ * what each exit carries. Hand-calculated expectations; the inbox that uses it is tested in
+ * inbox-handlers.test.ts and inbox-ingest.test.ts.
  */
 import { addCounted, money, zero, type Money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { lotOfEntry, planSale, type SalePlanInput, SaleRefusal } from "../utils/portfolio-lots.js";
-import { buildDecision } from "../decisions.js";
+import { planSale, type SalePlanInput, SaleRefusal } from "../utils/portfolio-lots.js";
 import type { Lot } from "../types.js";
 import { parseTicker as tk } from "../ticker.js";
 
@@ -34,58 +32,6 @@ const sale = (units: number, overrides: Partial<SalePlanInput> = {}): SalePlanIn
   price: 130,
   amount: Math.round(units * 130 * 100) / 100,
   ...overrides,
-});
-
-describe("lotOfEntry", () => {
-  it("builds the lot of an entry: Units = Entry units, the entry's own snapshot", () => {
-    const entry = buildDecision({
-      id: "e1",
-      date: "2026-06-15",
-      ticker: tk("TCK"),
-      currency: "USD",
-      origin: "propietario",
-      source: "portfolio-sync",
-      type: "entry",
-      price: 100,
-      amount: 1000,
-      costs: money(2.5, "USD"),
-      stop_initial: 90,
-      rule_violations: ["no_stop", "overrode_block"],
-      rules_version: "1.1",
-    });
-    assert.deepEqual(lotOfEntry(entry, 10), {
-      ticker: "TCK",
-      entryId: "e1",
-      date: "2026-06-15",
-      units: 10,
-      entryUnits: 10,
-      entryPrice: 100,
-      initialStop: 90,
-      entryCosts: 2.5,
-      origin: "propietario",
-      rulesVersion: "1.1",
-      rulesViolations: ["no_stop", "overrode_block"],
-    });
-  });
-
-  it("an entry without stop, costs or violations has no stop, no costs and no violations", () => {
-    const entry = buildDecision({
-      id: "e2",
-      date: "2026-06-15",
-      ticker: tk("TCK"),
-      currency: "USD",
-      origin: "sistema",
-      source: "portfolio-sync",
-      type: "entry",
-      price: 100,
-      amount: 100,
-      rules_version: "1.0",
-    });
-    const l = lotOfEntry(entry, 1);
-    assert.equal(l.initialStop, null);
-    assert.equal(l.entryCosts, null);
-    assert.deepEqual(l.rulesViolations, []);
-  });
 });
 
 describe("planSale: first in, first out", () => {

@@ -3,16 +3,12 @@
  * another case reads as its upper-case value and is compared with `===`. Temporary vault, fake provider,
  * no network. VAULT_PROJECT_DIR is set before the first import of the engine.
  */
-import { describe, it, before, after, beforeEach, mock } from "node:test";
+import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Decision } from "../decisions.js";
-import type { HistoricalBar } from "../providers/types.js";
 import { entryLines, lotsSection, type HeldLot } from "./fixtures/lots.js";
-
-const TODAY = "2026-09-14";
 
 const WATCHLIST_MD = `---
 schema_version: 1
@@ -66,29 +62,25 @@ ${positions.join("\n")}
 ${lotsSection("USD", held)}`;
 }
 
-/** 30 sessions up to 12-Sep with a daily range of 20: ATR14 = 20. */
-function bars(): HistoricalBar[] {
-  return Array.from({ length: 30 }, (_, i) => {
-    const date = new Date(Date.UTC(2026, 7, 14 + i)).toISOString().slice(0, 10);
-    return { date, close: 100 + i, high: 100 + i + 10, low: 100 + i - 10 };
-  });
-}
-
-const fakeProvider = {
-  getPrices: async (tickers: string[]) => new Map(tickers.map((t) => [t, 700])),
-  getHistorical: async () => bars(),
-};
+/** A batch of commands. */
+const batch = (...commands: string[]): string =>
+  `schema_version: 1\ncommands:\n${commands.map((c) => `  - ${c.replace(/\n/g, "\n    ")}`).join("\n")}\n`;
 
 describe("a ticker written in another case is the same ticker", () => {
   let vaultDir: string;
-  let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision[]>;
+  let ingestInbox: typeof import("../inbox.js").ingestInbox;
   let vaultIo: typeof import("../vault-io.js");
   let store: typeof import("../portfolio-store.js");
   let lotsMismatches: typeof import("../utils/lots-check.js").lotsMismatches;
 
   const path = (...parts: string[]) => join(vaultDir, ...parts);
   const read = (...parts: string[]) => readFile(path(...parts), "utf8");
-  const record = (raw: unknown) => recordOwnerDecision(raw, fakeProvider, TODAY);
+  /** Applies a batch the way the owner does: a file in `inbox/`, then `inbox:ingest`. */
+  const ingest = async (text: string) => {
+    await mkdir(path("inbox"), { recursive: true });
+    await writeFile(path("inbox", `${Math.random().toString(36).slice(2)}.yaml`), text, "utf8");
+    return ingestInbox(new Date("2026-09-14T09:00:00Z"));
+  };
   const TCK_LOT: HeldLot = { ticker: "TCK", units: 2, price: 100, stop: 80 };
   const TCK_ROW = "| TCK | 2 | 100 | 100 | 0 | 80 |";
 
@@ -100,7 +92,7 @@ describe("a ticker written in another case is the same ticker", () => {
   before(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "finance-agent-ticker-flow-"));
     process.env.VAULT_PROJECT_DIR = vaultDir;
-    ({ recordOwnerDecision } = await import("../decision.js"));
+    ({ ingestInbox } = await import("../inbox.js"));
     vaultIo = await import("../vault-io.js");
     store = await import("../portfolio-store.js");
     ({ lotsMismatches } = await import("../utils/lots-check.js"));
@@ -112,17 +104,23 @@ describe("a ticker written in another case is the same ticker", () => {
 
   beforeEach(async () => {
     await rm(path("logs"), { recursive: true, force: true });
+    await rm(path("state"), { recursive: true, force: true });
+    await rm(path("inbox"), { recursive: true, force: true });
     await mkdir(path("logs"), { recursive: true });
     await mkdir(path("strategies"), { recursive: true });
     await writeFile(path("strategies", "base.md"), `---\nversion: "0.2"\n---\n`, "utf8");
     await writeFile(path("watchlist.md"), WATCHLIST_MD, "utf8");
   });
 
-  it("an entry on `tck` adds its lot to the existing TCK row, and the next decision:record is accepted", async () => {
+  const BUY_TCK = (ticker: string) => `command: buy\nticker: ${ticker}\ndate: 2026-09-14\nunits: 1\nprice: 110 USD`;
+
+  it("a buy of `tck` adds its lot to the existing TCK row, and the next sale of `Tck` is accepted", async () => {
     await setUp([TCK_ROW], [TCK_LOT]);
 
-    const [entry] = await record({ type: "entry", ticker: "tck", currency: "USD", price: 110, units: 1, stop: 90 });
-    assert.equal(entry.ticker, "TCK");
+    const bought = await ingest(batch(BUY_TCK("tck")));
+    assert.equal(bought.exitCode, 0, bought.lines.join("\n"));
+    const entry = (await vaultIo.readDecisions()).find((d) => d.date === "2026-09-14" && d.type === "entry");
+    assert.equal(entry?.ticker, "TCK");
 
     const portfolio = store.requireReadable(await store.readPortfolio("USD"));
     assert.deepEqual(
@@ -138,43 +136,35 @@ describe("a ticker written in another case is the same ticker", () => {
     );
     assert.equal((await read("portfolio.md")).match(/^\| TCK \|/gm)?.length, 1 + 2, "one Positions row, two lots");
 
-    const [exit] = await record({ type: "exit", ticker: "Tck", currency: "USD", price: 120, units: 3 });
-    assert.equal(exit.ticker, "TCK");
+    const sold = await ingest(batch("command: sale\nticker: Tck\ndate: 2026-09-15\nunits: 3\nprice: 120 USD"));
+    assert.equal(sold.exitCode, 0, sold.lines.join("\n"));
+    const exits = (await vaultIo.readDecisions()).filter((d) => d.type === "exit");
+    assert.deepEqual(
+      exits.map((d) => d.ticker),
+      ["TCK", "TCK"],
+    );
   });
 
-  it("the Positions row written in lower case is found, and carries the canonical ticker once the engine edits it", async () => {
+  it("the Positions row written in lower case is found, and the view carries the canonical ticker", async () => {
     await setUp(["| tck | 2 | 100 | 100 | 0 | 80 |"], [TCK_LOT]);
 
-    await record({ type: "entry", ticker: "TCK", currency: "USD", price: 110, units: 1, stop: 90 });
+    assert.equal((await ingest(batch(BUY_TCK("TCK")))).exitCode, 0);
 
     const text = await read("portfolio.md");
     assert.match(text, /^\| TCK \| 3 \|/m);
     assert.doesNotMatch(text, /^\| tck \|/m);
   });
 
-  it("a Positions row the entry does not touch stays as the owner wrote it", async () => {
-    await setUp([TCK_ROW, "| aapl | 5 | 10 | 10 | 0 | — |"], [TCK_LOT, { ticker: "AAPL", units: 5, price: 10 }]);
-
-    await record({ type: "entry", ticker: "tck", currency: "USD", price: 110, units: 1, stop: 90 });
-
-    assert.match(await read("portfolio.md"), /^\| aapl \| 5 \| 10 \| 10 \| 0 \| — \|$/m);
-  });
-
-  it("an invalid ticker is refused before anything is written", async () => {
+  it("an invalid ticker rejects the batch before anything is applied", async () => {
     await setUp([TCK_ROW], [TCK_LOT]);
     const before = [await read("portfolio.md"), await read("logs", "decisions.jsonl")];
-    const warn = mock.method(console, "warn", () => {});
-    try {
-      for (const ticker of ["TC|K", "TCK ; rm", "-", "^.-", ""]) {
-        await assert.rejects(
-          () => record({ type: "entry", ticker, currency: "USD", price: 110, units: 1, stop: 90 }),
-          /ticker: a ticker/,
-        );
-      }
-    } finally {
-      warn.mock.restore();
+    for (const ticker of ["TC|K", "TCK ; rm", "-", "^.-", "A..B", ".A"]) {
+      const result = await ingest(batch(BUY_TCK(JSON.stringify(ticker))));
+      assert.equal(result.exitCode, 1, ticker);
+      assert.match(result.lines.join("\n"), /a ticker (has letters|must not)/, ticker);
     }
     assert.deepEqual([await read("portfolio.md"), await read("logs", "decisions.jsonl")], before);
+    await assert.rejects(read("state", "portfolio.json"), /ENOENT/, "no store was written");
   });
 
   it("a hand-written lot on `tck` matches the TCK entry of the decision log, with no message", async () => {
@@ -229,17 +219,6 @@ describe("a ticker written in another case is the same ticker", () => {
         },
       );
     }
-  });
-
-  it("decision:record refuses a Positions row or a watchlist entry that is not a ticker, writing nothing", async () => {
-    await setUp([TCK_ROW, "| M&M.NS | 1 | 5 | 5 | 0 | 4 |"], [TCK_LOT]);
-    const entry = { type: "entry", ticker: "tck", currency: "USD", price: 110, units: 1, stop: 90 };
-    await assert.rejects(() => record(entry), /## USD — Positions: Ticker "M&M\.NS"/);
-
-    await setUp([TCK_ROW], [TCK_LOT]);
-    await writeFile(path("watchlist.md"), WATCHLIST_MD.replace("ticker: tck", 'ticker: "M&M.NS"'), "utf8");
-    await assert.rejects(() => record(entry), /watchlist\.md: entry 1/);
-    assert.equal((await read("portfolio.md")).includes("| TCK | 3 |"), false, "nothing was recorded");
   });
 
   it("decisions:evaluate reads Positions strictly: a row that is not a ticker is refused", async () => {

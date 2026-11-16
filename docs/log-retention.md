@@ -90,15 +90,13 @@ What stays in the live file, whatever its date:
 Every other line (deposits, withdrawals, conversions, proposals, stop changes, an `exit` that cites
 no lot) is archived by its own date.
 
-Why a lot goes whole: `decision:record` needs, to record a sale, the entry of each open lot (the
-check of `Lots` against the log) and what the earlier exits of the lot took of its entry costs
-(`entry_costs`, so the last exit takes the rest). Both come from the lot's own lines, which the
-rule above leaves in the live file. The other history it reads is the proposal a trade follows
-(10-day window) and the trades that already cite it, all recent. So **with no archive readable at
-all, `decision:record` records every later sale correctly**; the archive adds nothing to it. The
-exception is a trade dated in an archived quarter: its proposal is gone from the live file, so
-the trade is recorded as yours (`propietario`) instead of the system's. Archives made with an earlier version of this program may hold the exits of a lot that was still
-open: for those, `decision:record` still needs the archive readable.
+Why a lot goes whole: `inbox:ingest` needs, to record a sale, what the earlier exits of the lot took of its entry
+costs (`entry_costs`, so the last exit takes the rest), and `decisions:evaluate` needs the entry of each open lot (the
+check of `Lots` against the log). Both come from the lot's own lines, which the rule above leaves in the live
+file. So **with no archive readable at
+all, `inbox:ingest` records every later sale correctly**; the archive adds nothing to it. Archives made with an earlier
+version of this program may hold the exits of a lot that was still open: for those, `inbox:ingest` still needs the
+archive readable.
 
 `DECISIONS_ARCHIVE_DIR` must be an **absolute** path. The engine does not resolve it against
 `VAULT_PROJECT_DIR`: a relative path is resolved against the working directory of whatever runs
@@ -162,13 +160,13 @@ line counts no longer add up and the live file is not replaced.
 Set `DECISIONS_ARCHIVE_DIR` to the absolute path of the directory holding the `decisions-*.jsonl`
 files (see [`.env.example`](../.env.example)). `npm run decisions:evaluate` (the
 [SLO](glossary.md#sli-and-slo) report and the [silo](glossary.md#silo) reconstruction, which need
-the whole history), `npm run decisions:chart` and `npm run decision:record` read it: they load the
+the whole history), `npm run decisions:chart`, `npm run decision:record` and `npm run inbox:ingest` read it: they load the
 archived files in name order and then the live file. A line that does not validate is skipped with
 a warning naming the file and line.
 
 **Where it must be set.** Only where you want the full history: your `decisions:evaluate` and
-`decisions:chart` runs, including the CI that runs them. `decision:record` does not need it (see
-above); it uses it when it is there. **What is lost without it**: the evaluation measures the live
+`decisions:chart` runs, including the CI that runs them. `decision:record` and `inbox:ingest` do not need it (see
+above); they use it when it is there. **What is lost without it**: the evaluation measures the live
 file only, so trades closed in an archived quarter drop out of the SLIs, and the silo
 reconstruction cannot see archived flows (it then warns about negative cash or oversold units, and
 the cutoff board says decisions are missing before a date). Nothing is written wrongly: the

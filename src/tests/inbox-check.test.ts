@@ -985,6 +985,7 @@ describe("inbox:check", () => {
       const inboxModules = new Set([
         "inbox.ts",
         "inbox-store.ts",
+        "inbox-rejected.ts",
         "utils/inbox-check.ts",
         "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",
@@ -1000,10 +1001,16 @@ describe("inbox:check", () => {
               ? [relative(SRC, join(dir, e.name))]
               : [],
         );
-      const importers = walk(SRC).filter(
-        (file) =>
-          !inboxModules.has(file) && /from\s+["'][^"']*inbox[^"']*["']/.test(readFileSync(join(SRC, file), "utf8")),
-      );
+      // The one thing the heartbeat reads of the inbox is the list of the rejected batches still awaiting an answer
+      // (`inbox-rejected.ts`, #152), to name them in its digest: it never runs a batch nor reads `inbox/` itself.
+      const importers = walk(SRC)
+        .filter((file) => !inboxModules.has(file))
+        .flatMap((file) =>
+          [...readFileSync(join(SRC, file), "utf8").matchAll(/from\s+["']([^"']*inbox[^"']*)["']/g)]
+            .map((m) => m[1])
+            .filter((from) => !(file === "heartbeat-run.ts" && from === "./inbox-rejected.js"))
+            .map((from) => `${file} -> ${from}`),
+        );
       assert.deepEqual(importers, []);
     });
   });

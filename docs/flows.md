@@ -8,17 +8,17 @@ for how the system behaves; the _why_ lives in the linked ADRs (architecture) an
 Where a rule used to be numbered in a deprecated ADR (`ADR-0012 §3`), the number is kept in
 parentheses so a code comment that cites it can be found here.
 
-| Flow                                                          | Command                                                         |
-| ------------------------------------------------------------- | --------------------------------------------------------------- |
-| [Heartbeat](#heartbeat)                                       | `heartbeat:eu`, `heartbeat:us`                                  |
-| [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:resolve`               |
-| [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner  |
-| [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`           |
-| [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize` |
-| [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                   |
-| [Apply the inbox](#apply-the-inbox)                           | `inbox:ingest`                                                  |
-| [Evaluate decisions](#evaluate-decisions)                     | `decisions:evaluate`, `decisions:chart`, `screening:outcomes`   |
-| [Email delivery](#email-delivery)                             | `outbox:send` and every flow that sends                         |
+| Flow                                                          | Command                                                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [Heartbeat](#heartbeat)                                       | `heartbeat:eu`, `heartbeat:us`                                                              |
+| [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:resolve`                                           |
+| [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner's flows and stop adjustments |
+| [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`                                       |
+| [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize`                             |
+| [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                                               |
+| [Apply the inbox](#apply-the-inbox)                           | `inbox:ingest`                                                                              |
+| [Evaluate decisions](#evaluate-decisions)                     | `decisions:evaluate`, `decisions:chart`, `screening:outcomes`                               |
+| [Email delivery](#email-delivery)                             | `outbox:send` and every flow that sends                                                     |
 
 ## Heartbeat
 
@@ -36,16 +36,22 @@ parentheses so a code comment that cites it can be found here.
      `portfolio.md` and the expected section. Only the `Lots` reading is tolerant: a missing `Cash`
      or `Positions` section, or a table of them that does not read, still stops the run.
      The same tolerance applies to `pending:resolve`, the Monday briefing and the weekly screening,
-     which do not use the lots; only `decision:record` and `decisions:evaluate` refuse a broken `Lots`.
+     which do not use the lots; only `decisions:evaluate` refuses a broken `Lots` (and `inbox:check` and `inbox:ingest`
+     refuse a portfolio whose `Volume` is not the sum of its lots).
      A ticker that does not parse (`M&M.NS`, a typo) is handled the same way: the `Positions` row or
      watchlist entry is skipped, the other positions are still priced and their stops detected, and the
      digest carries a warning naming the row in every run while it lasts. `pending:resolve`, the Monday
      briefing and the weekly screening skip such a row, entry or screening-log row with a warning and
-     carry on, each also logging the warning through `warnSkipped`; only `decision:record` and `decisions:evaluate` refuse.
+     carry on, each also logging the warning through `warnSkipped`; only `decisions:evaluate` and the inbox refuse.
      A `Positions` `P/L`, `Available cash` or `Total cash` cell holding a number too large to count in cents
      (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
      cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
      briefing and the screening log the same warning.
+     2'. Name every [rejected batch](glossary.md#rejected-batch) still awaiting an answer (a file of `inbox/rejected/` that
+     no applied batch replaced or discarded, #152) in the digest, in every run while it lasts (not deduplicated), right
+     after the portfolio is read (before anything can end the run), also when there is nothing else to watch. Only the list of the
+     rejected files is read, never a batch run, and a folder that cannot be read is said in the log and stops nothing: a
+     rejected batch never switches off a stop alert.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into the portfolio
      (current price and P/L; with the [store](glossary.md#store), into it, regenerating `portfolio.md`; the rest of
      this step describes the old file, which is the state until the first `inbox:ingest`). This happens before the market-session guard on purpose. The write
@@ -141,7 +147,7 @@ Only setups that are new compared with yesterday are alerted and recorded.
   whether or not it is acted on.
 
 An armed Buy Stop that fills without a close above the ceiling is not seen as confirmed: the owner
-records that trade by hand, citing the armed setup. Why: [ADR-0013](decisions/0013-entry-setups.md).
+tells the engine that trade with a `buy` command in `inbox/`. Why: [ADR-0013](decisions/0013-entry-setups.md).
 
 ### Entry eligibility
 
@@ -190,7 +196,7 @@ them. It needs one history request per position with a stop; without ATR the pos
 ## Record a decision
 
 - **Starts with**: a reasoner answer (the heartbeat with the `api` backend, or `pending:resolve`),
-  or the owner narrating a trade (`npm run decision:record`, JSON on stdin).
+  or the owner narrating a cash flow or a stop adjustment (`npm run decision:record`, JSON on stdin).
 - **Steps (reasoner answer)**:
   1. Check the answer is for the signal's ticker and currency.
   2. Compute the engine ticket: stop, units, amount and R:R from the rules below. The reasoner
@@ -199,94 +205,33 @@ them. It needs one history request per position with a stop; without ATR the pos
   4. Blocked ticket: write the Markdown log and the decision line with the reasons; send no email.
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
-- **Steps (owner trade)**: validate the input and refuse the portfolio if its lots do not match the
-  decision history (a `Lots` row the reader skipped, a ticker on several `Positions` rows, a `Volume` that is not the
-  sum of its lots' units, a lot that disagrees with its entry, entry costs included, or an entry
-  still open in the log with no lot), reporting together the messages of the lots comparison once the file has parsed (a `Positions` ticker that does not parse, or a `Lots` table that does not read, stops the read first, on its own; an unreadable `Lots` row is reported with the rest), then fill what the owner need not know: id,
-  rules version, benchmark, the rules broken against the current watchlist, and the system proposal it
-  follows (within 10 days), which sets the origin. A buy after a blocked proposal is the owner's with
-  `overrode_block`. The engine also keeps the [lots](glossary.md#lot):
-  - The [ticker](glossary.md#ticker) is parsed first: one that does not parse is refused before
-    anything is written.
-  - Units and amount are one fact: given both, they must agree to within a cent
-    (`|amount − units × price| ≤ 0.01`), otherwise the trade is refused and nothing is written; given
-    one, the other is derived.
-  - An entry writes `units` (the units bought) on its log line and adds a lot to `Lots`, whose
-    `Entry units` is that number; it creates the ticker's row in `Positions` (with the lot's
-    initial stop as `Stop loss`, the entry price as `Avg price` and `Current price`, a `P/L` of 0
-    and the other columns empty) or updates its `Volume` and `Avg price` and writes its ticker in
-    upper case. It needs the portfolio (the store, else `portfolio.md`):
-    without it the lot would be lost, so the entry is refused. With the store the cash moves too, as the
-    inbox moves it: a buy lowers it by the amount in whole cents plus the costs and is refused, before anything is
-    recorded, if the available cash does not cover it; a sale raises it by the proceeds less the costs; a deposit
-    and a withdrawal move it likewise, and a conversion takes `amount` from its silo and gives the other what
-    arrived (`received`, or the amount net of `costs` at `fx_rate`), in one write. `portfolio.md` is then a generated
-    view and is never edited by hand. Without the store, the cash is the owner's cell, as before.
-  - A sale consumes the ticker's lots first in, first out (oldest entry date first) and writes one
-    `exit` per lot consumed. Each exit cites its own lot (`related_id`, the lot's entry id), carries
-    `units` (the units it sold from the lot; those of a sale's exits add up to the units sold), the
-    snapshot the evaluation needs (`entry_price`, `entry_units`, `entry_date`, `entry_origin`,
-    `entry_rules_version`, `stop_initial`, `rule_violations` and `entry_costs`, its share of the
-    entry costs) and `lot_units_left`, the lot's units after the exit (0 when it uses the lot up). A
-    sale narrated by amount alone has units known only to half a cent of price, so a lot it leaves
-    with less than that is used up; units the owner gave are exact and nothing is snapped.
-    The costs of the sale are shared across the exits in whole cents (largest remainder: no share
-    is negative, they add up to the total). An exit's `amount` is its exact share of the sale amount
-    and can have sub-cent decimals (owner decision of 2026-10-22 in #27); when only units are given,
-    the sale amount derived is to the cent unless that rounds to 0.00, then exact. Its
-    `pnl` comes from the lot's entry price, costs not included. When the owner gives the `pnl` of
-    the whole sale, each exit still keeps its own lot's result and only the difference between the
-    owner's total and the computed sum (costs, FX) is shared by units, in whole cents (largest
-    remainder), so the exits add up to the owner's total and a losing lot stays a loss (lots bought
-    at 100 and 130, sold together at 120 with +50 given: the exits get +100 and −50, and the
-    two-month warning cites the −50). Each lot's entry costs stay with the lot (#90): an exit's `pnl` is its computed
-    result minus its own share of the entry costs, plus its units' share of what remains of the difference
-    (lots A, 5 units at 100 with entry costs of 20, and B, 5 units at 130, sold together at 120 with +30 given: the
-    exits get +80 and −50). A lot's sign is kept before costs and FX, which can change it. The two-month warning
-    lists every losing sale of the ticker in the window (amount, currency, date and the date its window ends); a loss
-    that rounds to 0 cents is not a loss. The lots a sale uses up are removed
-    from `Lots`, the others shrink, `Volume` and `Avg price` are recomputed and, with the last lot,
-    the position's row is deleted. The owner no longer edits `Volume` before recording a sale.
-  - A sale of a ticker with no lots, of more units than are open, with no portfolio, or dated
-    before the entry of a lot it would consume (a lot cannot be sold before it was bought; the same
-    day is allowed), a lot whose Entry price or entry costs (or the sums made from them) are too
-    large to count in cents, or a partial sale of a lot with entry costs and Entry units 0, is an
-    error. All of them are refused before any call to the market data
-    provider ("no open lots" and "more units than open" included), and nothing is recorded; the last
-    one names both dates.
-- **Reads / writes**: reads `logs/decisions.jsonl` (and the archive, if `DECISIONS_ARCHIVE_DIR` gives
-  one: an owner trade is recorded correctly from the live file alone, because the quarter archive
-  keeps every line of an open lot live, see [Log retention](log-retention.md)), `portfolio.md`, `watchlist.md`,
-  the rules version; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the lots, positions and cash of the
-  portfolio (the store and the view generated from it; before the store, the `Lots` and
-  `Positions` tables of `portfolio.md`) and email. The decision log is appended first and
-  the portfolio rewritten second, atomically (a temporary file in the same directory renamed over
-  it), so a stop never leaves `portfolio.md` cut short. Every writer of the file (this one and
-  the price update that the heartbeat and the Monday briefing run) goes through the portfolio
-  [state port](glossary.md#state-port) (`src/portfolio-store.ts`), shares one codec and replaces the
-  file atomically, so reading and writing back unchanged is identical. The price update edits cells in
-  place; this writer rewrites the `Lots` and `Positions` rows as one block per table: blank lines that
-  split the table are dropped, a note between its rows moves under it (as
-  [the format](input-format.md#portfoliomd) says) and the placeholder (`—`) rows of `Positions` are
-  dropped; every line outside those tables is kept. Only this writer checks the lots: the price
-  update has no lots check and re-reads nothing between its read and its write, so a price update
-  that read the file before a record and writes after it (a short window: it receives prices already
-  fetched, then reads, edits and writes) overwrites the new `Lots` and `Positions` rows (see _Bad_
-  in the ADR). The portfolio is read at the start for the plan, and again after the market-data
-  calls: that read is checked (the lots are still the planned ones and still match the decision
-  history) and the change is tried on that same read, right before the decision is appended; if the
-  lots moved or no longer match, the record is refused with nothing written. It is read, checked
-  and edited once more after the append, and if the lots moved in that short window the decision is
-  already in the log: the error says so, and the trade must not be recorded again (apply the lot
-  change by hand).
-- **When it fails**: nothing is written before the checks pass; a missing rules version stops the
-  record, because a Markdown log without its decision line would mean measuring halfway. If the
-  process stops between the log and the portfolio, an exit exists whose lot did not shrink; the
-  owner corrects `Lots` by hand. A partial sale that reached the log but not the portfolio is not
-  caught on read (a split correction looks the same); the owner finds it when reconciling `Volume`
-  with the broker, and a failure of the check, the edit or the final atomic rewrite (no permission,
-  disk full) after the log append says the decision is recorded and the lot change has to be applied
-  by hand; the trade must not be recorded again.
+- **Steps (owner narration)**: `decision:record` records what the owner narrates that is not a trade: a stop
+  adjustment (`adjust_stop`), a deposit, a withdrawal or a currency conversion (`fx_conversion`). **A buy and a sale
+  are not recorded here any more (#152)**: `entry` and `exit` are refused, with a message that names the `buy` and
+  `sale` commands of the [inbox](#apply-the-inbox), which is the only way a trade is recorded, keeping the lots and
+  writing the entry and exit lines of the log as telemetry. The engine validates the input (the
+  [ticker](glossary.md#ticker) of an adjustment is parsed first: one that does not parse is refused before anything
+  is written), then fills what the owner need not know: id, rules version, the silo benchmark and, for an adjustment,
+  the system proposal it follows (within 10 days), which sets the origin.
+  - A conversion needs a fee below its amount: with costs equal to or above it nothing would reach the other silo, and
+    it is refused before the market data is asked for, with nothing recorded.
+  - With the [store](glossary.md#store) the cash moves too, as the inbox's `deposit` and `withdrawal` move it: a
+    deposit and a withdrawal move it likewise, and a conversion takes `amount` from its silo and gives the other what
+    arrived (`received`, or the amount net of `costs` at `fx_rate`), in one write. Any movement that would take the
+    available cash of a silo below zero is refused, before anything is recorded (the movement is tried first, then the
+    log is appended, then the same movement is written). `portfolio.md` is then a generated view and is never edited
+    by hand. Without the store, the cash is the owner's cell, as before, and the flow only appends to the log.
+- **Reads / writes**: reads `logs/decisions.jsonl` (and the archive, if `DECISIONS_ARCHIVE_DIR` gives one), the rules
+  version and the store; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the cash of the store (and the view
+  generated from it) and email. The decision log is appended first and the store written second, atomically (a
+  temporary file in the same directory renamed over it). Every writer of the store (this one, `inbox:ingest` and the
+  price update that the heartbeat and the Monday briefing run) goes through the portfolio
+  [state port](glossary.md#state-port) (`src/portfolio-store.ts`).
+- **When it fails**: nothing is written before the checks pass; a missing rules version stops the record, because a
+  Markdown log without its decision line would mean measuring halfway. A failure of the store write after the log
+  append (no permission, disk full) says the decision is recorded and the cash was not updated, and that the cash is
+  corrected with a `deposit` or a `withdrawal` command in the inbox; the flow must not be recorded again. No message
+  asks the owner to edit the portfolio by hand.
 - **Why**: [ADR-0006](decisions/0006-single-append-only-decision-log.md),
   [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md),
   [ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md) (lots), and for the lot design
@@ -384,11 +329,16 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      currency gets a reason), and a portfolio it cannot read whole stops the check: a silo whose headings are
      all misspelt (the error names the headings found), a `Positions` row that does not read or a ticker on two
      `Positions` rows, a `Lots` table or row that does not read, a cash or P/L cell too large to count, or a
-     `Volume` that is not the sum of the units of its lots (what `decision:record` refuses, minus the checks that
-     need the decision log).
+     `Volume` that is not the sum of the units of its lots (what `decisions:evaluate` refuses, minus the checks that
+     need the decision log). Read too the files of `inbox/rejected/` (regular files only) and, from the store, which
+     of them a later batch settled: the others are the [rejected batches](glossary.md#rejected-batch) awaiting an
+     answer, the only names a `replaces:` or a `discard` can use.
   2. Read each file as a batch ([format](input-format.md#inboxyaml)): a file that is not YAML, or whose
      `schema_version` is not `1`, is one error; every command is read on its own, so one bad command does not hide
-     the next.
+     the next. A `replaces:` that names a file not awaiting an answer is an error of the file, at its line; a
+     `discard` of such a file is an error of its command. A `discard` changes no cash, lots or stop, so a refused or
+     unreadable one leaves nothing unknown and blocks no other command. A clean batch settles what it replaces and
+     discards for the batches after it in name order (a second batch cannot answer the same file again).
   3. Check each command with its handler, in order, against the state the previous ones would produce, and
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
@@ -433,8 +383,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
      position they touched (a buy, a sale, a `set_stop` or `clear_stop`) with no stop gets a warning line for it,
      naming the silo, which does not change the exit code.
-- **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never reads the inbox, so a
-  batch with errors does not affect its stop check.
+- **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never runs a batch: it reads
+  only the list of the rejected files, to name them in its digest, so a batch with errors does not affect its stop
+  check. The check names the rejected batches awaiting an answer in a line of its own, which does not change the exit
+  code.
 - **Applying** what it accepts is [`inbox:ingest`](#apply-the-inbox), which runs the same steps.
 
 ## Apply the inbox
@@ -455,11 +407,14 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      no stop) and each sale the exits of its lots, with the entry costs earlier exits took (from the history and from
      the batches before) and its own proceeds (`units × price`).
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
-     the batches applied whose files are not moved yet, and the decision-log lines of their trades (an `entry` per buy
-     and an `exit` per lot sold). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
+     the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
+     with the hash of its file), and the decision-log lines of their trades (an `entry` per buy and an `exit` per lot
+     sold, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
      from the store (the store is written first, the view after it).
   5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
-     (command position, line, reason), never over a file already there. Then the store forgets the batches moved.
+     (command position, line, reason), never over a file already there. A file in `rejected/` is never read as a
+     batch again: it stays as the audit trail and awaits an answer until it is settled. Then the store forgets the
+     batches moved.
   6. Print what was applied, the warnings (a position with no stop), each error and what was left unread; exit 1 if any
      batch was rejected or left unread, 0 otherwise.
 - **Writes**: `state/portfolio.json` and `portfolio.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
@@ -467,8 +422,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **When it fails**: a transient failure (the store or the log cannot be written, a file cannot be moved) leaves the
   files in `inbox/` and throws; the next run finishes it without applying anything twice (the store remembers the batches
   it applied, and the lines it owes the log).
-- **Never**: touches the stop check. The [heartbeat](#heartbeat) never reads the inbox, so a rejected batch cannot
-  stop it; it reads the state last applied, and a refused batch leaves it as it was.
+- **Never**: touches the stop check. The [heartbeat](#heartbeat) never runs a batch, so a rejected batch cannot stop it
+  (it names it in its digest); it reads the state last applied, and a refused batch leaves it as it was.
 
 ## Evaluate decisions
 

@@ -1,7 +1,8 @@
 /**
  * The portfolio-sync guide and the retention doc (spec #14): the guide the
  * stale-portfolio warning points to ships with the example brain, every JSON
- * example in it is accepted by `decision:record`, and the README links both.
+ * example in it is accepted by `decision:record`, every YAML batch in it is read by the
+ * inbox, and the README links both.
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -10,6 +11,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OWNER_TYPES, validateOwnerInput } from "../decisions.js";
+import { parseBatch } from "../utils/inbox-parse.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const GUIDE = "examples/brain/routines/portfolio-sync.md";
@@ -41,8 +43,6 @@ const firstUseLinked = (md: string, term: string): boolean => {
 const HEADING_EVENTS: Record<string, readonly string[]> = {
   "Deposit or withdrawal": ["deposit", "withdrawal"],
   "Currency conversion": ["fx_conversion"],
-  Buy: ["entry"],
-  Sell: ["exit"],
   "Stop change": ["adjust_stop"],
 };
 
@@ -81,10 +81,13 @@ describe("portfolio-sync guide", () => {
     };
     assert.match(problem('## Events\n\n```json\n{ "type": "deposit" }\n```\n') ?? "", /no ### heading/);
     assert.match(
-      problem('\n### Buy\n\n## Other\n\n```json\n{ "type": "entry" }\n```\n') ?? "",
+      problem('\n### Currency conversion\n\n## Other\n\n```json\n{ "type": "fx_conversion" }\n```\n') ?? "",
       /a ## section sits between/,
     );
-    assert.match(problem('\n### Buy\n\n```json\n{ "type": "withdrawal" }\n```\n') ?? "", /under "### Buy"/);
+    assert.match(
+      problem('\n### Stop change\n\n```json\n{ "type": "withdrawal" }\n```\n') ?? "",
+      /under "### Stop change"/,
+    );
     assert.equal(problem('\n### Deposit or withdrawal\n\n```json\n{ "type": "withdrawal" }\n```\n'), null);
   });
 
@@ -94,21 +97,32 @@ describe("portfolio-sync guide", () => {
     for (const type of OWNER_TYPES) assert.ok(covered.has(type), `no example for ${type}`);
   });
 
-  it("follows the lot model: decision:record keeps Lots, Volume and Avg price", async () => {
+  it("shows every YAML batch as the inbox reads it, with the commands a trade is told with", async () => {
     const guide = await read(GUIDE);
-    assert.match(guide, /`Lots`/);
-    assert.match(guide, /`Volume`/);
-    assert.match(guide, /`Avg price`/);
-    assert.match(guide, /new lot/i);
-    assert.match(guide, /correction commit/i);
-    assert.doesNotMatch(guide, /before (you )?(delete|remov|touch|edit)/i, "the sale-before-its-row rule is gone");
-    assert.doesNotMatch(guide, /then add the row/i);
+    const batches = [...guide.matchAll(/```yaml\n([\s\S]*?)```/g)].map((m) => parseBatch(m[1]));
+    assert.ok(batches.length >= 1, "no batch example");
+    for (const parsed of batches) assert.deepEqual(parsed.issues, []);
+    const kinds = new Set(batches.flatMap((b) => b.commands.map((c) => c.command.kind)));
+    for (const kind of ["buy", "set_stop", "sale"]) assert.ok(kinds.has(kind as never), `no ${kind} in a batch`);
   });
 
-  it("says a buy changes Stop loss only for a new position, and that adding to a position leaves it to you", async () => {
+  it("follows the store model: trades go through the inbox, decision:record refuses them, portfolio.md is never edited", async () => {
     const guide = await read(GUIDE);
-    assert.match(guide, /`Stop loss` \(new position only\)/);
-    assert.match(guide, /edit `Stop loss` by hand/i);
+    assert.match(guide, /`decision:record` refuses a buy and a sale/);
+    assert.match(guide, /never edit it/);
+    assert.match(guide, /npm run inbox:check/);
+    assert.match(guide, /npm run inbox:ingest/);
+    assert.match(guide, /new lot/i);
+    assert.doesNotMatch(guide, /correction commit/i, "the portfolio is corrected with a batch, not by hand");
+    assert.doesNotMatch(guide, /"type": "(entry|exit)"/, "no JSON example of a buy or a sale");
+  });
+
+  it("says what to do with a rejected batch: replaces it or discard it, and that it is named in every digest", async () => {
+    const guide = await read(GUIDE);
+    assert.match(guide, /`inbox\/rejected\/`/);
+    assert.match(guide, /`replaces: <file>`/);
+    assert.match(guide, /`discard` command/);
+    assert.match(guide, /every digest/);
   });
 
   it("orders events by date, flows first within a date", async () => {
@@ -117,10 +131,9 @@ describe("portfolio-sync guide", () => {
     assert.doesNotMatch(guide, /in the order they happened at the broker/);
   });
 
-  it("links the glossary on first use of the decision log and of a setup, and no ADR for the log", async () => {
+  it("links the glossary on first use of the decision log, and no ADR for the log", async () => {
     const guide = await read(GUIDE);
     assert.match(guide, /\[decision log\]\([^)]*docs\/glossary\.md#decision-log\)/);
-    assert.match(guide, /\[setup\]\([^)]*docs\/glossary\.md#setup\)/);
     assert.doesNotMatch(guide, /\[decision log\]\([^)]*0006/i);
   });
 });
@@ -128,30 +141,23 @@ describe("portfolio-sync guide", () => {
 describe("portfolio-sync guide: review fixes", () => {
   it("links the glossary on the first use of silo, rules version, benchmark price, shadow portfolio and lot", async () => {
     const guide = await read(GUIDE);
-    for (const term of [
-      "silo",
-      "rules version",
-      "benchmark price",
-      "decision log",
-      "shadow portfolio",
-      "setup",
-      "lot",
-    ]) {
+    for (const term of ["silo", "rules version", "benchmark price", "decision log", "shadow portfolio", "lot"]) {
       assert.ok(firstUseLinked(guide, term), `the first use of "${term}" is not a glossary link`);
     }
   });
 
-  it("lists every rule code a buy can break, as the engine writes them", async () => {
+  it("names the one rule violation the inbox writes into a lot, and none of the codes decision:record used to compute", async () => {
     const guide = await read(GUIDE);
-    for (const code of ["not_in_watchlist", "entry_without_setup", "no_stop", "stop_below_min_atr", "overrode_block"]) {
-      assert.ok(guide.includes(`\`${code}\``), `the guide does not name ${code}`);
+    assert.ok(guide.includes("`no_stop`"));
+    for (const code of ["not_in_watchlist", "entry_without_setup", "stop_below_min_atr", "overrode_block"]) {
+      assert.ok(!guide.includes(code), `the guide still names ${code}`);
     }
   });
 
   it("puts a sale before the buy-back of the same ticker on the same day, and says the order of the commands is the order of the day", async () => {
     const guide = await read(GUIDE);
     assert.match(guide, /sale followed by a buy-back/);
-    assert.match(guide, /record the sale first/i);
+    assert.match(guide, /put the sale\s+first/i);
     assert.match(guide, /no time of day/);
   });
 });
@@ -216,11 +222,11 @@ describe("log retention doc", () => {
     assert.doesNotMatch(doc, /\| Nobody: you read them/);
   });
 
-  it("explains what stays live for an open lot, that decision:record needs no archive, and what the evaluation loses", async () => {
+  it("explains what stays live for an open lot, that inbox:ingest needs no archive, and what the evaluation loses", async () => {
     const doc = await read(RETENTION);
     assert.match(doc, /every line of a \[lot\]\(glossary\.md#lot\) that is still open/);
     assert.match(doc, /only\s+together/);
-    assert.match(doc, /with no archive readable at\s+all, `decision:record` records every later sale correctly/);
+    assert.match(doc, /with no archive readable at\s+all, `inbox:ingest` records every later sale correctly/);
     assert.match(doc, /What is lost without it/);
     assert.doesNotMatch(doc, /must be set wherever those commands run, including your CI/);
   });

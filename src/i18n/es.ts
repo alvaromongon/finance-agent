@@ -89,6 +89,7 @@ export const es: Messages = {
       tickers: "ticker que no se lee",
       unreadableCells: "celda que no se puede contar",
       noStop: "posición sin stop",
+      rejectedBatches: "lote rechazado",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -115,8 +116,8 @@ export const es: Messages = {
       `## \`portfolio.md\`: problema con los lotes`,
       ``,
       `La tabla \`Lots\` no se puede leer, falta, o no concuerda con \`Positions\` o con el registro de decisiones. El`,
-      `heartbeat sigue vigilando tus posiciones (stops, \`Volume\`, \`Avg price\`), pero \`decision:record\` y la`,
-      `evaluación rechazan el archivo hasta que se corrija:`,
+      `heartbeat sigue vigilando tus posiciones (stops, \`Volume\`, \`Avg price\`), pero la evaluación y el`,
+      `inbox rechazan el archivo hasta que se corrija:`,
       ``,
     ],
     lotsOutro: [
@@ -136,6 +137,20 @@ export const es: Messages = {
       ``,
       `Dale un stop a cada una con un comando \`set_stop\` en \`inbox/\` (ver \`docs/input-format.md\`). El aviso sigue en cada`,
       `resumen hasta que lo hagas.`,
+    ],
+    rejectedBatchesIntro: [
+      `## Lotes rechazados a la espera de respuesta`,
+      ``,
+      `El motor rechazó estos lotes de \`inbox/\` y no aplicó nada de ellos. Un lote rechazado nunca se reintenta ni se`,
+      `olvida: sigue aquí hasta que lo respondas. Los errores están en \`inbox/rejected/<archivo>.errors.txt\`:`,
+      ``,
+    ],
+    rejectedBatchesLine: (file) => `- \`inbox/rejected/${file}\``,
+    rejectedBatchesOutro: [
+      ``,
+      `Sustituye cada uno con un lote nuevo que empiece por \`replaces: <archivo>\`, o renuncia a él con un comando`,
+      `\`discard\` (\`file: <archivo>\`) en \`inbox/\` (ver \`docs/input-format.md\`). El archivo queda en \`inbox/rejected/\``,
+      `como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
@@ -203,7 +218,7 @@ export const es: Messages = {
     ],
     armedOutro: [
       ``,
-      "Quedan en logs/decisions.jsonl como setup_armed. Si la orden se ejecuta, registrarla con decision:record.",
+      "Quedan en logs/decisions.jsonl como setup_armed. Si la orden se ejecuta, comunícala con un comando buy en inbox/.",
     ],
     escalatedIntro: [`## Señales enviadas a análisis`, ``],
     escalatedLine: (ticker, triggers, price, currency) => `- ${ticker}: ${triggers} a ${price} ${currency}`,

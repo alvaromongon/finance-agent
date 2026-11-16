@@ -136,7 +136,7 @@ describe("inbox:ingest", () => {
       assert.equal((await store.readPortfolio("USD")).portfolio.cash, 500);
     });
 
-    it("leaves the rest of the lot's decision-log lines: the entry of the lot, as decision:record would write it", async () => {
+    it("leaves the lot's decision-log line: the entry of the lot", async () => {
       await inbox.ingestInbox();
       const lines = await log();
       const [entry] = lines;
@@ -356,32 +356,58 @@ describe("inbox:ingest", () => {
     });
   });
 
-  describe("decision:record keeps working beside the inbox until #152 removes its trade part", () => {
-    it("records a sale of a lot the inbox opened: the store and the view change, the lots check stays clean", async () => {
-      await writeFile(
-        dir("watchlist.md"),
-        `---\nschema_version: 1\n---\n\n\`\`\`yaml\nwatchlist: []\n\`\`\`\n`,
-        "utf8",
+  describe("the inbox is the only way a trade is recorded (#152)", () => {
+    const provider = { getPrices: async () => new Map(), getHistorical: async () => [] };
+
+    it("decision:record refuses a sale of a lot the inbox opened, and changes nothing", async () => {
+      await drop("a.yaml", batch(BUY(), STOP));
+      await inbox.ingestInbox();
+      const before = await snapshot();
+      const { recordOwnerDecision } = await import("../decision.js");
+      await assert.rejects(
+        recordOwnerDecision(
+          { type: "exit", ticker: "SAP.DE", currency: "EUR", price: 110, units: 1, date: "2026-09-20" },
+          provider,
+          "2026-09-21",
+        ),
+        /a sale is told to the engine with a sale command in inbox\//,
       );
+      assert.deepEqual(await snapshot(), before);
+    });
+
+    it("what decision:record still records keeps working beside the inbox: a deposit moves the store's cash, and the lots check stays clean", async () => {
       await drop("a.yaml", batch(BUY(), STOP));
       await inbox.ingestInbox();
       const { recordOwnerDecision } = await import("../decision.js");
-      const provider = { getPrices: async () => new Map(), getHistorical: async () => [] };
-      await recordOwnerDecision(
-        { type: "exit", ticker: "SAP.DE", currency: "EUR", price: 110, units: 1, date: "2026-09-20" },
-        provider,
-        "2026-09-21",
-      );
+      await recordOwnerDecision({ type: "deposit", currency: "EUR", amount: 50 }, provider, "2026-09-21");
       const eur = (await store.readPortfolio("EUR")).portfolio;
-      assert.deepEqual(
-        eur.lots.map((l) => l.units),
-        [1],
-      );
-      assert.equal(eur.positions[0].volume, 1);
-      assert.match(await read("portfolio.md"), /\| SAP\.DE \| 1 \| 100,00 \|/);
+      assert.equal(eur.cash, 1000 - 200 + 50);
+      assert.match(await read("portfolio.md"), /\| Available cash \| 850,00 € \|/);
       const { lotsMismatches } = await import("../utils/lots-check.js");
       const { readDecisionHistory } = await import("../vault-io.js");
       assert.deepEqual(lotsMismatches(eur, await readDecisionHistory()), []);
+    });
+
+    it("a sale over two lots writes one exit per lot, and the two-month rule sees the loss of the second", async () => {
+      await drop(
+        "a.yaml",
+        batch(BUY_ON("2026-06-15"), `command: buy\nticker: SAP.DE\ndate: 2026-06-22\nunits: 2\nprice: 110 EUR`),
+      );
+      await drop("b.yaml", batch("command: sale\nticker: SAP.DE\ndate: 2026-08-10\nunits: 3\nprice: 105 EUR"));
+      assert.equal((await inbox.ingestInbox()).exitCode, 0);
+      const exits = (await log()).filter((l) => l.type === "exit");
+      assert.deepEqual(
+        exits.map((e) => [e.pnl, e.lot_units_left]),
+        [
+          [10, 0],
+          [-5, 1],
+        ],
+      );
+      const { twoMonthRuleWarning } = await import("../decisions.js");
+      const { readDecisionHistory } = await import("../vault-io.js");
+      const { parseTicker } = await import("../ticker.js");
+      const warning = twoMonthRuleWarning(await readDecisionHistory(), parseTicker("SAP.DE"), "2026-08-20", "real");
+      assert.ok(warning?.includes("-5"), String(warning));
     });
   });
 
@@ -495,10 +521,39 @@ describe("inbox:ingest", () => {
           ),
         },
       );
+      // The entries of those lots, as a buy would have logged them: what a closed lot must not leave open in the log.
+      const { buildDecision } = await import("../decisions.js");
+      const { exactAmount } = await import("../money.js");
+      const { parseTicker } = await import("../ticker.js");
+      await mkdir(dir("logs"), { recursive: true });
+      await writeFile(
+        dir("logs", "decisions.jsonl"),
+        lots
+          .map((l) =>
+            JSON.stringify(
+              buildDecision({
+                id: l.id,
+                date: l.date,
+                ticker: parseTicker("DUST"),
+                currency: "EUR",
+                origin: "propietario",
+                source: "portfolio-sync",
+                type: "entry",
+                price: l.price,
+                amount: exactAmount(l.units * l.price),
+                units: l.units,
+                rules_version: "1.0",
+              }),
+            ),
+          )
+          .map((line) => `${line}\n`)
+          .join(""),
+        "utf8",
+      );
       await mkdir(dir("state"), { recursive: true });
       await writeFile(
         dir("state", "portfolio.json"),
-        encodeStore({ silos: { EUR, USD }, unmoved: [], pendingDecisions: [] }),
+        encodeStore({ silos: { EUR, USD }, unmoved: [], pendingDecisions: [], resolvedRejections: [] }),
         "utf8",
       );
     }
@@ -532,9 +587,17 @@ describe("inbox:ingest", () => {
         exits.map((e) => e.lot_units_left),
         [0, 0],
       );
+      await assertNoEntryOpen();
     });
 
-    it("a sale whose proceeds are one unit of the last decimal over two lots: the exit of 0 is not recorded as an exit", async () => {
+    /** The lots check, as `decision:record` and `decisions:evaluate` run it: no entry is open in the log, no lot is left. */
+    const assertNoEntryOpen = async () => {
+      const { lotsMismatches } = await import("../utils/lots-check.js");
+      const { readDecisionHistory } = await import("../vault-io.js");
+      assert.deepEqual(lotsMismatches((await store.readPortfolio("EUR")).portfolio, await readDecisionHistory()), []);
+    };
+
+    it("a sale whose proceeds are one unit of the last decimal over two lots: the exit of 0 is recorded, so no entry stays open (#152)", async () => {
       // 6e-8 units at 0.2 are 1.2e-8 of proceeds: 1 at 8 decimals, shared over two lots as [0, 1e-8].
       await seedDust([
         { id: "d1", units: 3e-8, price: 0.2, date: "2026-09-01" },
@@ -544,12 +607,45 @@ describe("inbox:ingest", () => {
       const result = await inbox.ingestInbox();
       assert.equal(result.exitCode, 0, result.lines.join("\n"));
       const exits = (await log()).filter((l) => l.type === "exit");
-      assert.equal(exits.length, 1, "a decision needs an amount above zero");
-      assert.equal(exits[0].amount, 1e-8);
+      assert.deepEqual(
+        exits.map((e) => [e.related_id, e.amount, e.lot_units_left]),
+        [
+          ["d1", 0, 0],
+          ["d2", 1e-8, 0],
+        ],
+        "one exit per lot the sale closed: the share of 0 is recorded as 0, the one amount of 0 the log accepts",
+      );
       const doc = JSON.parse(await storeText());
-      assert.deepEqual(doc.silos.EUR.lots, [], "both lots are closed in the state all the same");
+      assert.deepEqual(doc.silos.EUR.lots, [], "both lots are closed in the state");
       assert.deepEqual(doc.silos.EUR.positions, []);
       assert.equal(doc.silos.EUR.cash, "5.00 EUR");
+      await assertNoEntryOpen();
+    });
+
+    it("a 0.00 sale of one lot whose proceeds round to nothing at 8 decimals records its exit of 0, and the lot is not left open in the log (#152)", async () => {
+      await seedDust([{ id: "d1", units: 0.0001, price: 0.5, date: "2026-09-01" }]);
+      // 0.0001 units at 0.00001 are 1e-9 of proceeds: under 5e-9, so 0 at 8 decimals.
+      await drop("a.yaml", batch(SELL_DUST("0.0001", 0.00001)));
+      const result = await inbox.ingestInbox();
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const exits = (await log()).filter((l) => l.type === "exit");
+      assert.deepEqual(
+        exits.map((e) => [e.related_id, e.amount, e.units, e.lot_units_left]),
+        [["d1", 0, 0.0001, 0]],
+      );
+      assert.deepEqual(JSON.parse(await storeText()).silos.EUR.lots, []);
+      await assertNoEntryOpen();
+    });
+
+    it("the decision log is read again after a dust sale: decisions:evaluate does not refuse the silo", async () => {
+      await seedDust([
+        { id: "d1", units: 3e-8, price: 0.2, date: "2026-09-01" },
+        { id: "d2", units: 3e-8, price: 0.2, date: "2026-09-02" },
+      ]);
+      await drop("a.yaml", batch(SELL_DUST("0.00000006", 0.2)));
+      assert.equal((await inbox.ingestInbox()).exitCode, 0);
+      const { loadEvaluationReport } = await import("../decisions-evaluation-run.js");
+      await assert.doesNotReject(loadEvaluationReport("[test]", new Date("2026-09-14T00:00:00Z")));
     });
   });
 
@@ -778,6 +874,7 @@ describe("inbox:ingest", () => {
           newEntryId: () => "x",
           rulesVersion: "1",
           entryCostsTaken: new Map(),
+          awaiting: new Set(),
         },
       );
       assert.ok("reason" in result);

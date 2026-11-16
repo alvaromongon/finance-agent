@@ -1,14 +1,16 @@
 /**
  * The five R tests of spec #27 (measurable exits: partial sales and scale-ins), written
- * against the public flow so they survive the redesign: the owner's trades go in through
- * `decision:record` (`recordOwnerDecision`), `portfolio.md` lives in a temporary vault, and the
- * results come from the evaluation report (`loadEvaluationReport`, the one behind
+ * against the public flow so they survive the redesign: `portfolio.md` lives in a temporary vault
+ * and the results come from the evaluation report (`loadEvaluationReport`, the one behind
  * `decisions:evaluate`). No test references a type or a function of the redesign.
  *
- * Since #42 `decision:record` keeps the lots (an entry adds one, a sale consumes them first in,
- * first out and writes one exit per lot with its snapshot), so every test passes and none is
- * `todo` any more. The tests that need an exit the recorder would never write (an oversold lot, an
- * exit from before the snapshot) append the line themselves, with `appendExit`.
+ * A trade has an entry in the log and a lot (an entry adds one, a sale consumes them first in,
+ * first out and writes one exit per lot with its snapshot). Since #152 only the inbox tells the engine
+ * a trade, and it writes the origin `propietario`; these tests need `sistema` trades (they count for the
+ * cutoff), so they write them with `fixtures/record-trade.ts`, which writes what `decision:record` wrote
+ * for a trade before. The deposits go through `decision:record` (`recordOwnerDecision`). The tests that
+ * need an exit nothing would write (an oversold lot, an exit from before the snapshot) append the line
+ * themselves, with `appendExit`.
  *
  * Common scenario: ticker TCK in USD, every entry and exit narrated with origin `sistema` and
  * rules version 1.0, so the trades count for the cutoff (C v1). One R of a lot is
@@ -16,12 +18,11 @@
  */
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile, chmod } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Decision } from "../decisions.js";
 import type { EvaluationReport } from "../utils/decisions-evaluation.js";
-import { parseTicker as tk } from "../ticker.js";
 
 /** The clock of every scenario: the Monday after the last bar. */
 const NOW = new Date("2026-10-19T12:00:00Z");
@@ -119,7 +120,6 @@ describe("measurable exits: the five R tests of spec #27", () => {
   let loadEvaluationReport: (tag: string, now?: Date) => Promise<EvaluationReport>;
   let renderDecisionsEvaluation: (report: EvaluationReport) => string;
   let extractCutBoard: (md: string) => string | null;
-  let twoMonthRuleWarning: typeof import("../decisions.js").twoMonthRuleWarning;
   let sectionBody: typeof import("../utils/vault-parser.js").sectionBody;
   let sectionRange: typeof import("../utils/vault-parser.js").sectionRange;
   let parseTableRows: typeof import("../utils/vault-parser.js").parseTableRows;
@@ -141,8 +141,6 @@ describe("measurable exits: the five R tests of spec #27", () => {
     assert.notEqual(n, null, `the cell ${JSON.stringify(cell)} is not a number`);
     return n!;
   };
-  const assertClose = (actual: number, expected: number, what: string) =>
-    assert.ok(Math.abs(actual - expected) < TOLERANCE, `${what}: ${actual} !== ${expected}`);
   /** `Volume` and `Avg price` of the USD position of `ticker`, parsed; `undefined` if it has no row. */
   const positionNumbers = (md: string, ticker: string): { volume: number; avgPrice: number } | undefined => {
     const row = positionRow(md, ticker);
@@ -168,11 +166,6 @@ describe("measurable exits: the five R tests of spec #27", () => {
   };
 
   const decisionsPath = () => join(vaultDir, "logs", "decisions.jsonl");
-  const readLog = async (): Promise<Record<string, unknown>[]> =>
-    (await readFile(decisionsPath(), "utf8").catch(() => ""))
-      .split("\n")
-      .filter((l) => l.trim() !== "")
-      .map((l) => JSON.parse(l));
   const evaluate = () => loadEvaluationReport("[test]", NOW);
 
   const entry = (price: number, units: number, stop: number | undefined, date: string, extra: object = {}) =>
@@ -256,11 +249,18 @@ describe("measurable exits: the five R tests of spec #27", () => {
     mock.method(console, "warn", () => {});
 
     const { recordOwnerDecision } = await import("../decision.js");
-    ({ buildDecision, twoMonthRuleWarning } = await import("../decisions.js"));
+    ({ buildDecision } = await import("../decisions.js"));
     ({ appendDecisions } = await import("../vault-io.js"));
     const { FixturesProvider } = await import("../providers/fixtures.js");
     const provider = new FixturesProvider(market);
-    record = async (raw) => (await recordOwnerDecision(raw, provider, TODAY))[0];
+    const { recordTrade } = await import("./fixtures/record-trade.js");
+    // A trade the way `decision:record` wrote it before #152 (fixtures/record-trade.ts); the rest, as it does now.
+    record = async (raw) => {
+      const { type } = raw as { type: string };
+      return type === "entry" || type === "exit"
+        ? (await recordTrade(raw as import("./fixtures/record-trade.js").TradeInput, provider, TODAY))[0]
+        : (await recordOwnerDecision(raw, provider, TODAY))[0];
+    };
     ({ loadEvaluationReport } = await import("../decisions-evaluation-run.js"));
     ({ renderDecisionsEvaluation, extractCutBoard } = await import("../utils/decisions-evaluation-render.js"));
     ({ sectionBody, sectionRange, parseTableRows } = await import("../utils/vault-parser.js"));
@@ -528,15 +528,12 @@ describe("measurable exits: the five R tests of spec #27", () => {
       ]);
       assert.deepEqual(positionNumbers(md, "TCK"), { volume: 20, avgPrice: 105 });
       await evaluate();
-      await entry(100, 1, 90, "2026-09-01");
     });
 
     it("a Volume that is not the sum of its lots' units fails on read, naming the ticker", async () => {
       const { md } = await holdTwoLots();
       await writeFile(join(vaultDir, "portfolio.md"), corruptPositions(md, /\| TCK \| 20 \|/, "| TCK | 7 |"), "utf8");
 
-      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /TCK.*Volume/);
-      await assert.rejects(exit(100, 1, "2026-09-01"), /TCK.*Volume/);
       await assert.rejects(evaluate(), /TCK.*Volume/);
     });
 
@@ -544,7 +541,6 @@ describe("measurable exits: the five R tests of spec #27", () => {
       const { first, md } = await holdTwoLots();
       await writeFile(join(vaultDir, "portfolio.md"), md.replace(first.id, "20260101-tck-entry-ghost"), "utf8");
 
-      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /20260101-tck-entry-ghost/);
       await assert.rejects(evaluate(), /20260101-tck-entry-ghost/);
     });
 
@@ -560,331 +556,15 @@ describe("measurable exits: the five R tests of spec #27", () => {
         "utf8",
       );
 
-      await assert.rejects(entry(100, 1, 90, "2026-09-01"), new RegExp(`TCK.*${first.id}.*no lot`));
       await assert.rejects(evaluate(), new RegExp(`TCK.*${first.id}.*no lot`));
     });
 
-    it("a v1 portfolio.md (no Lots, schema_version: 1) is refused by both", async () => {
+    it("a v1 portfolio.md (no Lots, schema_version: 1) is refused", async () => {
       await holdTwoLots();
       const v1 = portfolioMd().replace("schema_version: 2", "schema_version: 1");
       await writeFile(join(vaultDir, "portfolio.md"), v1, "utf8");
 
-      await assert.rejects(entry(100, 1, 90, "2026-09-01"), /portfolio\.md.*schema_version 1/);
       await assert.rejects(evaluate(), /portfolio\.md.*schema_version 1/);
-    });
-  });
-
-  describe("R5, write side: decision:record keeps the lots (#42)", () => {
-    it("a sale that spans two lots writes two exit lines and keeps Lots, Volume and Avg price consistent", async () => {
-      // Two entries add two lots: 10 at 100 and 10 at 110 (Volume 20, Avg price 105).
-      const first = await entry(100, 10, 90, "2026-06-15");
-      const second = await entry(110, 10, 100, "2026-06-22");
-      let md = await readPortfolioMd();
-      assert.deepEqual(lotUnits(md), [
-        [first.id, 10, 10],
-        [second.id, 10, 10],
-      ]);
-      assert.deepEqual(positionNumbers(md, "TCK"), { volume: 20, avgPrice: 105 });
-
-      // One sale of 15 consumes lot 1 (10 units) and 5 units of lot 2.
-      await exit(130, 15, "2026-08-10");
-
-      const exits = (await readLog()).filter((d) => d.type === "exit");
-      assert.equal(exits.length, 2, "one exit line per lot consumed");
-      assert.deepEqual(
-        exits.map((e) => [e.related_id, e.lot_units_left]),
-        [
-          [first.id, 0],
-          [second.id, 5],
-        ],
-        "each exit cites its own lot (not the latest open entry) and says what the lot has left",
-      );
-      md = await readPortfolioMd();
-      // Lot 1 is gone, lot 2 keeps 5 of its 10 units: Volume 5, Avg price 110.
-      assert.deepEqual(lotUnits(md), [[second.id, 5, 10]]);
-      assert.deepEqual(positionNumbers(md, "TCK"), { volume: 5, avgPrice: 110 });
-      assertRs(tradeRs(await evaluate()), [3]);
-    });
-
-    it("a sale across a lot of 0.0001 units and one of 1 unit writes both exits and measures both lots (exact amounts)", async () => {
-      // The tiny lot's entry is 0.002798 and its share of the 30.00 sale 0.003, not 0.00 (a cent).
-      const tiny = await entry(27.98, 0.0001, 25, "2026-06-15");
-      const whole = await entry(27.98, 1, 25, "2026-06-16");
-      await exit(30, 1.0001, "2026-08-10");
-
-      const exits = (await readLog()).filter((d) => d.type === "exit");
-      assert.deepEqual(
-        exits.map((e) => [e.related_id, e.units, e.lot_units_left]),
-        [
-          [tiny.id, 0.0001, 0],
-          [whole.id, 1, 0],
-        ],
-      );
-      assertClose(exits[0].amount as number, (30 * 0.0001) / 1.0001, "the tiny lot's share, not rounded to the cent");
-      assertClose(
-        exits.reduce((sum, e) => sum + (e.amount as number), 0),
-        30,
-        "the shares add up to the sale amount",
-      );
-      assert.equal((await evaluate()).trades.length, 2, "both lots are measured");
-    });
-
-    it("selling the last 4 units of a lot priced 0.001 records an amount of 0.004 and measures the sale", async () => {
-      await entry(0.001, 10, 0.0005, "2026-06-15");
-      await exit(0.0011, 6, "2026-08-10");
-      await exit(0.0012, 4, "2026-08-11");
-
-      const exits = (await readLog()).filter((d) => d.type === "exit");
-      assert.equal(exits.at(-1)!.amount, 0.0048);
-      assert.equal(exits.at(-1)!.lot_units_left, 0);
-      assert.equal((await evaluate()).trades.length, 1);
-    });
-
-    it("an entry creates the ticker's row with the lot's initial stop; a later entry only moves Volume and Avg price", async () => {
-      await entry(100, 10, 90, "2026-06-15");
-      let row = positionRow(await readPortfolioMd(), "TCK")!;
-      assert.deepEqual(row.slice(1).map(cellNumber), [10, 100, 100, 0, 90], "Volume, Avg, Current, P/L, Stop loss");
-
-      // The owner moves the stop by hand; the second entry (stop 100) leaves it alone.
-      const md = (await readPortfolioMd()).replace(
-        /(\| TCK \| 10 \| 100\.00 \| 100\.00 \| 0\.00 \| )90\.00/,
-        "$195.00",
-      );
-      await writeFile(join(vaultDir, "portfolio.md"), md, "utf8");
-      await entry(110, 10, 100, "2026-06-22");
-      row = positionRow(await readPortfolioMd(), "TCK")!;
-      assert.deepEqual(row.slice(1).map(cellNumber), [20, 105, 100, 0, 95]);
-    });
-
-    it("an entry carries its units (or amount / price), stop, costs, origin and broken rules into the lot", async () => {
-      const bought = await record({
-        type: "entry",
-        ticker: "OTH",
-        currency: "USD",
-        price: 50,
-        amount: 1000,
-        costs: 2.5,
-        date: "2026-06-15",
-      });
-      const [lot] = parseLots(await readPortfolioMd());
-      assert.equal(lot.Ticker, "OTH");
-      assert.equal(lot["Entry id"], bought.id);
-      assert.equal(cellNumber(lot.Units), 20, "1000 / 50");
-      assert.equal(cellNumber(lot["Entry units"]), 20);
-      assert.equal(cellNumber(lot["Entry price"]), 50);
-      assert.equal(lot["Initial stop"], "—", "an entry without a stop");
-      assert.equal(cellNumber(lot["Entry costs"]), 2.5);
-      assert.equal(lot.Origin, bought.origin);
-      assert.equal(lot["Rules version"], "1.0");
-      assert.equal(lot["Rules violations"], bought.rule_violations!.join(", "));
-      assert.ok(bought.rule_violations!.includes("no_stop"));
-      assert.equal(positionRow(await readPortfolioMd(), "OTH")![5], "—", "no stop, no Stop loss");
-    });
-
-    it("each exit carries its lot's snapshot, lot_units_left and the pnl from the lot's entry price", async () => {
-      const lot = await entry(100, 10, 90, "2026-06-15", { costs: 3 });
-      await exit(120, 4, "2026-08-10");
-      const [line] = (await readLog()).filter((d) => d.type === "exit");
-      assert.equal(line.related_id, lot.id);
-      assert.equal(line.entry_price, 100);
-      assert.equal(line.entry_units, 10);
-      assert.equal(line.entry_date, "2026-06-15");
-      assert.equal(line.entry_origin, "sistema");
-      assert.equal(line.entry_rules_version, "1.0");
-      assert.equal(line.stop_initial, 90);
-      assert.deepEqual(line.rule_violations, lot.rule_violations);
-      assert.equal(line.lot_units_left, 6);
-      assert.equal(line.entry_costs, 1.2, "4 of the 10 units: 3 × 4 / 10");
-      assert.equal(line.pnl, 80, "(120 − 100) × 4");
-      assert.equal(line.amount, 480);
-    });
-
-    it("a lot sold in two partial sales and then a sale across two lots: each exit cites its own lot", async () => {
-      // Lot A: 10 at 100, stop 90 (1R = 10). Lot B: 10 at 110, stop 100 (1R = 10).
-      const a = await entry(100, 10, 90, "2026-06-15");
-      const b = await entry(110, 10, 100, "2026-06-22");
-      await exit(120, 4, "2026-08-10"); // 4 of A, at +2R
-      await exit(130, 11, "2026-08-17"); // the last 6 of A (+3R) and 5 of B (+2R)
-
-      const exits = (await readLog()).filter((d) => d.type === "exit");
-      assert.deepEqual(
-        exits.map((e) => [e.related_id, e.lot_units_left]),
-        [
-          [a.id, 6],
-          [a.id, 0],
-          [b.id, 5],
-        ],
-      );
-      // Trade A: 4/10 × 2 + 6/10 × 3 = 0.8 + 1.8 = +2.6. B is still open.
-      assertRs(tradeRs(await evaluate()), [2.6]);
-      const md = await readPortfolioMd();
-      assert.deepEqual(lotUnits(md), [[b.id, 5, 10]]);
-      assert.deepEqual(positionNumbers(md, "TCK"), { volume: 5, avgPrice: 110 });
-    });
-
-    it("the entry costs of one lot are shared pro rata across its exits and add up to the lot's Entry costs", async () => {
-      // 3 units at 100 with 1 of costs; three sales of 1 unit at 110: 0.33 + 0.33 + 0.34 = 1.
-      await entry(100, 3, 90, "2026-06-15", { costs: 1 });
-      for (const date of ["2026-08-10", "2026-08-11", "2026-08-12"]) await exit(110, 1, date);
-
-      const shares = (await readLog()).filter((d) => d.type === "exit").map((e) => e.entry_costs as number);
-      assert.deepEqual(shares, [0.33, 0.33, 0.34]);
-      assertClose(
-        shares.reduce((a, b) => a + b, 0),
-        1,
-        "the shares of the lot",
-      );
-      // R = Σ (1/3) × (110 − 100 − cost) / 10 = (30 − 1) / 30.
-      assertRs(tradeRs(await evaluate()), [29 / 30]);
-    });
-
-    it("the entry costs of a lot are shared across its exits even when an earlier exit sits in an archived quarter", async () => {
-      // 4 units at 100 with 4 of costs (1 per unit), stop 90 (1R = 10). Half is sold in 2026-T3, which is then
-      // archived; the other half is sold afterwards. The second exit takes what the first left of the
-      // costs, read from the archive: 2 and 2. Without the archive it would take all 4.
-      await entry(100, 4, 90, "2026-06-15", { costs: 4 });
-      await exit(110.6, 2, "2026-08-10");
-      await archiveQuarter("T3", "2026-07-01", "2026-09-30");
-      await exit(120.6, 2, "2026-10-12");
-
-      const live = (await readLog()).filter((d) => d.type === "exit");
-      assert.deepEqual(
-        live.map((e) => e.entry_costs),
-        [2],
-        "the second exit is the only one live, and takes half of the costs",
-      );
-      assert.equal(live[0].lot_units_left, 0);
-      // R = 0.5 × (110.6 − 100 − 1) / 10 + 0.5 × (120.6 − 100 − 1) / 10 = 0.5 × 0.96 + 0.5 × 1.96.
-      assertRs(tradeRs(await evaluate()), [1.46]);
-    });
-
-    it("the amounts of a sale's exits add up to the sale amount", async () => {
-      await entry(100, 1, 90, "2026-06-15");
-      await entry(100, 1, 90, "2026-06-16");
-      await entry(100, 1, 90, "2026-06-17");
-      // The broker rounded the sale to 333.34, a cent more than 3 × 111.11.
-      await record({
-        type: "exit",
-        ticker: "TCK",
-        currency: "USD",
-        price: 111.11,
-        units: 3,
-        amount: 333.34,
-        date: "2026-08-10",
-      });
-      const amounts = (await readLog()).filter((d) => d.type === "exit").map((e) => e.amount as number);
-      // Exact shares of 333.34 (not rounded to the cent), the remainder on the last.
-      assert.deepEqual(amounts, [111.11333333, 111.11333333, 111.11333334]);
-      assertClose(
-        amounts.reduce((a, b) => a + b, 0),
-        333.34,
-        "the amounts",
-      );
-    });
-
-    it("the two-month rule still sees the loss of a lot that is the second of its sale", async () => {
-      // Sale of 15 at 105: all of A (entry 100, +50) and 5 of B (entry 110, −25).
-      await entry(100, 10, 90, "2026-06-15");
-      await entry(110, 10, 100, "2026-06-22");
-      await exit(105, 15, "2026-08-10");
-
-      const exits = (await readLog()).filter((d) => d.type === "exit");
-      assert.deepEqual(
-        exits.map((e) => e.pnl),
-        [50, -25],
-      );
-      const warning = twoMonthRuleWarning((await readLog()) as unknown as Decision[], tk("TCK"), "2026-08-20", "real");
-      assert.ok(warning?.includes("-25"), String(warning));
-    });
-
-    it("a sale with an owner-given net gain still warns of the losing lot's loss (#71)", async () => {
-      // Sale of 10 at 120: A (entry 100, +100) and B (entry 130, -50); the owner gives +50 for the sale.
-      await entry(100, 5, 90, "2026-06-15");
-      await entry(130, 5, 120, "2026-06-22");
-      await record({
-        type: "exit",
-        ticker: "TCK",
-        currency: "USD",
-        price: 120,
-        units: 10,
-        pnl: 50,
-        date: "2026-08-10",
-      });
-
-      const log = await readLog();
-      assert.deepEqual(
-        log.filter((d) => d.type === "exit").map((e) => e.pnl),
-        [100, -50],
-      );
-      const warning = twoMonthRuleWarning(log as unknown as Decision[], tk("TCK"), "2026-08-20", "real");
-      assert.ok(warning?.includes("-50"), String(warning));
-    });
-
-    describe("errors write nothing", () => {
-      /** The log and the portfolio as files, to compare before and after a refused trade. */
-      const files = async () => ({
-        log: await readFile(decisionsPath(), "utf8").catch(() => null),
-        portfolio: await readFile(join(vaultDir, "portfolio.md"), "utf8").catch(() => null),
-      });
-      /** `trade` starts the trade; it runs after the "before" snapshot, so an early rejection cannot race it. */
-      const assertRefused = async (trade: () => Promise<unknown>, message: RegExp) => {
-        const before = await files();
-        await assert.rejects(trade(), message);
-        assert.deepEqual(await files(), before, "neither the log nor the portfolio changed");
-      };
-
-      it("a sale with no lots for the ticker", async () => {
-        await entry(100, 10, 90, "2026-06-15");
-        await assertRefused(
-          () => record({ type: "exit", ticker: "OTH", currency: "USD", price: 10, units: 1, date: "2026-08-10" }),
-          /no open lots for OTH/,
-        );
-      });
-
-      it("a sale when portfolio.md does not exist: it never lets a sale through", async () => {
-        await entry(100, 10, 90, "2026-06-15");
-        const log = await readFile(decisionsPath(), "utf8");
-        await rm(join(vaultDir, "portfolio.md"));
-        await assert.rejects(exit(120, 1, "2026-08-10"), /portfolio\.md/);
-        assert.equal(await readFile(decisionsPath(), "utf8"), log);
-      });
-
-      it("an entry when portfolio.md does not exist: its lot could not be kept", async () => {
-        await rm(join(vaultDir, "portfolio.md"));
-        await assert.rejects(entry(100, 10, 90, "2026-06-15"), /portfolio\.md/);
-        assert.deepEqual(await readLog(), []);
-      });
-
-      it("a sale of more units than the ticker's open units", async () => {
-        await entry(100, 10, 90, "2026-06-15");
-        await entry(110, 10, 100, "2026-06-22");
-        await assertRefused(() => exit(120, 21, "2026-08-10"), /21.*TCK.*20/);
-      });
-
-      it("a sale on a portfolio that fails the lots check", async () => {
-        await entry(100, 10, 90, "2026-06-15");
-        const md = await readPortfolioMd();
-        await writeFile(join(vaultDir, "portfolio.md"), corruptPositions(md, /\| TCK \| 10 \|/, "| TCK | 7 |"), "utf8");
-        await assertRefused(() => exit(120, 1, "2026-08-10"), /TCK.*Volume/);
-      });
-    });
-
-    it("writes the log first and the portfolio second: if the portfolio cannot be written, the exits are already in the log", async (t) => {
-      if (process.getuid?.() === 0) return t.skip("root can write a read-only file");
-      await entry(100, 10, 90, "2026-06-15");
-      const before = await readPortfolioMd();
-      // The rewrite creates a temp file beside portfolio.md, so a read-only directory stops it.
-      await chmod(vaultDir, 0o555);
-      try {
-        await assert.rejects(exit(120, 10, "2026-08-10"), /EACCES|permission/i);
-      } finally {
-        await chmod(vaultDir, 0o755);
-      }
-      assert.equal((await readLog()).filter((d) => d.type === "exit").length, 1, "the exit is in the log");
-      assert.equal(await readPortfolioMd(), before, "the lot was not touched");
-      // The next read finds the half-written pair: an exit used the lot up, and the lot is still there.
-      await assert.rejects(evaluate(), /TCK.*used it up/);
-      await assert.rejects(exit(120, 1, "2026-08-11"), /TCK.*used it up/);
     });
   });
 });

@@ -1,8 +1,8 @@
 // CLI of the inbox (#131, #132, spec #124): `inbox:check` runs the batches in `inbox/` over the current portfolio and
 // changes nothing; `inbox:ingest` applies them. Both run the same code, `runFiles` over the same plan: `check` is
 // `ingest` without the write, so the batches one accepts and refuses are the batches the other does.
-import { createHash } from "node:crypto";
-import { moveBatch, readInbox } from "./inbox-store.js";
+import { awaitingOf, sha256 } from "./inbox-rejected.js";
+import { moveBatch, readInbox, readRejected } from "./inbox-store.js";
 import { readStoreIfAny, saveStore, storeFromPortfolioFile, type PortfolioStore } from "./portfolio-store.js";
 import { appendDecisions, readDecisionHistory, readRulesVersion } from "./vault-io.js";
 import { validateDecision, type Decision } from "./decisions.js";
@@ -32,10 +32,12 @@ interface Plan {
   store: PortfolioStore;
   history: readonly Decision[];
   rulesVersion: string;
+  /** The rejected batches in `inbox/rejected/` with their text: which await a replacement or a discard is `awaitingOf`. */
+  rejected: { name: string; text: string }[];
+  /** The rejected batches (names in `inbox/rejected/`) awaiting a replacement or a discard before this run's batches. */
+  awaiting: string[];
   run: InboxRun;
 }
-
-const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 const stateOf = (store: PortfolioStore): InboxState => ({
   ...(store.silos.EUR ? { EUR: store.silos.EUR } : {}),
@@ -48,21 +50,36 @@ const stateOf = (store: PortfolioStore): InboxState => ({
  * `check` goes on without it (it cannot change what a batch accepts) and `ingest` refuses with the reason.
  */
 async function plan(all: InboxFile[], store: PortfolioStore, mustKnowRules: boolean): Promise<Plan> {
-  const [history, rulesVersion] = await Promise.all([
+  const [history, rulesVersion, rejected] = await Promise.all([
     readDecisionHistory(),
     readRulesVersion().catch((err) => {
       if (mustKnowRules) throw err;
       return "";
     }),
+    readRejected(),
   ]);
   const isWaiting = (file: InboxFile): boolean =>
     "text" in file && store.unmoved.some((u) => u.file === file.name && u.sha256 === sha256(file.text));
+  const awaiting = awaitingOf(rejected, store.resolvedRejections);
   const run = runFiles(
     stateOf(store),
     all.filter((file) => !isWaiting(file)),
-    { rulesVersion, takenIds: new Set(history.map((d) => d.id)), entryCostsTaken: entryCostsTaken(history) },
+    {
+      awaiting: new Set(awaiting),
+      rulesVersion,
+      takenIds: new Set(history.map((d) => d.id)),
+      entryCostsTaken: entryCostsTaken(history),
+    },
   );
-  return { waiting: all.filter(isWaiting).map((file) => file.name), store, history, rulesVersion, run };
+  return {
+    waiting: all.filter(isWaiting).map((file) => file.name),
+    store,
+    history,
+    rulesVersion,
+    rejected,
+    awaiting,
+    run,
+  };
 }
 
 /** The summary line for the errors of the files that did not check clean. */
@@ -86,13 +103,20 @@ export async function checkInbox(): Promise<InboxOutcome> {
     planned.waiting.length > 0
       ? [`${planned.waiting.length} batch(es) already applied, waiting to be moved by the next ingest.`]
       : [];
+  // Not an error of the inbox: the batches it rejected before are named until one replaces or discards them.
+  const awaiting =
+    planned.awaiting.length > 0
+      ? [
+          `${planned.awaiting.length} rejected batch(es) awaiting a replacement or a discard: ${planned.awaiting.map((n) => `inbox/rejected/${printable(n)}`).join(", ")}.`,
+        ]
+      : [];
   if (problems.length === 0) {
     return {
-      lines: [`Inbox is clean: ${checks.length} batch(es) would apply.`, ...waiting, ...warnings],
+      lines: [`Inbox is clean: ${checks.length} batch(es) would apply.`, ...waiting, ...warnings, ...awaiting],
       exitCode: 0,
     };
   }
-  return { lines: [...problems, ...warnings, ...waiting, `${errorSummary(checks)}.`], exitCode: 1 };
+  return { lines: [...problems, ...warnings, ...waiting, ...awaiting, `${errorSummary(checks)}.`], exitCode: 1 };
 }
 
 /**
@@ -130,11 +154,14 @@ export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome>
     return { lines: ["Inbox is empty: nothing to apply."], exitCode: 0 };
   }
 
-  const { run, history, rulesVersion, waiting, store } = await plan(
-    all,
-    stored ?? (await storeFromPortfolioFile()),
-    true,
-  );
+  const {
+    run,
+    history,
+    rulesVersion,
+    waiting,
+    store,
+    rejected: inRejected,
+  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true);
   const clean = run.checks.filter((c) => c.clean);
   const rejected = run.checks.filter((c) => !c.clean && c.text !== undefined);
   const unreadable = run.checks.filter((c) => !c.clean && c.text === undefined);
@@ -163,6 +190,19 @@ export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome>
         ...clean.map((c) => ({ file: c.name, sha256: sha256(c.text!), at: now.toISOString() })),
       ],
       pendingDecisions: lines.map((d) => JSON.stringify(validateDecision(d))),
+      // What a clean batch replaced or discarded is settled with the state it was applied with.
+      resolvedRejections: [
+        ...store.resolvedRejections,
+        ...clean.flatMap((c) =>
+          c.resolved.map(({ file, how }) => ({
+            file,
+            sha256: sha256(inRejected.find((r) => r.name === file)?.text ?? ""),
+            how,
+            by: c.name,
+            at: now.toISOString(),
+          })),
+        ),
+      ],
     };
     await saveStore(committed);
     await appendDecisions(lines);

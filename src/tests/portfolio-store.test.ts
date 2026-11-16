@@ -6,10 +6,9 @@
  */
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile, readdir, stat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Lot } from "../types.js";
 import { parseTicker as tk } from "../ticker.js";
 import { brokenUsdLots, lotsSection, mdTable, type HeldLot } from "./fixtures/lots.js";
 
@@ -159,7 +158,7 @@ describe("the portfolio state port", () => {
   describe("what each flow does with what could not be read", () => {
     const broken = () => brokenUsdLots(portfolioMd([TCK_ROW, "| M&M.NS | 1 | 5 | 5 | 0 | 4 |"], [TCK_LOT]));
 
-    it("the strict flows (decision:record, the evaluation) refuse a Lots table that does not read, with the parser's own error", async () => {
+    it("the strict flows (the evaluation) refuse a Lots table that does not read, with the parser's own error", async () => {
       for (const [label, md] of broken().slice(0, 2)) {
         await put(md.replace("| M&M.NS | 1 | 5 | 5 | 0 | 4 |\n", ""));
         await assert.rejects(
@@ -215,123 +214,6 @@ describe("the portfolio state port", () => {
         );
         assert.equal(read.skippedRows.length, 1, label);
       }
-    });
-  });
-
-  describe("changing the lots", () => {
-    const lotOf = (units: number): Lot<"USD"> => ({
-      ticker: tk("TCK"),
-      entryId: "lot-tck",
-      date: "2026-06-15",
-      units,
-      entryUnits: 2,
-      entryPrice: 100,
-      initialStop: 80,
-      entryCosts: null,
-      origin: "sistema",
-      rulesVersion: "1.0",
-      rulesViolations: [],
-    });
-    const change = { ticker: tk("TCK"), volume: 1, avgPrice: 100 };
-
-    it("writes the new lots and the position change, if the lots on disk are the ones it was planned on", async () => {
-      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
-      const { portfolio } = await store.readPortfolio("USD");
-
-      await store.changeLots("USD", portfolio.lots, [lotOf(1)], change);
-
-      const after = (await store.readPortfolio("USD")).portfolio;
-      assert.deepEqual([after.lots.map((l) => l.units), after.positions.map((p) => p.volume)], [[1], [1]]);
-      assert.deepEqual(
-        (await readdir(vaultDir)).filter((f) => f.endsWith(".tmp")),
-        [],
-        "no temp file is left",
-      );
-    });
-
-    it("checks the very read it writes: `check` sees the portfolio of that read, and a refusal writes nothing", async () => {
-      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
-      const before = await readFile(file(), "utf8");
-      const { portfolio } = await store.readPortfolio("USD");
-      const seen: number[] = [];
-
-      await store.changeLots("USD", portfolio.lots, [lotOf(1)], change, {
-        check: (read) => void seen.push(read.positions[0].volume),
-      });
-      assert.deepEqual(seen, [2]);
-
-      await put(before);
-      await assert.rejects(
-        () =>
-          store.changeLots("USD", portfolio.lots, [lotOf(1)], change, {
-            check: () => {
-              throw new Error("does not match the log");
-            },
-          }),
-        /does not match the log/,
-      );
-      assert.equal(await readFile(file(), "utf8"), before);
-    });
-
-    it("with dryRun refuses what it would refuse (the guard, `check`, the edit), and writes nothing", async () => {
-      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
-      const before = await readFile(file(), "utf8");
-      const { portfolio } = await store.readPortfolio("USD");
-
-      await store.changeLots("USD", portfolio.lots, [lotOf(1)], change, { dryRun: true });
-      assert.equal(await readFile(file(), "utf8"), before);
-
-      await assert.rejects(
-        () => store.changeLots("USD", [lotOf(99)], [lotOf(1)], change, { dryRun: true }),
-        store.LotsMovedError,
-      );
-      await assert.rejects(
-        () =>
-          store.changeLots("USD", portfolio.lots, [lotOf(1)], change, { check: () => assert.fail("no"), dryRun: true }),
-        /no/,
-      );
-      assert.equal(await readFile(file(), "utf8"), before);
-    });
-
-    it("checks and edits one read: a Volume the owner edited is refused by `check`, not overwritten", async () => {
-      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
-      const { portfolio } = await store.readPortfolio("USD");
-      // The Lots are as planned; only the Positions Volume moved. A check on another read than the edit would pass.
-      await put(portfolioMd([TCK_ROW.replace("| 2 |", "| 5 |")], [TCK_LOT]));
-      const edited = await readFile(file(), "utf8");
-
-      await assert.rejects(
-        () =>
-          store.changeLots("USD", portfolio.lots, [lotOf(1)], change, {
-            check: (read) => assert.equal(read.positions[0].volume, 2, "Volume does not match its lots"),
-          }),
-        /Volume does not match its lots/,
-      );
-      assert.equal(await readFile(file(), "utf8"), edited);
-    });
-
-    it("refuses, writing nothing, when the lots moved since the plan was made", async () => {
-      await put(portfolioMd([TCK_ROW], [TCK_LOT]));
-      const { portfolio } = await store.readPortfolio("USD");
-      await put(portfolioMd([TCK_ROW], [{ ...TCK_LOT, units: 3 }]));
-      const moved = await readFile(file(), "utf8");
-
-      await assert.rejects(
-        () => store.changeLots("USD", portfolio.lots, [lotOf(1)], change),
-        (err: Error) =>
-          err instanceof store.LotsMovedError && err.message.includes("portfolio.md (USD): Lots changed meanwhile"),
-      );
-      assert.equal(await readFile(file(), "utf8"), moved);
-    });
-
-    it("refuses a Lots table that does not read, and a row of it that does not, as the strict flows do", async () => {
-      const [heading, , row] = brokenUsdLots(portfolioMd([TCK_ROW], [TCK_LOT]));
-      await put(heading[1]);
-      await assert.rejects(() => store.changeLots("USD", [], [lotOf(1)], change), /missing section "## USD — Lots"/);
-      await put(row[1]);
-      const text = await readFile(file(), "utf8");
-      await assert.rejects(() => store.changeLots("USD", [], [lotOf(1)], change), /the Lots table is not rewritten/);
-      assert.equal(await readFile(file(), "utf8"), text);
     });
   });
 
@@ -446,53 +328,6 @@ describe("the portfolio state port", () => {
       await store.refreshPrices("USD", new Map([[tk("TCK"), 110]]));
       await store.refreshPrices("USD", new Map());
       assert.deepEqual([await stored(), await readFile(file(), "utf8")], before);
-    });
-
-    describe("changing the lots", () => {
-      const change = { ticker: tk("TCK"), volume: 1, avgPrice: 100 };
-      const lotAfter = (units: number): Lot<"USD"> => ({
-        ticker: tk("TCK"),
-        entryId: "lot-tck",
-        date: "2026-06-15",
-        units,
-        entryUnits: 2,
-        entryPrice: 100,
-        initialStop: 80,
-        entryCosts: null,
-        origin: "sistema",
-        rulesVersion: "1.0",
-        rulesViolations: [],
-      });
-
-      it("writes the lots and the position change to the store and the view, if the lots are the ones it was planned on", async () => {
-        await seed();
-        const { portfolio } = await store.readPortfolio("USD");
-        await store.changeLots("USD", portfolio.lots, [lotAfter(1)], change);
-        const after = (await store.readPortfolio("USD")).portfolio;
-        assert.deepEqual([after.lots.map((l) => l.units), after.positions.map((p) => p.volume)], [[1], [1]]);
-        assert.match(await readFile(file(), "utf8"), /\| TCK \| lot-tck \| 2026-06-15 \| 1 \| 2 \|/);
-      });
-
-      it("checks the very read it writes, refuses when the lots moved, and with dryRun writes nothing", async () => {
-        await seed();
-        const { portfolio } = await store.readPortfolio("USD");
-        const before = await stored();
-        await assert.rejects(
-          () =>
-            store.changeLots("USD", portfolio.lots, [lotAfter(1)], change, {
-              check: () => {
-                throw new Error("no");
-              },
-            }),
-          /no/,
-        );
-        await store.changeLots("USD", portfolio.lots, [lotAfter(1)], change, { dryRun: true });
-        await assert.rejects(
-          () => store.changeLots("USD", [lotAfter(7)], [lotAfter(1)], change),
-          (err: Error) => err instanceof store.LotsMovedError,
-        );
-        assert.equal(await stored(), before);
-      });
     });
 
     it("the view is the state in the tables the old reader reads: written, then read back, the model is the same", async () => {

@@ -80,7 +80,8 @@ const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING:
 
 /**
  * Reads watchlist.md and returns the entries of the given currency. An entry whose ticker does not
- * parse (of any currency) throws: this is the reader of `decision:record`, which refuses it (ADR-0016).
+ * parse (of any currency) throws: this is the strict reader, which refuses it (ADR-0016); no flow uses it since #152 took the trade part out of
+ * `decision:record`, the tests of the ticker boundary do.
  */
 export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[]> {
   return readWatchlistEntries(currency);

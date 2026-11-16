@@ -7,8 +7,8 @@
 //    not blocked, sends the alert.
 //    Shared by index.ts ("api" backend) and pending.ts ("handoff" backend), so
 //    both produce exactly the same for the same Recommendation.
-// 2. `recordOwnerDecision` (`npm run decision:record`): what the owner
-//    narrates they did at their broker, so nobody edits the JSONL by hand.
+// 2. `recordOwnerDecision` (`npm run decision:record`): the owner's stop adjustments, deposits, withdrawals and
+//    currency conversions, so nobody edits the JSONL by hand. Trades go only through the inbox (ADR-0018, #152).
 import { config } from "./config.js";
 import {
   appendDecisions,
@@ -16,7 +16,6 @@ import {
   readDecisionHistory,
   readDecisions,
   readRulesVersion,
-  readWatchlist,
   writeDecisionLog,
 } from "./vault-io.js";
 import { blockCodes, evaluateRecommendation } from "./utils/sizing.js";
@@ -26,33 +25,20 @@ import {
   benchmarkFields,
   buildDecision,
   decisionFromRecommendation,
-  entryRuleViolations,
-  entryAfterExit,
   findRelatedProposal,
   originOf,
   resolveFxConversion,
   twoMonthRuleWarning,
   validateOwnerInput,
-  type OwnerDecisionInput,
   type Decision,
   type DecisionOrigin,
 } from "./decisions.js";
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
-import { assertLotsMatch } from "./utils/lots-check.js";
 import { portfolioWhere } from "./utils/portfolio-where.js";
-import { entryCostsTaken, lotOfEntry, planSale, type SaleShare } from "./utils/portfolio-lots.js";
-import {
-  changeCash,
-  changeLots,
-  LotsMovedError,
-  readPortfolio,
-  requireReadable,
-  type PositionChange,
-} from "./portfolio-store.js";
-import { exactAmount, isCountedRefusal } from "./money.js";
-import { atr14d } from "./utils/technicals.js";
-import type { Currency, Lot, PortfolioSnapshot, Recommendation, Signal } from "./types.js";
-import { tickerFileStem, type Ticker } from "./ticker.js";
+import { changeCash } from "./portfolio-store.js";
+import { formatMoney } from "./money.js";
+import type { Currency, Recommendation, Signal } from "./types.js";
+import { tickerFileStem } from "./ticker.js";
 
 export interface RecordDecisionOptions {
   /** Tells in the console which backend recorded the decision, with a trailing space ("[pending] "). */
@@ -131,20 +117,19 @@ export async function recordDecision(
   );
 }
 
-/** Provider `recordOwnerDecision` needs: benchmark price and history for the ATR. */
+/** Provider `recordOwnerDecision` needs: the benchmark price on the date. */
 export type OwnerDecisionProvider = PriceSource;
 
 /**
- * Records a trade narrated by the owner. The engine fills in what the owner
- * need not know: id, rules version, silo benchmark, rules broken against the
- * current watchlist and the system proposal it comes from (which decides the
- * origin, ADR-0009 §8).
+ * Records what the owner narrates that is not a trade: a stop adjustment, a deposit, a withdrawal or a currency
+ * conversion. A buy and a sale are told to the engine only through the inbox (`inbox/`, ADR-0018), which keeps the
+ * lots and writes the entry and exit lines of the log as telemetry: `validateOwnerInput` refuses them here. The
+ * engine fills in what the owner need not know: id, rules version, silo benchmark and the system proposal an
+ * adjustment comes from (which decides the origin, ADR-0009 §8).
  *
- * It also keeps the lots of the silo (ADR-0015, #42): an entry adds a lot to `portfolio.md` and
- * creates or updates its position; a sale consumes the ticker's lots first in, first out and writes
- * one `exit` per lot consumed. It appends to the log first and rewrites the portfolio second; all the
- * checks run before either is written. Returns the decisions recorded: one, except a sale that
- * spans several lots.
+ * With the engine's store a deposit, a withdrawal or a conversion also moves the cash of its silo(s), as the inbox's
+ * deposit and withdrawal commands do: all the checks run before the log is written, and the write that follows is
+ * the one the checks tried. Returns the decisions recorded (one).
  */
 export async function recordOwnerDecision(
   raw: unknown,
@@ -152,24 +137,22 @@ export async function recordOwnerDecision(
   today = new Date().toISOString().slice(0, 10),
 ): Promise<Decision[]> {
   const input = validateOwnerInput(raw);
-  if (input.type === "exit" && input.related_id) {
-    throw new Error("related_id does not apply to an exit: a sale consumes the lots first in, first out");
-  }
-  // The whole history, not the live log: the entry of an open lot may sit in an archived quarter, and
+  // The whole history, not the live log: a proposal an adjustment cites may sit in an archived quarter, and
   // reading it once keeps a corrupt line to one warning.
   const history = await readDecisionHistory();
-  const book = await readLotBook(input.currency, history);
-  if (!book && (input.type === "entry" || input.type === "exit")) {
+  const date = input.date ?? today;
+  // A conversion that delivers nothing is refused before anything goes to the network, with nothing recorded.
+  const conversion =
+    input.type === "fx_conversion" ? resolveFxConversion(input, config.broker.fxConversionPct) : undefined;
+  if (conversion !== undefined && !(conversion.costs < input.amount!)) {
     throw new Error(
-      `portfolio.md does not exist: ${input.type === "entry" ? "an entry needs it to keep its lot" : "a sale needs it to find its lots"} (nothing was recorded)`,
+      `the costs of ${formatMoney(conversion.costs)} ${input.currency} are not below the amount of ${formatMoney(input.amount!)} ${input.currency} converted: nothing would reach the other silo (nothing was recorded)`,
     );
   }
-  const date = input.date ?? today;
-  // A sale is planned, and refused if it is dated before a lot it would consume, before anything goes to
-  // the network: the lots are in `portfolio.md` and the refusal needs nothing else.
-  const sale = input.type === "exit" ? planOwnerSale(input, book!.portfolio.lots, history, date) : undefined;
-  const [rulesVersion, watchlist] = await Promise.all([readRulesVersion(), readWatchlist(input.currency)]);
-  const benchmark = await benchmarkOnDate(provider, input.currency, date, today);
+  const [rulesVersion, benchmark] = await Promise.all([
+    readRulesVersion(),
+    benchmarkOnDate(provider, input.currency, date, today),
+  ]);
 
   const common = {
     date,
@@ -186,98 +169,9 @@ export async function recordOwnerDecision(
   const originFrom = (related: Decision | undefined): DecisionOrigin => input.origin ?? originOf(related);
 
   let decisions: Decision[];
-  /** The change to the silo's lots and its position, handed to the portfolio store once the log is written. */
-  let lotChange: { lots: readonly Lot[]; change: PositionChange; cash?: number } | undefined;
-  /** A deposit, a withdrawal or a conversion: the cash the store moves while it exists, with no lot to change. */
+  /** A deposit, a withdrawal or a conversion: the cash the store moves while it exists. */
   let cashFlow: (readonly [Currency, number])[] | undefined;
   switch (input.type) {
-    case "entry": {
-      const ticker = input.ticker!;
-      // An engine block too: buying what it blocked is an owner trade, but it
-      // cites the block to measure what happens when one is skipped.
-      // And an armed breakout: its Buy Stop fills without the heartbeat seeing the close.
-      const proposal =
-        explicit ??
-        findRelatedProposal(history, { ticker, date, types: ["buy_proposal", "buy_blocked", "setup_armed"] });
-      const atr = await fetchAtr(provider, ticker);
-      // Units and amount are one fact (the input validation refused a contradiction): the log line, the
-      // lot's `Entry units` and the evaluation read the same units.
-      const units = input.units ?? input.amount! / input.price!;
-      const entry = buildDecision({
-        ...common,
-        type: "entry",
-        ticker,
-        origin: originFrom(proposal),
-        price: input.price,
-        amount: input.amount ?? exactAmount(units * input.price!),
-        units,
-        costs: input.costs,
-        stop_initial: input.stop,
-        rule_violations: [
-          ...entryRuleViolations({
-            price: input.price!,
-            stop: input.stop,
-            entry: watchlist.find((e) => e.ticker === ticker),
-            proposal,
-            atr,
-            minStopAtr: config.strategy.stopMinAtr,
-          }),
-          ...(originOf(proposal) === "propietario" && proposal?.origin === "sistema" ? ["overrode_block"] : []),
-        ],
-        related_id: proposal?.id,
-      });
-      decisions = [entry];
-      const lots = [...book!.portfolio.lots, lotOfEntry(entry, units)];
-      lotChange = withLots(lots, {
-        ticker,
-        newStopLoss: entry.stop_initial ?? null,
-        currentPrice: entry.price,
-      });
-      // The cash the store loses: the amount in whole cents and the costs.
-      lotChange.cash = -(Math.round(entry.amount! * 100) / 100 + (entry.costs ?? 0));
-      break;
-    }
-    case "exit": {
-      const ticker = input.ticker!;
-      const sellProposal = findRelatedProposal(history, { ticker, date, types: ["sell"] });
-      const shares = sale!;
-      const origin = originFrom(sellProposal);
-      decisions = shares.map((share) =>
-        buildDecision({
-          ...common,
-          type: "exit",
-          ticker,
-          origin,
-          price: input.price,
-          amount: share.amount,
-          // What this exit sold from its lot: the evaluation measures from it, not from amount / price.
-          units: share.unitsSold,
-          costs: share.costs,
-          pnl: share.pnl,
-          // The lot's, never the latest open entry's: each exit is self-contained (ADR-0015).
-          related_id: share.lot.entryId,
-          entry_price: share.lot.entryPrice,
-          entry_units: share.lot.entryUnits,
-          entry_costs: share.entryCosts,
-          entry_date: share.lot.date,
-          entry_origin: share.lot.origin,
-          entry_rules_version: share.lot.rulesVersion,
-          stop_initial: share.lot.initialStop ?? undefined,
-          rule_violations: share.lot.rulesViolations,
-          lot_units_left: share.unitsLeft,
-        }),
-      );
-      const left = new Map(shares.map((share) => [share.lot.entryId, share.unitsLeft]));
-      const remaining = book!.portfolio.lots
-        .map((lot) => ({ ...lot, units: left.get(lot.entryId) ?? lot.units }))
-        .filter((lot) => lot.units > 0);
-      lotChange = withLots(remaining, { ticker });
-      // The cash the store gains: the proceeds in whole cents, less the costs.
-      lotChange.cash =
-        Math.round(shares.reduce((sum, share) => sum + share.amount, 0) * 100) / 100 -
-        shares.reduce((sum, share) => sum + (share.costs ?? 0), 0);
-      break;
-    }
     case "adjust_stop": {
       const ticker = input.ticker!;
       const proposal = explicit ?? findRelatedProposal(history, { ticker, date, types: ["adjust_stop"] });
@@ -295,7 +189,7 @@ export async function recordOwnerDecision(
       break;
     }
     case "fx_conversion": {
-      const { costs, fx_rate } = resolveFxConversion(input, config.broker.fxConversionPct);
+      const { costs, fx_rate } = conversion!;
       // What arrived in the other silo: the owner's figure, or the amount net of the fee at the rate (the same two
       // facts the log line is made of).
       const arrived = input.received ?? (input.amount! - costs) * fx_rate;
@@ -331,107 +225,20 @@ export async function recordOwnerDecision(
       break;
   }
 
-  if (!lotChange) {
-    // With the store the cash is the store's: the flow moves it (the dry run first, so a refusal records nothing).
-    if (cashFlow !== undefined && (await changeCash(cashFlow, { dryRun: true }))) {
-      await appendDecisions(decisions);
-      await changeCash(cashFlow).catch((err: unknown) => {
-        throw new Error(
-          `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but the cash was not updated ` +
-            `(${(err as Error).message}); record the opposite flow or tell the inbox the correction`,
-          { cause: err },
-        );
-      });
-      return decisions;
-    }
+  // With the store the cash is the store's: the flow moves it (the dry run first, so a refusal records nothing).
+  if (cashFlow !== undefined && (await changeCash(cashFlow, { dryRun: true }))) {
     await appendDecisions(decisions);
+    await changeCash(cashFlow).catch((err: unknown) => {
+      throw new Error(
+        `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but the cash was not updated ` +
+          `(${(err as Error).message}); correct the cash with a deposit or a withdrawal command in inbox/`,
+        { cause: err },
+      );
+    });
     return decisions;
   }
-  // The network calls are over: another writer of this checkout (the heartbeat's prices, the owner's editor)
-  // may have written portfolio.md meanwhile. The store reads it, checks that read against the history and edits
-  // that very read; it is tried here (`dryRun`) so a refusal comes before anything is written. If the lots
-  // themselves moved, the plan is stale: refuse it.
-  const check = (portfolio: PortfolioSnapshot) => assertLotsMatch(portfolio, history);
-  try {
-    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, {
-      check,
-      dryRun: true,
-      cash: lotChange.cash,
-    });
-  } catch (err) {
-    throw err instanceof LotsMovedError
-      ? new Error(
-          `${portfolioWhere(input.currency)}: Lots changed while the trade was being recorded (nothing was recorded); run it again`,
-        )
-      : err;
-  }
-  // Log first, portfolio second (ADR-0015): a stop in between leaves an exit whose lot did not shrink, which the
-  // owner fixes by hand; the other way round would leave a lot the log cannot explain.
   await appendDecisions(decisions);
-  // The store reads, checks and edits the portfolio again, right before writing: only the log append lies between
-  // the tried read and this one. The entry is in the log now, so whatever stops the write is reported as that,
-  // never as "nothing was recorded".
-  try {
-    await changeLots(input.currency, book!.portfolio.lots, lotChange.lots, lotChange.change, {
-      check,
-      cash: lotChange.cash,
-    });
-  } catch (err) {
-    throw new Error(
-      `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but portfolio.md was not updated ` +
-        `(${(err as Error).message.replace(/\s*\(nothing was recorded\)/g, "")}); apply the lot change by hand (ADR-0015)`,
-      { cause: err },
-    );
-  }
   return decisions;
-}
-
-/** The silo's portfolio as it was read, with its lots already checked against the decision history. */
-interface LotBook {
-  portfolio: PortfolioSnapshot;
-}
-
-/**
- * Reads the silo's portfolio and refuses it if its lots do not match the decision history: a
- * `Volume` that is not the sum of its lots' units, a lot or an open entry the log does not agree
- * with (ADR-0015). `null` without a portfolio.md: nothing to check, and only a trade that keeps lots
- * needs it. An unreadable one (e.g. the previous format) is refused as everywhere else.
- */
-async function readLotBook(currency: Currency, history: readonly Decision[]): Promise<LotBook | null> {
-  let read;
-  try {
-    read = await readPortfolio(currency);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-  const portfolio = requireReadable(read);
-  assertLotsMatch(portfolio, history);
-  return { portfolio };
-}
-
-/** The silo's `lots` and the change to the position of `change.ticker` that follows from them. */
-function withLots(
-  lots: readonly Lot[],
-  change: { ticker: Ticker; newStopLoss?: number | null; currentPrice?: number },
-): { lots: readonly Lot[]; change: PositionChange } {
-  const own = lots.filter((lot) => lot.ticker === change.ticker);
-  const volume = own.reduce((sum, lot) => sum + lot.units, 0);
-  const avgPrice = volume > 0 ? own.reduce((sum, lot) => sum + lot.units * lot.entryPrice, 0) / volume : undefined;
-  return { lots, change: { ...change, volume, avgPrice } };
-}
-
-/** ATR14 of the asset to evaluate the stop distance. Best-effort. */
-async function fetchAtr(provider: OwnerDecisionProvider, ticker: Ticker): Promise<number | null> {
-  try {
-    const bars = (await provider.getHistorical?.(ticker, "1y")) ?? [];
-    return atr14d(bars);
-  } catch (err) {
-    console.warn(
-      `[decision] ${ticker}: no ATR, the stop distance is not evaluated (${err instanceof Error ? err.message : String(err)})`,
-    );
-    return null;
-  }
 }
 
 /** Readable summary for the skill to relay to the owner. */
@@ -471,47 +278,4 @@ if (isMain) {
       console.error("[decision]", err instanceof Error ? err.message : err);
       process.exitCode = 1;
     });
-}
-
-/**
- * The lots a sale consumes (first in, first out). Refused, with nothing recorded, if any of them was
- * entered after the sale's date: a lot cannot be sold before it was bought (the same day is a round trip).
- */
-function planOwnerSale(
-  input: OwnerDecisionInput,
-  lots: readonly Lot[],
-  history: readonly Decision[],
-  date: string,
-): SaleShare[] {
-  const ticker = input.ticker!;
-  const amount = input.amount ?? exactAmount(input.units! * input.price!);
-  const units = input.units ?? amount / input.price!;
-  let shares: SaleShare[];
-  try {
-    shares = planSale(
-      lots,
-      {
-        ticker,
-        currency: input.currency,
-        units,
-        unitsFromAmount: input.units == null,
-        price: input.price!,
-        amount,
-        costs: input.costs,
-        pnl: input.pnl,
-      },
-      entryCostsTaken(history),
-    );
-  } catch (err) {
-    // The refusal of an amount says what it is; that nothing was recorded is said here, where it is true.
-    if (isCountedRefusal(err)) throw new Error(`${err.message} (nothing was recorded)`, { cause: err });
-    throw err;
-  }
-  const later = shares.find((share) => entryAfterExit(share.lot.date, date));
-  if (later) {
-    throw new Error(
-      `entry_date ${later.lot.date} is after the exit's date ${date}: a lot cannot be sold before it was bought (nothing was recorded)`,
-    );
-  }
-  return shares;
 }

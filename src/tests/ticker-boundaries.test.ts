@@ -1,6 +1,6 @@
 /**
  * Every boundary that reads a ticker parses it (#78, ADR-0016): a value written in lower case reads as its
- * upper-case value, and a value that does not parse is refused by `decision:record` and
+ * upper-case value, and a value that does not parse is refused by the inbox and
  * `decisions:evaluate` only; every other reader skips that row or entry, warns, and the rest keeps working.
  * One test per boundary, so that if a boundary stopped parsing, a test fails. Temporary vault, no network.
  */

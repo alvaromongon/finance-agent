@@ -14,23 +14,15 @@
 // One read, `readPortfolio`, for every flow. What it could not read is in its result: `lotsProblem` (the
 // `Lots` table as such), `portfolio.skippedLotRows` (rows of it), `skippedRows` (`Positions` rows) and
 // `unreadableCells`. Each flow keeps its own behaviour on them: the heartbeat reports them and goes on, the
-// briefings and the screening ignore the `Lots` and warn of the rest (`ignoringLots`), `decision:record` and
-// the evaluation refuse (`requireReadable`).
+// briefings and the screening ignore the `Lots` and warn of the rest (`ignoringLots`), the
+// evaluation refuses (`requireReadable`).
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { config } from "./config.js";
 import type { Ticker } from "./ticker.js";
 import type { Currency, Lot, PortfolioSnapshot } from "./types.js";
-import { applyLotChange, applyPrices, type PositionChange } from "./utils/portfolio-writer.js";
-import { portfolioWhere } from "./utils/portfolio-where.js";
-import {
-  decodeStore,
-  encodeStore,
-  renderView,
-  withLotChange,
-  withPrices,
-  type PortfolioStore,
-} from "./utils/portfolio-json.js";
+import { applyPrices } from "./utils/portfolio-writer.js";
+import { decodeStore, encodeStore, renderView, withPrices, type PortfolioStore } from "./utils/portfolio-json.js";
 import { volumeMismatches } from "./utils/lots-check.js";
 import { addCounted, countedInCents, formatMoney } from "./money.js";
 import {
@@ -46,7 +38,7 @@ import {
   SiloAbsentError,
 } from "./utils/vault-parser.js";
 
-export type { PortfolioStore, PositionChange };
+export type { PortfolioStore };
 
 /** What `readPortfolio` returns: the silo's model and what of the file could not be read into it. */
 export interface PortfolioRead<C extends Currency = Currency> {
@@ -176,7 +168,7 @@ function warnIfStale(lastSync: string | null | undefined): void {
 
 /**
  * The silo's model from a `portfolio.md` text already read, with the checks and warnings of
- * `readPortfolio`: `changeLots` parses the very text it will rewrite. Not exported: the text is the store's.
+ * `readPortfolio`. Not exported: the text is the store's.
  */
 function parsePortfolioText<C extends Currency>(raw: string, currency: C, warnStale = true): PortfolioRead<C> {
   assertSchemaVersion(raw, "portfolio.md");
@@ -229,7 +221,7 @@ function parsePortfolioText<C extends Currency>(raw: string, currency: C, warnSt
 }
 
 /**
- * The model for the flows that refuse a portfolio they cannot read whole (`decision:record`, the decisions
+ * The model for the flows that refuse a portfolio they cannot read whole (the decisions
  * evaluation): a `Positions` row whose ticker does not parse throws, naming it, and so does a `Lots` table that
  * does not read (`LotsTableError`). The rows of a readable `Lots` table that do not read stay in
  * `skippedLotRows`: the lots check names them.
@@ -252,64 +244,6 @@ export function ignoringLots<C extends Currency>(read: PortfolioRead<C>): Portfo
 }
 
 // ─── Writing ──────────────────────────────────────────────────────────────────
-
-/** The lots on disk are not the ones the change was planned on: someone else wrote the portfolio meanwhile. */
-export class LotsMovedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "LotsMovedError";
-  }
-}
-
-/** The lots of the silo as `readPortfolio` reads them, in a text that compares: the guard of `changeLots`. */
-const lotsKey = (lots: readonly Lot[]): string => JSON.stringify(lots);
-
-/**
- * Writes `lots` as the silo's open lots and updates the `Positions` row of `change.ticker` (created,
- * changed or deleted), if the lots on disk are still `expected` (`decision:record`, ADR-0015). Refuses with a
- * `LotsMovedError`, writing nothing, if they are not: the plan is stale. The file is read once per call and
- * that one read is both checked and edited, so a change of the owner's between the check and the write cannot
- * be overwritten. In order, on that read: the `Lots` guard; `check`, which receives the portfolio of the read and
- * refuses by throwing (the recorder checks the lots against the decision history there); the edit, which
- * refuses a `Lots` table with a row that does not read, since that is not the recorder's to guess; and, unless
- * `dryRun`, the write, which replaces the file atomically so a crash never leaves it truncated. With `dryRun`
- * every refusal comes and nothing is written: the recorder tries the change before it appends its log line, then
- * applies it, in a second call, after.
- */
-export async function changeLots<C extends Currency>(
-  currency: C,
-  expected: readonly Lot<C>[],
-  lots: readonly Lot<C>[],
-  change: PositionChange,
-  {
-    check,
-    dryRun = false,
-    cash,
-  }: { check?: (read: PortfolioSnapshot<C>) => void; dryRun?: boolean; cash?: number } = {},
-): Promise<void> {
-  const store = await readStore();
-  if (store !== null) {
-    const portfolio = readFromStore(store, currency, false).portfolio;
-    if (lotsKey(portfolio.lots) !== lotsKey(expected)) {
-      throw new LotsMovedError(`${portfolioWhere(currency)}: Lots changed meanwhile`);
-    }
-    check?.(portfolio);
-    // The store is the cash: the trade moves it as the inbox would, and a buy the cash cannot pay is refused here,
-    // before the log is written (the dry run), so nothing is recorded.
-    const changed = withCashChange(withLotChange(portfolio, lots, change), cash ?? 0);
-    if (!dryRun) await writeStore({ ...store, silos: { ...store.silos, [currency]: changed } });
-    return;
-  }
-  const text = await readFile(portfolioPath(), "utf8");
-  // The run read and warned of the file already: this read stays quiet.
-  const portfolio = requireReadable(parsePortfolioText(text, currency, false));
-  if (lotsKey(portfolio.lots) !== lotsKey(expected)) {
-    throw new LotsMovedError(`${portfolioWhere(currency)}: Lots changed meanwhile`);
-  }
-  check?.(portfolio);
-  const edited = applyLotChange(text, currency, lots, change);
-  if (!dryRun) await writeAtomically(edited);
-}
 
 /**
  * The silo with its cash (and its total cash, when it has one) moved by `delta`, in cents. Refuses, in words, a
@@ -335,7 +269,7 @@ function withCashChange<C extends Currency>(silo: PortfolioSnapshot<C>, delta: n
 
 /**
  * Moves the cash of the silos of the store, all in one write (a deposit, a withdrawal or a conversion told to
- * `decision:record`); `false`, having done nothing, while there is no store (the cash is then the owner's cell of
+ * `decision:record`, #152); `false`, having done nothing, while there is no store (the cash is then the owner's cell of
  * `portfolio.md`). With `dryRun` every refusal comes and nothing is written.
  */
 export async function changeCash(
@@ -421,7 +355,7 @@ export async function readPortfolioView(): Promise<string> {
 
 /**
  * The silo as `inbox:ingest` works on it: refused, naming what is wrong, unless it reads whole. What
- * `decision:record` refuses (`requireReadable`, then the checks of the lots that need no decision log: rows of
+ * the evaluation refuses (`requireReadable`, then the checks of the lots that need no decision log: rows of
  * `Lots` that do not read, a `Volume` that is not the sum of its lots) and the cells too large to count, which read
  * as 0: a state with a guessed cash would give the owner a wrong "clean" and a store with a row lost.
  */
@@ -446,7 +380,8 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
   try {
     raw = await readFile(portfolioPath(), "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { silos: {}, unmoved: [], pendingDecisions: [] };
+    if ((err as NodeJS.ErrnoException).code === "ENOENT")
+      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [] };
     throw err;
   }
   const read = silosOfText(raw);
@@ -459,6 +394,7 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
     ...(typeof accountEnv === "string" ? { accountEnv } : {}),
     unmoved: [],
     pendingDecisions: [],
+    resolvedRejections: [],
   };
 }
 

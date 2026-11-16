@@ -1,5 +1,5 @@
 // Cross-check of the open lots of portfolio.md against the decision log (ADR-0015). Pure: the
-// callers read both and decide what a mismatch means (the evaluation and `decision:record` refuse
+// callers read both and decide what a mismatch means (the evaluation refuses
 // the file, the heartbeat warns and keeps watching the positions).
 //
 // Two levels, because the heartbeat must not read the decision log on its alerting path:
@@ -196,7 +196,7 @@ function usedUpEntries(decisions: readonly Decision[]): ReadonlySet<string | und
 
 /**
  * Entries of the silo that are still open in the log and have no row in `Lots`. Only entries under the
- * lot contract are checked: their log line carries `units`, which `decision:record` writes on every
+ * lot contract are checked: their log line carries `units`, which the inbox writes on every
  * entry from #42 on. An entry without it predates the lots and is out of the check, cited by an exit or
  * not (a v1 position still open, an exit that cited only the latest entry of a scale-in, an exit with
  * no `related_id`). An entry whose lot is a skipped row of `Lots` (by id, or by ticker) is left out: that
@@ -238,7 +238,7 @@ export function assertLotsMatch(portfolio: PortfolioSnapshot, decisions: readonl
   const problems = lotsMismatches(portfolio, decisions);
   if (problems.length > 0) {
     throw new Error(
-      `${problems.join("\n")}\nEach Volume must be the sum of its lots' units and each open entry must have its lot (ADR-0015). With state/portfolio.json the portfolio changes only through inbox/ (a lot a sale closed for 0.00 leaves no exit line in the log: correct it with a dedicated commit that edits the log); without it, fix Lots by hand in portfolio.md (see docs/input-format.md)`,
+      `${problems.join("\n")}\nEach Volume must be the sum of its lots' units and each open entry must have its lot (ADR-0015). With state/portfolio.json the portfolio changes only through inbox/; without it, fix Lots by hand in portfolio.md (see docs/input-format.md)`,
     );
   }
 }

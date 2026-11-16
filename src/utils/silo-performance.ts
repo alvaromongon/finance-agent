@@ -53,7 +53,7 @@ interface TradeEffect {
 
 /**
  * Units and cash a silo buy or sale moves; costs come out of cash. The units are the line's own
- * (`decision:record` writes them on every entry and exit); `amount / price` only for a line without.
+ * (the inbox writes them on every entry and exit); `amount / price` only for a line without.
  */
 function tradeEffect(d: Decision, currency: Currency): TradeEffect | null {
   if (d.currency !== currency || d.ticker == null || d.price == null || d.amount == null) return null;

@@ -88,8 +88,18 @@ export interface Sale<C extends Currency = Currency> {
   stopExecuted: boolean;
 }
 
+/**
+ * Gives up a rejected batch for good (#152): it stays in `inbox/rejected/` as the audit trail and is not named in the
+ * digest any more. It changes no cash, lot or stop, so it has no currency.
+ */
+export interface Discard {
+  kind: "discard";
+  /** The file name in `inbox/rejected/`. */
+  file: string;
+}
+
 export type Command<C extends Currency = Currency> =
-  Deposit<C> | Withdrawal<C> | Buy<C> | Sale<C> | SetStop<C> | ClearStop;
+  Deposit<C> | Withdrawal<C> | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Discard;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -100,10 +110,12 @@ export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
  * (`opened`, see `openedKey`, and `lot`, the lot itself): the batch records those, so a `set_stop` knows which
  * lots are the batch's own and `inbox:ingest` has the lot to write down. A sale says the exit of each lot it
- * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again.
+ * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again. A discard
+ * says which rejected batch it gave up (`discarded`).
  */
 export type HandlerResult =
-  { state: InboxState; opened?: string; lot?: Lot; exits?: readonly SaleShare[] } | { reason: string };
+  | { state: InboxState; opened?: string; lot?: Lot; exits?: readonly SaleShare[]; discarded?: string }
+  | { reason: string };
 
 /** The id of the lot a buy opens: from the one source of decision ids, never one the history or the state holds. */
 export type NewEntryId = (date: string, ticker: Ticker) => string;
@@ -123,6 +135,8 @@ export interface BatchContext {
   rulesVersion: string;
   /** What the exits written so far took of each lot's entry costs, by entry id: a sale does not take it twice. */
   entryCostsTaken: ReadonlyMap<string, Money>;
+  /** The rejected batches (names in `inbox/rejected/`) still awaiting a replacement or a discard: what a `discard` can name. */
+  awaiting: ReadonlySet<string>;
   /** Where a `set_stop` or `clear_stop` writes who changed the stop. */
   record?: StopRecord;
 }
@@ -514,7 +528,7 @@ export function sale<C extends Currency>(
     }
     throw err;
   }
-  // A lot cannot be sold before it was bought (the same day is a round trip), as `decision:record` refuses it too.
+  // A lot cannot be sold before it was bought (the same day is a round trip), as the decision log refuses an exit dated before its entry.
   // It is checked after the lots, so that an unheld ticker or too many units report their real reason.
   const early = shares.find((share) => entryAfterExit(share.lot.date, command.date));
   if (early !== undefined) {
@@ -548,6 +562,19 @@ export function sale<C extends Currency>(
     p.ticker !== ticker ? [p] : volume > UNITS_TOLERANCE ? [{ ...p, volume, avgPrice }] : [],
   );
   return { state: withSilo(state, { ...credited, lots, positions }), exits: shares };
+}
+
+export function discard(
+  command: Discard,
+  { awaiting }: Pick<BatchContext, "awaiting">,
+  state: InboxState,
+): HandlerResult {
+  if (!awaiting.has(command.file)) {
+    return refused(
+      `cannot discard ${quoted(command.file)}: no rejected batch of that name is awaiting a replacement or a discard in inbox/rejected/`,
+    );
+  }
+  return { state, discarded: command.file };
 }
 
 /** A lot the batch opened whose initial stop is not below its entry price, so its R would be zero or negative. */
@@ -608,6 +635,8 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return setStop(state, command, context);
       case "clear_stop":
         return clearStop(state, command, context);
+      case "discard":
+        return discard(command, context, state);
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

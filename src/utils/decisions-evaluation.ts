@@ -438,7 +438,7 @@ const hasLotSnapshot = (exit: Decision): exit is LotExit =>
   !!exit.ticker &&
   exit.lot_units_left != null &&
   exit.price != null &&
-  !!exit.amount &&
+  exit.amount != null &&
   lotSnapshotProblems({ ...exit }).length === 0;
 
 /** R of a lot: its exits weighted by the units they sold; null if any of them has no R. */
@@ -459,7 +459,14 @@ function tradeR(exits: readonly Decision[]): number | null {
  */
 export function realizedR(exit: Decision): number | null {
   const { entry_price: entryPrice, entry_units: entryUnits, stop_initial: stop, price: exitPrice } = exit;
-  if (stop == null || entryPrice == null || !entryUnits || exitPrice == null || !exit.amount || !(stop < entryPrice)) {
+  if (
+    stop == null ||
+    entryPrice == null ||
+    !entryUnits ||
+    exitPrice == null ||
+    exit.amount == null ||
+    !(stop < entryPrice)
+  ) {
     return null;
   }
   const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / tradeUnits(exit);

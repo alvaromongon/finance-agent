@@ -42,6 +42,35 @@ export async function readInbox(): Promise<InboxFile[]> {
   return Promise.all(names.map((name) => readBatch(dir, name)));
 }
 
+/**
+ * The batches `inbox:ingest` rejected and moved to `inbox/rejected/` (#152): the regular `.yaml` and `.yml` files there,
+ * with their text, sorted by name; no folder is none. What is not a regular file is not a batch of the engine's and
+ * is left out (the engine moves only regular files there). Throws if `inbox/` or `rejected/` is a link or not a folder.
+ */
+export async function readRejected(): Promise<{ name: string; text: string }[]> {
+  const dir = inboxDir();
+  for (const [path, label] of [
+    [dir, "inbox"],
+    [join(dir, "rejected"), "inbox/rejected"],
+  ] as const) {
+    const folder = await lstat(path).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return null;
+      throw err;
+    });
+    if (folder === null) return [];
+    if (folder.isSymbolicLink() || !folder.isDirectory()) {
+      throw new Error(`${label} is not a real folder (a link or a file): the rejected batches are not read`);
+    }
+  }
+  const rejected = join(dir, "rejected");
+  const names = (await readdir(rejected, { withFileTypes: true }))
+    .filter((e) => /\.ya?ml$/i.test(e.name))
+    .map((e) => e.name)
+    .sort();
+  const read = await Promise.all(names.map((name) => readBatch(rejected, name)));
+  return read.flatMap((file) => ("text" in file ? [{ name: file.name, text: file.text }] : []));
+}
+
 /** One batch file: a hidden file is reported, never read; the rest opened without following a link and read from the handle that was checked. */
 async function readBatch(dir: string, name: string): Promise<InboxFile> {
   // `moveBatch` refuses such a name, so the file could never be moved: it is reported and left where it is
