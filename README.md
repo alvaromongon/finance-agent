@@ -149,7 +149,7 @@ runners are possible, for example Claude Code routines with `handoff` (below).
 | [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
 | [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `state/portfolio.json`, `watchlist.md`, `tesis/`                   |
 | [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md`                                       |
-| [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 06:00 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
+| [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
 | [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                     |
 
 ##### State writes never overlap
@@ -163,9 +163,8 @@ refreshing prices, and `decision:record`. Any trigger is valid as long as the wr
   waits is replaced by a newer one, which loses nothing: it reads the whole inbox when it starts. (A push made with the
   default `GITHUB_TOKEN`, the engine's own included, starts no workflow, so a run never starts another.)
 - **`inbox:ingest` and `decision:record` commit the state as a [compare-and-swap](docs/glossary.md#compare-and-swap)**
-  (`STATE_COMMIT=git`, which `inbox.yml` sets): they push onto the branch's last commit, and when another run committed
-  first they read the state again and apply their batch over it, at most `STATE_COMMIT_ATTEMPTS` times (3). A run that
-  keeps losing applies nothing and rejects nothing: the batches stay in `inbox/` for the next run, and its output says so.
+  (`STATE_COMMIT=git`, which `inbox.yml` sets), retrying at most `STATE_COMMIT_ATTEMPTS` times (3); a run that keeps
+  losing leaves its batches in `inbox/` for the next run and its output says so.
   `inbox.yml` is therefore the one workflow of the engine that commits itself and needs `contents: write`.
 - **The heartbeat and the briefing take no lock.** Stop detection reads the checkout it started from (the last commit)
   and never waits for a write. Their price refresh reaches the data repository through `commit-changes` with

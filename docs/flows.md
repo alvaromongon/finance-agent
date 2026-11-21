@@ -272,6 +272,10 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   `watchlist.md`, `tesis/`, `logs/decisions.jsonl`, the briefing log and email.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
+  In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
+  with no lock: if another run committed the [store](glossary.md#store) or its view since the briefing started, the
+  refresh is dropped with a warning and the rest (logs, briefing files, watchlist, thesis notes) is committed; the
+  next run refreshes the prices again. `commit-changes` commits only the paths the workflow gives it.
 - **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
 
 ## Weekly screening
@@ -294,6 +298,8 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
 - **Reads / writes**: reads `screening-universe.md`, `watchlist.md`, both portfolios, the screening
   log; writes `screening-log.md`, `tesis/`, `watchlist.md`, `logs/decisions.jsonl`,
   `logs/pending-screening/` and email.
+- **State**: it never writes the [store](glossary.md#store) or `portfolio.md`, so its workflow gives `commit-changes`
+  no `state-paths` and commits only `logs/`, `tesis/`, `watchlist.md` and `screening-log.md`.
 - **When it fails**: if the ranking cannot be trusted the run falls back to a random draw among
   filter-0 eligibles and the email says **NO RANKING** with the reason. A candidate that fails to
   prepare is skipped with a warning.

@@ -4,6 +4,7 @@
 import { config } from "./config.js";
 import { describeOwnerDecision, recordOwnerDecision, type OwnerDecisionProvider } from "./decision.js";
 import type { Decision } from "./decisions.js";
+import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
 
 /**
@@ -18,8 +19,11 @@ export async function recordCommitted(
   attempts = config.stateCommit.attempts(),
   provider?: OwnerDecisionProvider,
 ): Promise<Decision[]> {
-  if (remote === null) return recordOwnerDecision(raw, provider);
-  const write = await commitState(remote, () => recordOwnerDecision(raw, provider), {
+  // One provider for every attempt of the retry, not one per attempt.
+  const prices = provider ?? new YahooFinanceProvider();
+  const record = () => recordOwnerDecision(raw, prices);
+  if (remote === null) return record();
+  const write = await commitState(remote, record, {
     attempts,
     message: `chore(state): record owner decision ${new Date().toISOString().slice(0, 10)}`,
   });

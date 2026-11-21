@@ -42,6 +42,8 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
     echo "::error::The run's changes do not apply over $REMOTE/$REF (a file they change was changed there too)."
     exit 1
   fi
+  # --3way stages everything the patch touches; unstage it, so that only the given paths are committed.
+  git reset --quiet
   # Only what changed is added: a path the run never created (no store before the first ingest) is not a pathspec
   # `git add` accepts.
   # shellcheck disable=SC2086

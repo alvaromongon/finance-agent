@@ -109,7 +109,7 @@ export class GitStateRemote implements StateRemote {
       "--",
       ...this.options.paths,
     ]);
-    const staged = await this.git(["diff", "--cached", "--name-only", "-z", "--", ...this.options.paths]);
+    const staged = await this.git(["diff", "--cached", "--name-only", "--relative", "-z", "--", ...this.options.paths]);
     return [...new Set([...listed.split("\0"), ...staged.split("\0")].filter((name) => name !== ""))];
   }
 

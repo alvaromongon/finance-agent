@@ -169,6 +169,19 @@ describe("commit-changes script", () => {
     assert.equal(onRemote("data/logs/b.md"), "heartbeat log\n");
   });
 
+  it("commits only the given paths, even when the patch touches a file outside them", async () => {
+    const patch = await patchOf("heartbeat", async () => {
+      await put("heartbeat", "data/logs/b.md", "heartbeat log\n");
+      await put("heartbeat", "data/other/new.md", "outside, new\n");
+      await put("heartbeat", "data/notes.md", "outside, new too\n");
+    });
+    const result = commit(patch);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(onRemote("data/logs/b.md"), "heartbeat log\n");
+    assert.throws(() => onRemote("data/other/new.md"));
+    assert.throws(() => onRemote("data/notes.md"));
+  });
+
   it("an empty patch commits nothing", async () => {
     const patch = join(root, "empty.patch");
     await writeFile(patch, "", "utf8");
