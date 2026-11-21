@@ -10,7 +10,6 @@ import assert from "node:assert/strict";
 import {
   buildDecision,
   decisionFromRecommendation,
-  entryRuleViolations,
   findRelatedProposal,
   originOf,
   resolveFxConversion,
@@ -536,19 +535,36 @@ describe("validateDecision: lot_units_left of an exit (#52)", () => {
 });
 
 describe("validateOwnerInput", () => {
-  it("accepts an entry with units instead of an amount", () => {
-    assert.doesNotThrow(() =>
-      validateOwnerInput({ type: "entry", ticker: "CAT", currency: "USD", price: 30, units: 2, stop: 27 }),
+  it("refuses a buy and a sale, naming the inbox command that replaces them (#152)", () => {
+    for (const [type, command] of [
+      ["entry", "buy"],
+      ["exit", "sale"],
+    ] as const) {
+      assert.throws(
+        () => validateOwnerInput({ type, ticker: "CAT", currency: "USD", price: 30, units: 2 }),
+        (err: Error) =>
+          err.message.includes(`a ${command} is told to the engine with a ${command} command in inbox/`) &&
+          err.message.includes("[adjust_stop, deposit, withdrawal, fx_conversion]") &&
+          !err.message.includes("type must be one of [entry"),
+      );
+    }
+  });
+
+  it("refuses the fields of a trade: units and pnl", () => {
+    assert.throws(
+      () => validateOwnerInput({ type: "adjust_stop", ticker: "CAT", currency: "USD", stop: 27, units: 2, pnl: 1 }),
+      (err: Error) => err.message.includes("units does not apply") && err.message.includes("pnl does not apply"),
     );
+  });
+
+  it("accepts an adjust_stop with a ticker and a stop", () => {
+    assert.doesNotThrow(() => validateOwnerInput({ type: "adjust_stop", ticker: "CAT", currency: "USD", stop: 27 }));
   });
 
   it("collects what is missing by type", () => {
     assert.throws(
-      () => validateOwnerInput({ type: "entry", currency: "USD" }),
-      (err: Error) =>
-        err.message.includes("ticker is required") &&
-        err.message.includes("price is required") &&
-        err.message.includes("amount or units"),
+      () => validateOwnerInput({ type: "adjust_stop", currency: "USD" }),
+      (err: Error) => err.message.includes("ticker is required") && err.message.includes("stop is required"),
     );
     assert.throws(
       () => validateOwnerInput({ type: "fx_conversion", currency: "EUR", amount: 100 }),
@@ -578,44 +594,6 @@ describe("resolveFxConversion", () => {
         costs: 0.8,
         fx_rate: 1.17,
       },
-    );
-  });
-});
-
-describe("entryRuleViolations", () => {
-  it("outside the watchlist and without a stop", () => {
-    assert.deepEqual(entryRuleViolations({ price: 30, minStopAtr: 2 }), ["not_in_watchlist", "no_stop"]);
-  });
-
-  it("without a system setup behind it and with the stop less than 2 ATR away (ADBE case, 09-Sep)", () => {
-    assert.deepEqual(entryRuleViolations({ price: 580, stop: 560, entry: entry(), atr: 20, minStopAtr: 2 }), [
-      "entry_without_setup",
-      "stop_below_min_atr",
-    ]);
-    // A proposal without a setup (older ones) does not count either.
-    const legacy = buildDecision(base({ type: "buy_proposal", price: 500, assumptions: ["a"] }));
-    assert.deepEqual(entryRuleViolations({ price: 500, stop: 440, entry: entry(), proposal: legacy, minStopAtr: 2 }), [
-      "entry_without_setup",
-    ]);
-  });
-
-  it("after a setup and within the rules it breaks nothing; without ATR the stop is not evaluated", () => {
-    const proposal = buildDecision(
-      base({
-        type: "buy_proposal",
-        source: "heartbeat",
-        price: 500,
-        assumptions: ["a"],
-        setup: { pattern: "pullback", state: "triggered", level: 500 },
-      }),
-    );
-    assert.deepEqual(
-      entryRuleViolations({ price: 500, stop: 440, entry: entry(), proposal, atr: 20, minStopAtr: 2 }),
-      [],
-    );
-    assert.deepEqual(
-      entryRuleViolations({ price: 500, stop: 499, entry: entry(), proposal, atr: null, minStopAtr: 2 }),
-      [],
     );
   });
 });
@@ -690,6 +668,20 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
     }
   });
 
+  it("the amount of an exit may be 0, the only one that may: a dust lot closed for nothing is still closed in the log (#152)", () => {
+    assert.equal(buildDecision(exitLine({ amount: 0, units: 4 })).amount, 0);
+    assert.throws(() => buildDecision(exitLine({ amount: -1 })), /amount must be a number >= 0/);
+    // Without units the evaluation would divide the amount by the price: 0 units, and a division by zero after it.
+    assert.throws(() => buildDecision(exitLine({ amount: 0 })), /amount 0 in an exit needs units/);
+    for (const type of ["entry", "deposit", "withdrawal"] as const) {
+      assert.throws(
+        () => buildDecision(base({ type, price: 120, amount: 0, source: "portfolio-sync" })),
+        /amount must be a number > 0/,
+        type,
+      );
+    }
+  });
+
   it("units only goes in an entry or an exit", () => {
     assert.throws(
       () => buildDecision(base({ type: "adjust_stop", stop: 90, units: 4 })),
@@ -699,18 +691,15 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
 });
 
 describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
-  it("costs and pnl given with sub-cent decimals are rounded to the cent", () => {
+  it("costs given with sub-cent decimals are rounded to the cent", () => {
     const input = validateOwnerInput({
-      type: "exit",
-      ticker: "CAT",
-      currency: "USD",
-      price: 30,
-      units: 2,
+      type: "fx_conversion",
+      currency: "EUR",
+      amount: 100,
+      fx_rate: 1.1,
       costs: 1.234,
-      pnl: 5.678,
     });
     assert.equal(input.costs, 1.23);
-    assert.equal(input.pnl, 5.68);
   });
 
   it("an fx_conversion computes its fx_rate from the cost in cents (main used 1.234)", () => {
@@ -724,21 +713,5 @@ describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
     const { costs, fx_rate } = resolveFxConversion(input, 0);
     assert.equal(costs, 1.23);
     assert.equal(fx_rate, 1.194695); // 118 / 98.77; with 1.234 it was 1.194743
-  });
-
-  it("units × price that overflows is reported in the validation list, not as a RangeError", () => {
-    assert.throws(
-      () =>
-        validateOwnerInput({
-          type: "entry",
-          ticker: "CAT",
-          currency: "USD",
-          price: 1e200,
-          units: 1e200,
-          amount: 5,
-          stop: 1,
-        }),
-      /Invalid decision:record input/,
-    );
   });
 });

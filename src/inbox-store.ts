@@ -17,8 +17,8 @@ import type { InboxFile } from "./utils/inbox-check.js";
 const inboxDir = () => join(config.paths.vaultProjectDir, "inbox");
 
 /** The words for a batch file that cannot be read as a regular file. */
-const notRegular = (name: string, what: string): string =>
-  `inbox/${printable(name)} is ${what}: a batch must be a regular file, so it is not read`;
+const notRegular = (name: string, what: string, folder = "inbox"): string =>
+  `${folder}/${printable(name)} is ${what}: a batch must be a regular file, so it is not read`;
 
 /**
  * The `.yaml` and `.yml` files of `inbox/`, sorted by name; no folder is an empty inbox. A file that is not a regular
@@ -42,11 +42,47 @@ export async function readInbox(): Promise<InboxFile[]> {
   return Promise.all(names.map((name) => readBatch(dir, name)));
 }
 
+/**
+ * The batches `inbox:ingest` rejected and moved to `inbox/rejected/` (#152): the regular `.yaml` and `.yml` files there,
+ * with their text, sorted by name; no folder is none. A `.yaml` that cannot be read as a batch (a link, a hidden file,
+ * not a regular file) is not one the engine moved there: it is returned in `unread` with the reason, to be named and
+ * never followed. Throws if `inbox/` or `rejected/` is a link or not a folder.
+ */
+export async function readRejected(): Promise<{
+  batches: { name: string; text: string }[];
+  unread: { name: string; problem: string }[];
+}> {
+  const dir = inboxDir();
+  for (const [path, label] of [
+    [dir, "inbox"],
+    [join(dir, "rejected"), "inbox/rejected"],
+  ] as const) {
+    const folder = await lstat(path).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return null;
+      throw err;
+    });
+    if (folder === null) return { batches: [], unread: [] };
+    if (folder.isSymbolicLink() || !folder.isDirectory()) {
+      throw new Error(`${label} is not a real folder (a link or a file): the rejected batches are not read`);
+    }
+  }
+  const rejected = join(dir, "rejected");
+  const names = (await readdir(rejected, { withFileTypes: true }))
+    .filter((e) => /\.ya?ml$/i.test(e.name))
+    .map((e) => e.name)
+    .sort();
+  const read = await Promise.all(names.map((name) => readBatch(rejected, name, "inbox/rejected")));
+  return {
+    batches: read.flatMap((file) => ("text" in file ? [{ name: file.name, text: file.text }] : [])),
+    unread: read.flatMap((file) => ("problem" in file ? [{ name: file.name, problem: file.problem }] : [])),
+  };
+}
+
 /** One batch file: a hidden file is reported, never read; the rest opened without following a link and read from the handle that was checked. */
-async function readBatch(dir: string, name: string): Promise<InboxFile> {
+async function readBatch(dir: string, name: string, folder = "inbox"): Promise<InboxFile> {
   // `moveBatch` refuses such a name, so the file could never be moved: it is reported and left where it is
   // (macOS writes `._name.yaml` beside a file copied to a foreign volume).
-  if (name.startsWith(".")) return { name, problem: notRegular(name, "a hidden file") };
+  if (name.startsWith(".")) return { name, problem: notRegular(name, "a hidden file", folder) };
   let handle;
   try {
     // O_NONBLOCK: opening a named pipe would otherwise wait for a writer that never comes.
@@ -54,11 +90,11 @@ async function readBatch(dir: string, name: string): Promise<InboxFile> {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     // ELOOP (Linux) or EMLINK (macOS): the last part of the path is a symbolic link.
-    if (code === "ELOOP" || code === "EMLINK") return { name, problem: notRegular(name, "a symbolic link") };
+    if (code === "ELOOP" || code === "EMLINK") return { name, problem: notRegular(name, "a symbolic link", folder) };
     throw err;
   }
   try {
-    if (!(await handle.stat()).isFile()) return { name, problem: notRegular(name, "not a regular file") };
+    if (!(await handle.stat()).isFile()) return { name, problem: notRegular(name, "not a regular file", folder) };
     return { name, text: normalizeEol(await handle.readFile("utf8")) };
   } finally {
     await handle.close();

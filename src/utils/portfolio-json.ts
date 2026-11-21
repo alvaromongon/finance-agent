@@ -5,13 +5,12 @@
 // - `encodeStore` / `decodeStore`: the JSON text and the strict reader of it. Numbers are plain decimal text
 //   (never an exponent, so nothing reads `1e-8` differently); every amount of money carries its currency.
 // - `renderView`: the Markdown view, in the tables the old reader reads, so the two stay one format.
-// - `withLotChange` / `withPrices`: the edits `decision:record` and the price refresh make to a silo of the store.
+// - `withPrices`: the edit the price refresh makes to a silo of the store.
 import { canCountInCents, money, type Money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
 import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
 import { DECISION_ORIGINS, type DecisionOrigin } from "../decisions.js";
-import { numberFormat, type PositionChange } from "./portfolio-writer.js";
-import { UNITS_TOLERANCE } from "./units.js";
+import { numberFormat } from "./portfolio-writer.js";
 
 /** Version of the store's format; a store of another version is refused, never read partially. */
 export const STORE_VERSION = 1;
@@ -24,6 +23,22 @@ export interface AppliedBatch {
   file: string;
   sha256: string;
   /** ISO timestamp of when it was applied. */
+  at: string;
+}
+
+/**
+ * A rejected batch that is settled: a later batch replaced it (`replaces:`) or discarded it (`discard`). The file stays
+ * in `inbox/rejected/` as the audit trail; the hash of its text tells it from a file that is later moved there under
+ * the same name. The rejected batches not listed here are the ones awaiting a replacement or a discard (#152).
+ */
+export interface ResolvedRejection {
+  /** The file name in `inbox/rejected/`. */
+  file: string;
+  sha256: string;
+  how: "replaced" | "discarded";
+  /** The batch that settled it, by its file name in `inbox/`. */
+  by: string;
+  /** ISO timestamp of when it was settled. */
   at: string;
 }
 
@@ -40,6 +55,8 @@ export interface PortfolioStore {
    * appends the ones the log does not hold (by id) and clears them.
    */
   pendingDecisions: string[];
+  /** The rejected batches that were replaced or discarded, see `ResolvedRejection`. */
+  resolvedRejections: ResolvedRejection[];
 }
 
 // ─── Plain decimal ────────────────────────────────────────────────────────────
@@ -108,6 +125,13 @@ export function encodeStore(store: PortfolioStore): string {
     ...(store.accountEnv !== undefined ? { account_env: store.accountEnv } : {}),
     unmoved_batches: store.unmoved,
     pending_decisions: store.pendingDecisions,
+    resolved_rejections: store.resolvedRejections.map((r) => ({
+      file: r.file,
+      sha256: r.sha256,
+      how: r.how,
+      by: r.by,
+      at: r.at,
+    })),
     silos,
   };
   return `${JSON.stringify(document, null, 2)}\n`;
@@ -224,11 +248,28 @@ export function decodeStore(text: string, where: string): PortfolioStore {
   const pendingDecisions = array(doc.pending_decisions, "pending_decisions").map((line, i) =>
     string(line, `pending_decisions[${i}]`),
   );
+  // A store written before #152 has no such list: nothing was settled then.
+  const resolvedRejections = (
+    doc.resolved_rejections === undefined ? [] : array(doc.resolved_rejections, "resolved_rejections")
+  ).map((r, i): ResolvedRejection => {
+    const path = `resolved_rejections[${i}]`;
+    const o = object(r, path);
+    const how = string(o.how, `${path}.how`);
+    if (how !== "replaced" && how !== "discarded") fail(`${path}.how`, 'must be "replaced" or "discarded"');
+    return {
+      file: string(o.file, `${path}.file`),
+      sha256: string(o.sha256, `${path}.sha256`),
+      how: how as ResolvedRejection["how"],
+      by: string(o.by, `${path}.by`),
+      at: string(o.at, `${path}.at`),
+    };
+  });
   return {
     silos,
     ...(doc.account_env !== undefined ? { accountEnv: string(doc.account_env, "account_env") } : {}),
     unmoved,
     pendingDecisions,
+    resolvedRejections,
   };
 }
 
@@ -334,42 +375,6 @@ export function renderView(store: PortfolioStore): string {
 }
 
 // ─── Edits of a silo ──────────────────────────────────────────────────────────
-
-/**
- * The silo with `lots` as its open lots and the position of `change.ticker` created, changed or deleted, the way
- * `applyLotChange` edits the old file: the row keeps its own prices and stop, a new one takes `newStopLoss` and
- * `currentPrice` (the average price if absent), and a volume of nothing deletes it.
- */
-export function withLotChange<C extends Currency>(
-  silo: PortfolioSnapshot<C>,
-  lots: readonly Lot<C>[],
-  change: PositionChange,
-): PortfolioSnapshot<C> {
-  const held = silo.positions.find((p) => p.ticker === change.ticker);
-  const others = silo.positions.filter((p) => p.ticker !== change.ticker);
-  let positions: Position<C>[];
-  if (change.volume <= UNITS_TOLERANCE) positions = others;
-  else if (held !== undefined) {
-    positions = silo.positions.map((p) =>
-      p === held ? { ...p, volume: change.volume, avgPrice: change.avgPrice ?? p.avgPrice } : p,
-    );
-  } else {
-    const avgPrice = change.avgPrice ?? 0;
-    positions = [
-      ...others,
-      {
-        ticker: change.ticker,
-        currency: silo.currency,
-        volume: change.volume,
-        avgPrice,
-        currentPrice: change.currentPrice ?? avgPrice,
-        pl: money(0, silo.currency),
-        stopLoss: change.newStopLoss ?? null,
-      },
-    ];
-  }
-  return { ...silo, lots: [...lots], positions };
-}
 
 /**
  * The silo with the `Current price` and `P/L` of the positions that have a price (`(price - avg price) x volume`);

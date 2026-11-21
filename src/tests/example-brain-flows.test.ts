@@ -6,7 +6,7 @@
  */
 import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Signal } from "../types.js";
@@ -164,14 +164,16 @@ describe("every flow runs on the example brain", () => {
     assert.equal(await emailsQueued(), queuedBefore + 1);
   });
 
-  it("decision:record logs a trade the owner narrates", async () => {
-    const { FixturesProvider } = await import("../providers/fixtures.js");
-    const { recordOwnerDecision } = await import("../decision.js");
-    const [d] = await recordOwnerDecision(
-      { type: "entry", ticker: "AIR.PA", currency: "EUR", price: 150, units: 1, stop: 140 },
-      new FixturesProvider(join(EXAMPLES, "market")),
+  it("inbox:ingest applies a trade the owner narrates and logs it", async () => {
+    const { ingestInbox } = await import("../inbox.js");
+    await mkdir(join(dir, "inbox"), { recursive: true });
+    await writeFile(
+      join(dir, "inbox", "trade.yaml"),
+      "schema_version: 1\ncommands:\n  - command: buy\n    ticker: AIR.PA\n    date: 2026-09-15\n    units: 1\n    price: 150 EUR\n  - command: set_stop\n    ticker: AIR.PA\n    price: 140 EUR\n",
+      "utf8",
     );
-    assert.equal(d.ticker, "AIR.PA");
+    const result = await ingestInbox();
+    assert.equal(result.exitCode, 0, result.lines.join("\n"));
     assert.match(await readFile(join(dir, "logs", "decisions.jsonl"), "utf8"), /AIR\.PA/);
   });
 

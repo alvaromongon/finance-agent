@@ -4,7 +4,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { buildDecision, type Decision } from "../decisions.js";
 import { money } from "../money.js";
+import type { WatchlistEntry } from "../types.js";
 import { parseTicker as tk, tickerIdPart, type Ticker } from "../ticker.js";
 import {
   applyCommand,
@@ -20,6 +22,7 @@ import {
 import type {
   BatchContext,
   Buy,
+  EntryContext,
   ClearStop,
   Command,
   OpenedLot,
@@ -27,7 +30,7 @@ import type {
   Sale,
   SetStop,
 } from "../utils/inbox-handlers.js";
-import { crossedState, lot, stateOf } from "./fixtures/inbox.js";
+import { crossedState, entryContext, lot, stateOf } from "./fixtures/inbox.js";
 
 /**
  * What a run gives the handlers. The ids are the readable `YYYYMMDD-ticker-entry`, with a counter when one is
@@ -47,6 +50,8 @@ const ctx = (over: Partial<BatchContext> = {}, state: InboxState = {}): BatchCon
     },
     rulesVersion: "1.0",
     entryCostsTaken: new Map(),
+    awaiting: new Set(),
+    entry: entryContext(),
     ...over,
   };
 };
@@ -109,6 +114,7 @@ describe("inbox handlers", () => {
         newEntryId: () => "x",
         rulesVersion: "1.0",
         entryCostsTaken: new Map(),
+        entry: entryContext(),
       };
       // @ts-expect-error `opened` is required: this call must not compile
       const result = applyCommand(stateOf(), buyOf(), withoutOpened);
@@ -121,7 +127,7 @@ describe("inbox handlers", () => {
       assert.ok("state" in result && result.lot !== undefined && result.opened !== undefined);
       assert.deepEqual(
         [result.lot.entryId, result.lot.rulesVersion, result.lot.rulesViolations, result.opened],
-        ["20260915-sapde-entry", "2.1", ["no_stop"], "EUR/20260915-sapde-entry"],
+        ["20260915-sapde-entry", "2.1", ["entry_without_setup", "no_stop"], "EUR/20260915-sapde-entry"],
       );
       const lots = (result.state as Required<InboxState>).EUR.lots;
       assert.deepEqual(lots, [result.lot]);
@@ -135,13 +141,13 @@ describe("inbox handlers", () => {
       assert.ok("state" in set);
       assert.deepEqual(
         (set.state as Required<InboxState>).EUR.lots.map((l) => [l.initialStop, l.rulesViolations]),
-        [[170, []]],
+        [[170, ["entry_without_setup"]]],
       );
       const cleared = applyCommand(set.state, clearStopOf(), ctx({ opened }));
       assert.ok("state" in cleared);
       assert.deepEqual(
         (cleared.state as Required<InboxState>).EUR.lots.map((l) => [l.initialStop, l.rulesViolations]),
-        [[null, ["no_stop"]]],
+        [[null, ["entry_without_setup", "no_stop"]]],
       );
     });
 
@@ -212,6 +218,135 @@ describe("inbox handlers", () => {
       const state = stateOf();
       const crossed = crossedState(state);
       assert.match(reason(crossed, { kind: "withdrawal", currency: "USD", amount: usd(10) }), /no USD silo/);
+    });
+  });
+
+  describe("the rules of an entry and the proposal a trade follows (ADR-0013 §4, ADR-0009 §5 and §8)", () => {
+    const proposal = (over: Partial<Decision> = {}): Decision =>
+      buildDecision({
+        date: "2026-09-10",
+        ticker: tk("SAP.DE"),
+        currency: "EUR",
+        origin: "sistema",
+        source: "heartbeat",
+        type: "buy_proposal",
+        price: 180,
+        setup: { pattern: "pullback", state: "triggered", level: 180 },
+        assumptions: ["the thesis holds"],
+        rules_version: "1.0",
+        ...over,
+      });
+    const bought = (command: Buy<"EUR">, over: Partial<EntryContext> = {}) => {
+      const result = applyCommand(stateOf(), command, ctx({ entry: entryContext(over) }));
+      assert.ok("state" in result && result.lot !== undefined);
+      return result;
+    };
+    const entryEntry = (ticker: string): WatchlistEntry => ({
+      ticker: tk(ticker),
+      name: ticker,
+      market: "TEST",
+      currency: "EUR",
+      horizon: "medium",
+      thesis: "test",
+    });
+
+    it("flags a ticker that is not in the watchlist of its silo, and only that", () => {
+      const { lot: opened } = bought(buyOf(), { watchlist: { EUR: [entryEntry("KO")], USD: [entryEntry("SAP.DE")] } });
+      assert.deepEqual(opened!.rulesViolations, ["not_in_watchlist", "no_stop"]);
+    });
+
+    it("flags an entry in the watchlist that follows no system setup", () => {
+      assert.deepEqual(bought(buyOf()).lot!.rulesViolations, ["entry_without_setup", "no_stop"]);
+    });
+
+    it("a buy that follows a proposal with a setup is the system's, cites it, and breaks nothing but the stop", () => {
+      const followed = proposal();
+      const result = bought(buyOf(), { history: [followed] });
+      assert.deepEqual(
+        [result.lot!.origin, result.proposal, result.lot!.rulesViolations],
+        ["sistema", followed.id, ["no_stop"]],
+      );
+    });
+
+    it("follows an armed breakout too, and a proposal of the same day", () => {
+      const armed = proposal({
+        type: "setup_armed",
+        date: "2026-09-15",
+        setup: { pattern: "breakout", state: "armed", level: 180 },
+        target: 200,
+        assumptions: undefined,
+        eligibility: { verdict: "eligible", reasons: [] },
+      });
+      assert.equal(bought(buyOf(), { history: [armed] }).lot!.origin, "sistema");
+    });
+
+    it("a buy of what the engine blocked is the owner's, cites the block and says it overrode it", () => {
+      const blocked = proposal({
+        type: "buy_blocked",
+        eligibility: { verdict: "blocked", reasons: ["risk"] },
+      });
+      const result = bought(buyOf(), { history: [blocked] });
+      assert.deepEqual(
+        [result.lot!.origin, result.proposal, result.lot!.rulesViolations],
+        ["propietario", blocked.id, ["no_stop", "overrode_block"]],
+      );
+    });
+
+    it("does not follow a proposal of another ticker, one after the buy, one past the window or one a trade already cited", () => {
+      const history = [
+        proposal({ ticker: tk("KO") }),
+        proposal({ date: "2026-09-16" }),
+        proposal({ date: "2026-09-04" }),
+        proposal({ id: "taken" }),
+      ];
+      const cited = buildDecision({
+        date: "2026-09-11",
+        ticker: tk("SAP.DE"),
+        currency: "EUR",
+        origin: "propietario",
+        source: "portfolio-sync",
+        type: "entry",
+        price: 180,
+        amount: 360,
+        related_id: "taken",
+        rules_version: "1.0",
+      });
+      const result = bought(buyOf(), { history: [...history, cited] });
+      assert.equal(result.lot!.origin, "propietario");
+      assert.equal(result.proposal, undefined);
+    });
+
+    it("a proposal an earlier buy of the run cited is not followed again", () => {
+      const followed = proposal();
+      assert.equal(bought(buyOf(), { history: [followed], cited: new Set([followed.id]) }).lot!.origin, "propietario");
+    });
+
+    it("flags a stop closer than the minimum ATRs once the batch has set it, and only then", () => {
+      const entry = entryContext({ atr: new Map([[tk("SAP.DE"), 10]]), minStopAtr: 2 });
+      const first = applyCommand(stateOf(), buyOf({ price: 180 }), ctx({ entry }));
+      assert.ok("state" in first);
+      const opened = openedBy(first.opened);
+      const violationsAfter = (price: number) => {
+        const set = applyCommand(first.state, setStopOf({ price }), ctx({ opened, entry }));
+        assert.ok("state" in set);
+        return (set.state as Required<InboxState>).EUR.lots[0].rulesViolations;
+      };
+      // The entry is at 180 and an ATR is 10: a stop at 165 is 1.5 ATRs away (below 2), one at 150 is 3.
+      assert.deepEqual(violationsAfter(165), ["entry_without_setup", "stop_below_min_atr"]);
+      assert.deepEqual(violationsAfter(150), ["entry_without_setup"]);
+      // Without an ATR the distance is not judged.
+      const unknown = applyCommand(first.state, setStopOf({ price: 179 }), ctx({ opened, entry: entryContext() }));
+      assert.ok("state" in unknown);
+      assert.deepEqual((unknown.state as Required<InboxState>).EUR.lots[0].rulesViolations, ["entry_without_setup"]);
+    });
+
+    it("a sale that follows a sell proposal is the system's; any other is the owner's", () => {
+      const held = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2, entryPrice: 180, entryId: "a" })] });
+      const sell = proposal({ type: "sell", setup: undefined, assumptions: undefined });
+      const follows = applyCommand(held, saleOf(), ctx({ entry: entryContext({ history: [sell] }) }, held));
+      const alone = applyCommand(held, saleOf(), ctx({}, held));
+      assert.ok("state" in follows && "state" in alone);
+      assert.deepEqual([follows.origin, alone.origin], ["sistema", "propietario"]);
     });
   });
 

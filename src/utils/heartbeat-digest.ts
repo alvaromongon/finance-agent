@@ -11,6 +11,8 @@
 //   question and it is no less urgent for having been asked already.
 // - Lots warnings repeat too: while the `Lots` table is wrong they are in every
 //   digest (they have no key), so the problem is not forgotten after one email.
+// - Rejected batches repeat as well (#152): a batch the inbox refused is never forgotten, so it is in every digest
+//   until a later batch replaces or discards it.
 // - The rest goes out once a day per currency while its relevant data do not
 //   change (`digestKeys`). vault-io keeps the "already sent" state in
 //   logs/heartbeat-sent-<currency>.json.
@@ -20,6 +22,7 @@ import { formatNumber, messages, type Messages } from "../i18n/index.js";
 import { STOP_ATR_BY_HORIZON, type TightStop } from "./atr-stop.js";
 import { describeSetup, type SetupEvaluation } from "./setups/index.js";
 import type { StopBreach } from "./stop-breach.js";
+import { printable } from "./printable.js";
 import type { Ticker } from "../ticker.js";
 import type { Currency, Signal } from "../types.js";
 
@@ -51,6 +54,11 @@ export interface HeartbeatDigest {
    * Named in every digest while they last (not deduplicated), until a `set_stop` gives them one.
    */
   noStop: { ticker: Ticker; currency: Currency }[];
+  /**
+   * The batches `inbox:ingest` rejected that no later batch replaced or discarded (#152), by their file name in
+   * `inbox/rejected/`. Named in every digest while they last (not deduplicated): a rejected batch is never forgotten.
+   */
+  rejectedBatches: string[];
   tightStops: TightStop[];
   /** The day's armed breakouts (ADR-0013): the only thing actionable without the reasoner. */
   armed: SetupEvaluation[];
@@ -58,12 +66,12 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop and the lots, ticker and unreadable-cell warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
   return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
 }
 
-/** The digest without what was already sent today. Crossed stops, positions without a stop and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
@@ -103,6 +111,9 @@ export function renderHeartbeatDigest(
   }
   if (d.noStop.length > 0) {
     sections.push({ label: t.labels.noStop, tickers: d.noStop.map((p) => p.ticker), lines: noStopSection(d, m) });
+  }
+  if (d.rejectedBatches.length > 0) {
+    sections.push({ label: t.labels.rejectedBatches, tickers: [], lines: rejectedBatchesSection(d, m) });
   }
   if (d.tightStops.length > 0) {
     sections.push({
@@ -159,6 +170,17 @@ function unreadableCellsSection(d: HeartbeatDigest, m: Messages): string[] {
 function noStopSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [...t.noStopIntro, ...d.noStop.map((p) => t.noStopLine(p.ticker, p.currency)), ...t.noStopOutro];
+}
+
+function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [
+    ...t.rejectedBatchesIntro,
+    // A file name is the owner's text inside a Markdown code span: its control characters are escaped (`printable`)
+    // and a backtick, which would end the span, is written as an escape too.
+    ...d.rejectedBatches.map((file) => t.rejectedBatchesLine(printable(file).replaceAll("`", "\\u0060"))),
+    ...t.rejectedBatchesOutro,
+  ];
 }
 
 function tickersSection(d: HeartbeatDigest, m: Messages): string[] {

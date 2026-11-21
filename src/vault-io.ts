@@ -80,7 +80,9 @@ const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING:
 
 /**
  * Reads watchlist.md and returns the entries of the given currency. An entry whose ticker does not
- * parse (of any currency) throws: this is the reader of `decision:record`, which refuses it (ADR-0016).
+ * parse (of any currency) throws: this is the strict reader, which refuses it (ADR-0016). `inbox:check` and
+ * `inbox:ingest` use it for the rules of an entry (a watchlist they cannot read is not a watchlist with no entry in
+ * it), and so do the tests of the ticker boundary.
  */
 export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[]> {
   return readWatchlistEntries(currency);
@@ -551,7 +553,7 @@ export function resetArchiveDirNotes(): void {
 
 /**
  * One line per run, however many times the history is read: an owner who has never archived sees it
- * on every run of `decision:record`, `decisions:evaluate` and `decisions:chart`, and on no other.
+ * on every run of `inbox:check`, `inbox:ingest`, `decision:record`, `decisions:evaluate` and `decisions:chart`, and on no other.
  */
 function noteArchiveDirUnset(): void {
   if (archiveDirUnsetNoted) return;

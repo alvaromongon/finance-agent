@@ -256,15 +256,15 @@ describe("inbox format", () => {
         /schema_version "2" is not the version/,
       );
       assert.match(
-        issuesOf("schema_version: 1\nreplaces: x\ncommands:\n  - command: deposit\n    amount: 1 EUR\n")[0][2],
-        /unknown field "replaces"/,
+        issuesOf("schema_version: 1\nnote: x\ncommands:\n  - command: deposit\n    amount: 1 EUR\n")[0][2],
+        /unknown field "note"/,
       );
     });
 
     it("reads no further than a wrong or missing schema_version: one error", () => {
       const bad = "command: deposit\n    amount: 0 EUR\n  - nonsense";
       assert.equal(issuesOf(`commands:\n  - ${bad}\n`).length, 1);
-      assert.equal(issuesOf(`schema_version: 2\nreplaces: x\ncommands:\n  - ${bad}\n`).length, 1);
+      assert.equal(issuesOf(`schema_version: 2\nnote: x\ncommands:\n  - ${bad}\n`).length, 1);
       assert.deepEqual(
         parseBatch(`schema_version: 2\ncommands:\n  - command: deposit\n    amount: 1 EUR\n`).commands,
         [],
@@ -387,6 +387,50 @@ describe("inbox format", () => {
       assert.match(reason, /^not valid YAML: ".*"$/);
       // eslint-disable-next-line no-control-regex
       assert.doesNotMatch(parseBatch("a: \u001b[31m\n").issues[0].reason, /[\u0000-\u001f]/);
+    });
+  });
+
+  describe("the rejected batches: replaces and discard (#152)", () => {
+    it("reads `replaces` as the name of a rejected batch, with its line, beside the commands", () => {
+      const parsed = parseBatch(
+        "schema_version: 1\nreplaces: 2026-11-12.yaml\ncommands:\n  - command: deposit\n    amount: 1 EUR\n",
+      );
+      assert.deepEqual(parsed.issues, []);
+      assert.deepEqual(parsed.replaces, { file: "2026-11-12.yaml", line: 2 });
+      assert.equal(parseBatch(batch("command: deposit\namount: 1 EUR")).replaces, undefined);
+    });
+
+    it("refuses a `replaces` that is not the name of a yaml file: a path, a hidden file, another type, a list, nothing", () => {
+      for (const value of ["../a.yaml", "rejected/a.yaml", ".a.yaml", "a.txt", "a\\b.yaml", "[a.yaml]", ""]) {
+        const { issues, replaces } = parseBatch(
+          `schema_version: 1\nreplaces: ${value}\ncommands:\n  - command: deposit\n    amount: 1 EUR\n`,
+        );
+        assert.equal(replaces, undefined, value);
+        assert.equal(issues.length, 1, value);
+        assert.equal(issues[0].command, null);
+        assert.equal(issues[0].line, 2);
+        assert.match(issues[0].reason, /"replaces" must be the name of a rejected batch/);
+      }
+    });
+
+    it("reads the discard command with the file it gives up", () => {
+      const { commands, issues } = parseBatch(batch("command: discard\nfile: bad.YML"));
+      assert.deepEqual(issues, []);
+      assert.deepEqual(
+        commands.map((c) => c.command),
+        [{ kind: "discard", file: "bad.YML" }],
+      );
+    });
+
+    it("refuses a discard without a file, with a path, or with a field it does not have", () => {
+      assert.equal(problem("command: discard"), 'missing field "file"');
+      assert.match(problem("command: discard\nfile: ../x.yaml"), /"file" must be the name of a rejected batch/);
+      assert.match(problem("command: discard\nfile: x.yaml\nticker: SAP.DE"), /unknown field "ticker" for a discard/);
+    });
+
+    it("an unreadable discard is listed as unread, with no currency and no ticker", () => {
+      const { unread } = parseBatch(batch("command: discard\nfile: ../x"));
+      assert.deepEqual(unread, [{ position: 1, currencies: [], kind: "discard", ticker: undefined }]);
     });
   });
 });

@@ -87,8 +87,9 @@ cell that large makes its `Lots` row skipped (see below). No `schema_version` ch
 
 ## `portfolio.md`
 
-Synced by hand from the broker, except `Lots` and `Positions`, which `decision:record` writes
-when you record a trade (see below). One `Cash`, one `Positions` and one `Lots`
+Synced by hand from the broker. It is the state only until the first `inbox:ingest` makes the
+[store](#stateportfoliojson) from it; from then on it is generated from the store, and a buy, a sale or a
+cash flow is told to the engine with a batch in `inbox/` ([below](#inboxyaml)). One `Cash`, one `Positions` and one `Lots`
 section per currency (`EUR`, `USD`), with an em dash, en dash or hyphen between
 currency and section name. A section ends at the next `##` heading or `---` rule.
 
@@ -158,11 +159,12 @@ Rows whose ticker is empty, `—` or `-`, or whose `Volume` or `Avg price` is no
 number, are skipped.
 
 Lots table: one row per open [lot](glossary.md#lot), the units of one ticker
-bought in a single entry. `decision:record` writes it: an entry adds a row, a
+bought in a single entry. With the store, `inbox:ingest` keeps it: a buy adds a row, a
 sale shrinks the rows it consumes, first in, first out, and removes a row whose
-`Units` reach 0 (its history lives in the `exit` lines of the decision log). You
-only edit it by hand to correct it, in a correction commit (a split, a partial
-fill, a recording mistake). The first row is the header and columns are read
+`Units` reach 0 (its history lives in the `exit` lines of the decision log). Before
+the store exists you write it by hand, once, for the first `inbox:ingest` to read; a
+correction later is a correction commit (a split, a partial fill, a recording
+mistake, below). The first row is the header and columns are read
 **by name** (case-insensitive), in any order. All eleven are required; a missing
 one is an error. An empty table (header only, or `—` rows) is a silo with no
 open lots.
@@ -181,11 +183,14 @@ open lots.
 | `Rules version`    | `version` of `strategies/base.md` in force at the entry                                          |
 | `Rules violations` | The rules the entry broke, comma-separated (for example `no_stop, overrode_block`); `—` for none |
 
-The `exit` lines `decision:record` writes for a sale carry, per lot, an `amount`
+The `exit` lines `inbox:ingest` writes for a sale carry, per lot, an `amount`
 that is that exit's exact share of the sale amount and can have sub-cent
-decimals (owner decision of 2026-10-22 in #27). When the owner gives only the
-units, the sale amount derived (`units × price`) is to the cent unless that
-rounds to 0.00, and then it is exact.
+decimals (owner decision of 2026-10-22 in #27). The sale amount (`units × price`)
+is to the cent unless that rounds to 0.00, and then it is exact. The `amount` of an
+exit is the one amount the decision log accepts as 0: the exit of a lot whose
+share rounds to nothing at 8 decimals (a dust lot) is recorded with an `amount` of
+0, so the lot is closed in the log as it is in the state, and no `entry` stays open
+in it (#152).
 
 A row of `—` (or empty cells) and a repeated header are not lots and are ignored.
 Any other row that does not read as a lot is **skipped**: it does not count towards
@@ -211,43 +216,15 @@ A missing column is an error, not a skipped row: a file written before the
 
 A table can be split by blank lines or notes: the first table line of a section is
 its header and the other table lines are its rows, wherever they are. The engine
-reads it as one table. When `decision:record` writes the `Lots` and `Positions` rows of a silo, the
-rows of that table end up in one block, with a note that sat between them moved under the table
-and the blank lines that split it dropped. The heartbeat updates the `Current price` and `P/L` cells
+reads it as one table. The heartbeat updates the `Current price` and `P/L` cells
 of the `Positions` rows it prices and upper-cases their `Ticker`; the other rows stay in place.
 
-When one lot of a silo changes, `decision:record` rebuilds the whole `Lots` table of that silo from
-the lots it read, so the rows it did not touch come back rewritten: one space around each cell,
-the ticker in upper case, any column you added to the header set to `—`, an `Initial stop` or
-`Entry costs` cell that is not a number (`TBD`, `-` or `N/A`, for example) written as `—` (`Rules version` and `Rules violations` keep `TBD` as
-text; only an empty cell, `—` or `-` is a placeholder there, and a `Rules violations` placeholder is
-written as `—`), `Rules violations` joined with `, `, and every number written in the silo's
-notation, with no thousands separator and no currency symbol (`1.234,50 €` in a EUR silo comes back
-as `1234,50`; at least 2 decimals for prices and costs and up to 8, with no minimum for units).
-Placeholder rows of `Lots` (`—` or empty cells, a repeated header) are dropped, since the table is
-rebuilt from the lots.
-
-The `Positions` table of the same silo keeps its rows' cells as written, except that each cell has
-one space around it and the placeholder rows (`—`, `-` or an empty ticker, a repeated header) are dropped; only the row of
-the ticker the trade is about is changed, as described next.
-
-`decision:record` also keeps `Positions`: the first entry of a ticker creates
-its row, with the lot's initial stop as `Stop loss` (`—` if there was none);
-later entries and sales only change `Volume` and `Avg price` (the units-weighted
-entry price of the open lots), and the row is deleted when the last lot is
-consumed. Recording a trade needs `portfolio.md`; without it an entry or a sale
-is refused. A ticker is on one `Positions` row: the lots check refuses a
+A ticker is on one `Positions` row: the lots check refuses a
 silo that has the ticker on several (merge them into one row; see below), and the
-heartbeat warns of it, while it prices every row of a ticker (the `Volume` check sums them all). `decision:record`
-reads `portfolio.md` again right before it writes, after the market-data calls,
-and applies its change to that text, so a write made to the file meanwhile on the
-same checkout (the owner's editor) is not lost; if the `Lots` changed meanwhile it
-refuses and records nothing. A write on another checkout is a git conflict, which
-stays visible ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)).
+heartbeat warns of it, while it prices every row of a ticker (the `Volume` check sums them all).
 
 The amount of a sale is shared across the lots it consumes to 8 decimals, so a lot whose
-share is under the [dust limit](glossary.md#money) gets an `amount` of 0 and cannot be sold
-(`DUST_LIMIT` in `src/money.ts`).
+share is under the [dust limit](glossary.md#money) gets an `amount` of 0 (recorded as such, above).
 Sharing these exact amounts is exact up to about 90 million of the silo currency; beyond
 that the total itself is no longer exact. Amounts in reports and emails mostly go through one
 shared money formatting (`formatMoney` in `src/money.ts`), but a few places (the digest P/L, the
@@ -280,10 +257,13 @@ when:
 - an entry in the decision log is still open and has no lot. An entry is open
   until an exit that cites it has `lot_units_left` 0. An entry whose log line has
   no `units` was recorded before the lots existed and is not checked
-  (`decision:record` writes `units` on every entry).
+  (the inbox writes `units` on every entry).
 
-Where portfolio and log are both read, `decision:record` and `decisions:evaluate` refuse an
-inconsistent silo with an error naming the ticker and the entry id; fix `Lots` by hand. The
+Where portfolio and log are both read, `decisions:evaluate` refuses an
+inconsistent silo with an error naming the ticker and the entry id; with the store the lots change
+only through `inbox/`, so the way to correct them is a batch (without the store, fix `Lots` by hand).
+`inbox:check` and `inbox:ingest` read the portfolio whole too (without the log) and refuse one whose
+`Volume` is not the sum of its lots. The
 heartbeat does not read the decision log: it only checks `Volume` against the lots, and it does
 not refuse the file either. It keeps watching the positions (stops, `Volume`, `Avg price`) and raises
 a warning in its output and in the digest, because a typo must not switch off
@@ -293,9 +273,7 @@ heading, or a deleted empty section): the warning names `portfolio.md` and the
 section (`## USD — Lots`), and the lots count as empty for that run. The warning
 is not deduplicated: it is in every digest while the problem lasts. A missing
 `Cash` or `Positions` section still stops the heartbeat, as every other problem of
-the file. `decision:record` (for every decision type, including a deposit or an
-`adjust_stop`, which read the lots before looking at the type) and
-`decisions:evaluate` keep the strict reader: they refuse a `Lots` table or
+the file. `decisions:evaluate` keeps the strict reader: it refuses a `Lots` table or
 section that does not read. `pending:resolve`, the Monday briefing and the weekly
 screening use positions, cash and silo value only, so they read the file like the
 heartbeat and carry on with the lots counted as empty; unlike the heartbeat, they
@@ -333,10 +311,12 @@ only the engine writes. **Do not edit it**, and do not edit `portfolio.md` eithe
 refresh prices write the store and generate `portfolio.md` from it, overwriting what is there. To change the portfolio,
 drop a batch of commands in `inbox/` ([below](#inboxyaml)). Commit `state/` with the rest of the data directory.
 
-`decision:record` keeps working beside the inbox until #152, and with the store it writes the store, never the cell of
-`portfolio.md`: a buy lowers the available cash by its amount and costs (refused, before anything is recorded, if the
-cash does not cover it), a sale raises it by the proceeds less the costs, a deposit and a withdrawal move it, and a
-conversion takes its amount from one silo and gives the other what arrived. A stop change is `set_stop` in a batch
+`decision:record` no longer records a buy or a sale (#152): they are told to the engine with a `buy` or a `sale`
+command in a batch, the only way a trade is recorded; `entry` and `exit` are refused there with a message that names
+the command. What it still records, with the store, writes the store, never the cell of `portfolio.md`: a deposit and a
+withdrawal move the cash, and a conversion takes its amount from one silo and gives the other what arrived. As the
+inbox does, it refuses (before anything is recorded) a movement that would take the cash of a silo below zero, and a
+conversion whose costs are not below its amount (nothing would arrive). A stop change is `set_stop` in a batch
 (`adjust_stop` only writes the log line).
 
 ```json
@@ -345,6 +325,7 @@ conversion takes its amount from one silo and gives the other what arrived. A st
   "account_env": "demo",
   "unmoved_batches": [],
   "pending_decisions": [],
+  "resolved_rejections": [],
   "silos": {
     "EUR": {
       "synced_at": "2026-11-12T09:00:00.000Z",
@@ -384,7 +365,9 @@ number and its currency (`1049.00 EUR`, whole cents, the silo's own currency); p
 currency, the silo's is theirs. A silo the portfolio does not have is absent. `synced_at` is when a command last
 changed the silo. `unmoved_batches` and `pending_decisions` are what a run that stopped halfway left for the next
 one: the batches applied whose files are still in `inbox/`, and the decision-log lines of their trades not yet in
-`logs/decisions.jsonl`. The reader is strict: a number that is not plain decimal, an amount in another currency, a
+`logs/decisions.jsonl`. `resolved_rejections` lists the [rejected batches](glossary.md#rejected-batch) that a later batch
+replaced or discarded (`file`, the `sha256` of its text, `how`, the batch that settled it as `by`, and `at`): a file of
+`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). The reader is strict: a number that is not plain decimal, an amount in another currency, a
 ticker that does not parse or another `schema_version` is refused, naming the file and the field, instead of read
 partially.
 
@@ -436,7 +419,8 @@ commands:
 ```
 
 `schema_version` is required and is `1`: a file without it, or with another version, is one error and is
-not read further. The only other top-level field is `commands`, a list with at least one command. Every
+not read further. The other top-level fields are `commands`, a list with at least one command, and
+`replaces` (see _A rejected batch is never forgotten_, below). Every
 value is read as text, never as a YAML number or date, so the rules below are the same for all of them.
 
 An **amount** is a plain decimal number and its currency, separated by a space: `1000.50 EUR`. The number is
@@ -456,6 +440,7 @@ case-insensitively.
 | `sale`       | `ticker`, `date`, `units`, `price` | `costs`, `lot`, `stop_executed` | Refused if the ticker has no open lot, or fewer open units than sold, if its costs exceed its proceeds, or if its proceeds round to zero cents (under half a cent), unless it uses up every remaining unit of each lot it sells: that sale credits 0.00 and closes every lot it sells, which is how a dust lot is removed. Sells oldest lot first, or only the lot whose entry id is `lot`. `stop_executed: true` marks a stop the broker executed. |
 | `set_stop`   | `ticker`, `price`                  | `date`                          | Sets or moves the one stop of a position, in the currency of `price`. Refused if the ticker has no open position after the commands before it in the batch.                                                                                                                                                                                                                                                                                         |
 | `clear_stop` | `ticker`                           | `date`                          | Removes the stop of a position; it has no amount, so it acts on every silo that holds the ticker with a [stop](glossary.md#stop) (the warning names them). Refused if the ticker has no open position or none has a stop.                                                                                                                                                                                                                           |
+| `discard`    | `file`                             |                                 | Gives up a [rejected batch](glossary.md#rejected-batch) for good (see _A rejected batch is never forgotten_, below). It changes no cash, lot or stop, so it has no currency. Refused if `file` is not a rejected batch awaiting an answer.                                                                                                                                                                                                          |
 
 **A stop is its own command.** A position has one [stop](glossary.md#stop), and a buy never changes it.
 The initial stop of a lot (the base of [R](glossary.md#r)) is the stop of the position right after the batch
@@ -485,11 +470,52 @@ violation `no_stop`. A sale takes the entry costs earlier exits already took of 
 to its `Entry costs`. A sale dated before the buy of a lot it would consume is refused (the same day is allowed), in
 `check` and in `ingest`, and the `lot` of a sale must look like an entry id (letters, digits, `.`, `_` and `-`).
 `inbox:ingest` also appends the decision-log line of each trade (`source: portfolio-sync`): an `entry` per buy, with the
-lot's `Entry id` as its id, and an `exit` per lot a sale touched, as `decision:record` writes them, so the two read
-one history. A sale whose proceeds round to 0.00 (it must use up every lot it touches) credits 0.00 and records the
-exact amounts of its exits (their sum is the exact proceeds, not the cash credited); an exit whose share of the
-proceeds is 0 is not recorded as a decision (it needs an amount above zero) and its lot is closed all the same. Cash
-flows and `set_stop` are not written to the decision log.
+lot's `Entry id` as its id, and an `exit` per lot a sale touched. A buy that follows a proposal of the system
+(the latest `buy_proposal` or `setup_armed` of its ticker within 10 days that no trade cited yet; or one it blocked,
+`buy_blocked`) cites it as `related_id`; the entry and its lot are `sistema` unless the proposal was a block, and a sale
+that follows a `sell` proposal is logged as `sistema` too, so the trade stays in the system's expectancy
+([ADR-0009 §8](decisions/0009-swing-framework-risk-sizing-and-measurement.md)). The rules an entry broke go in `Rules
+violations`, as flags and never refusals: `not_in_watchlist` (the ticker is not in the watchlist of its silo),
+`entry_without_setup` (no proposal with a setup precedes it, [ADR-0013 §4](decisions/0013-entry-setups.md)), `overrode_block`,
+and `no_stop` or `stop_below_min_atr` (the initial stop is closer than `STOP_MIN_ATR` ATRs, judged when the ATR is
+available) once the batch has set the stop. Since #152 the inbox is the only way a trade is
+recorded, and these lines are telemetry: the state is what the batch changed. A sale whose proceeds round to 0.00 (it
+must use up every lot it touches) credits 0.00 and records the exact amounts of its exits (their sum is the exact
+proceeds, not the cash credited); an exit whose share of the proceeds is 0 is recorded with an `amount` of 0, the
+one amount of 0 the decision log accepts, so the lot is closed in the log as in the state and no entry stays open
+in it. Cash flows and `set_stop` are not written to the decision log. **The every-lot rule of that sale lives
+only in the inbox's `sale` handler**, which is the one caller of the lot arithmetic (`planSale`): no other flow
+accepts a sale, so no flow accepts a buy of less than half a cent, or a sale of that size that does not close
+every lot it touches ([ADR-0017](decisions/0017-money-is-a-domain-value-in-whole-cents.md)).
+
+**A rejected batch is never forgotten.** `inbox:ingest` moves a refused batch to `inbox/rejected/` and applies nothing
+of it. The file stays there as the audit trail, is never retried automatically (only the files directly in `inbox/`
+are read) and is named in every digest of the heartbeat, and by `inbox:check`, until it is answered, in either way:
+
+- a later batch that starts with `replaces: <file>` (the name in `inbox/rejected/`, as the digest and the errors name
+  it) and is applied settles it as replaced; or
+- a `discard` command with `file: <file>` in a batch that is applied settles it as discarded.
+
+```yaml
+schema_version: 1
+replaces: 2026-11-12.yaml # the rejected batch this one corrects
+commands:
+  - command: deposit
+    amount: 1000.00 EUR
+  - command: discard # gives up another rejected batch for good
+    file: 2026-11-10.yaml
+```
+
+A batch that names a file that is not awaiting (it does not exist, or was settled already, or the same batch replaces
+and discards it) is refused: the `replaces:` as an error of the file, at its line, and the `discard` as an error of its
+command; neither blocks the other commands of the batch, since neither changes cash, lots or stops. A replacement that is
+itself refused settles nothing. A batch that depends on a rejected one fails its own validation, as it always did: it is
+checked against the state without it, so a sale of what the rejected batch would have bought has no lot to sell. The
+store remembers what was settled with the hash of the file, so a file later moved to `rejected/` under a name that
+was settled (the old one deleted by hand) awaits an answer again. `replaces:` and `discard` are new, so the format ships
+without a migration: approved by the owner on 2026-11-05 for agent work (spec
+[#124](https://github.com/alvaromongon/finance-agent/issues/124) › _Decisions_, issue
+[#152](https://github.com/alvaromongon/finance-agent/issues/152)).
 
 **The folder is not trusted.** A batch must be a regular file: a symbolic link (or a folder or named pipe with a batch's
 name) is never followed or read, and is reported, by `check` and `ingest`, as an error that names it; `ingest` leaves

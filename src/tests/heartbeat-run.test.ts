@@ -10,7 +10,7 @@
 process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { bar, extend, uptrend } from "./fixtures/setup-bars.js";
@@ -254,6 +254,74 @@ describe("runHeartbeat", () => {
         "the crossed stop is detected from the store, rejected batch or not",
       );
       assert.match(email.body, /CAT/);
+      assert.match(email.subject, /lote rechazado/, "and the rejected batch is named in the same digest");
+      assert.match(email.body, /## Lotes rechazados a la espera de respuesta/);
+      assert.match(email.body, /- `inbox\/rejected\/2-bad\.yaml`/);
+      assert.match(email.body, /replaces: <archivo>/);
+    });
+
+    it("a rejected batch is named in every digest until a batch replaces or discards it (#152)", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await mkdir(join(vaultDir, "inbox", "rejected"), { recursive: true });
+      await writeFile(
+        join(vaultDir, "inbox", "rejected", "bad.yaml"),
+        batch("command: deposit\namount: 1 USD"),
+        "utf8",
+      );
+      await heartbeat();
+      await heartbeat();
+      let emails = await outbox();
+      assert.equal(emails.length, 2, "it is not deduplicated");
+      for (const email of emails) assert.match(email.body, /inbox\/rejected\/bad\.yaml/);
+
+      // Settled: the file stays, the digest stops naming it.
+      const { storeFromPortfolioFile, saveStore } = await import("../portfolio-store.js");
+      const { sha256 } = await import("../inbox-rejected.js");
+      const seeded = await storeFromPortfolioFile();
+      await saveStore({
+        ...seeded,
+        resolvedRejections: [
+          {
+            file: "bad.yaml",
+            sha256: sha256(batch("command: deposit\namount: 1 USD")),
+            how: "discarded",
+            by: "d.yaml",
+            at: "2026-11-13T09:00:00.000Z",
+          },
+        ],
+      });
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+      await heartbeat();
+      emails = await outbox();
+      assert.equal(emails.length, 1);
+      assert.doesNotMatch(emails[0].body, /bad\.yaml/);
+      assert.doesNotMatch(emails[0].subject, /lote rechazado/);
+      assert.deepEqual(await readdir(join(vaultDir, "inbox", "rejected")), ["bad.yaml"]);
+    });
+
+    it("a rejected batch is named even when there is nothing else to watch", async () => {
+      await setPortfolio("", []);
+      await mkdir(join(vaultDir, "inbox", "rejected"), { recursive: true });
+      await writeFile(
+        join(vaultDir, "inbox", "rejected", "bad.yaml"),
+        batch("command: deposit\namount: 1 USD"),
+        "utf8",
+      );
+      await heartbeat();
+      const [email] = await outbox();
+      assert.match(email.subject, /lote rechazado/);
+    });
+
+    it("a rejected/ folder that cannot be read is said in the log and never stops the stops", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await mkdir(join(vaultDir, "elsewhere"), { recursive: true });
+      await mkdir(join(vaultDir, "inbox"), { recursive: true });
+      await symlink(join(vaultDir, "elsewhere"), join(vaultDir, "inbox", "rejected"));
+      const warnings = await heartbeat();
+      assert.ok(warnings.some((w) => w.includes("inbox/rejected is not a real folder")));
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.doesNotMatch(email.subject, /lote rechazado/);
     });
 
     it("a file in inbox/ that cannot be read does not touch the run either", async () => {
@@ -405,7 +473,7 @@ describe("runHeartbeat", () => {
 
     it("the alerting path does not read the decision log: Volume is checked from portfolio.md alone (#52)", async () => {
       // A lot whose entry is not in the log, and a log that cannot be parsed at all: neither reaches the
-      // heartbeat. The checks that need the log run where the log is read (decision:record, the evaluation).
+      // heartbeat. The checks that need the log run where the log is read (the evaluation).
       await setPortfolio(MSFT_ROW, [{ ...MSFT_LOT, id: "ghost-entry" }]);
       await writeFile(join(vaultDir, "logs", "decisions.jsonl"), "not json at all\n", "utf8");
       const warnings = await heartbeat();

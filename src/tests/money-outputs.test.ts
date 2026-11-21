@@ -1,7 +1,7 @@
 /**
  * Output pin of the money numbers (#79): the serialized numbers of decisions.jsonl and portfolio.md that
  * `decision:record` writes stay the same whatever type carries them. Written BEFORE the refactor and
- * run against it unchanged. Temporary vault, fake provider, no network.
+ * run against it unchanged (its buys and sales went to the inbox in #152). Temporary vault, fake provider, no network.
  * Same pattern as pending.test.ts: VAULT_PROJECT_DIR before the first import.
  */
 import { describe, it, before, after } from "node:test";
@@ -69,39 +69,19 @@ const fakeProvider = {
   getHistorical: async () => bars(),
 };
 
-// The pnl of the first sale (160.09 given by the owner) is split since #90 with each lot's entry costs kept with the
-// lot: 52.66 + 68.68 + 38.75 = 160.09; before it, the whole difference to the computed results was shared by units
-// (52.81, 68.85, 38.43).
+// A buy and a sale are not told to `decision:record` any more (#152): the inbox writes their numbers (the sharing of a
+// sale over its lots is tested in portfolio-lots.test.ts and inbox-ingest.test.ts). What this pins is what
+// `decision:record` still writes: a deposit and a currency conversion.
 const EXPECTED: unknown = {
   out: [
-    [["entry", 100, 1.07, null, null, 3, null, 33.333]],
-    [["entry", 287.7, 2.33, null, null, 7, null, 41.1]],
-    [["entry", 100.01, null, null, null, 8.0008, null, 12.5]],
-    [
-      ["exit", 150, 0.1, 52.66, 1.07, 3, 0, 50],
-      ["exit", 350, 0.24, 68.68, 2.33, 7, 0, 50],
-      ["exit", 50, 0.03, 38.75, null, 1, 7.0008, 50],
-    ],
-    [["exit", 160.37, null, 121.06, null, 3.1445098039215686, 3.8562901960784313, 51]],
     [["deposit", 123.45, null, null, null, null, null, null]],
     [["fx_conversion", 100, 0.8, null, null, null, null, null]],
   ],
   logNumbers: [
-    ["entry", 100, 1.07, null, null, 3, null, 33.333],
-    ["entry", 287.7, 2.33, null, null, 7, null, 41.1],
-    ["entry", 100.01, null, null, null, 8.0008, null, 12.5],
-    ["exit", 150, 0.1, 52.66, 1.07, 3, 0, 50],
-    ["exit", 350, 0.24, 68.68, 2.33, 7, 0, 50],
-    ["exit", 50, 0.03, 38.75, null, 1, 7.0008, 50],
-    ["exit", 160.37, null, 121.06, null, 3.1445098039215686, 3.8562901960784313, 51],
     ["deposit", 123.45, null, null, null, null, null, null],
     ["fx_conversion", 100, 0.8, null, null, null, null, null],
   ],
-  cash: [
-    "| Available cash | 1000.00 |",
-    "| Available cash | 1000.00 |",
-    "| ADBE | 3.8562902 | 12.50 | 33.333 | 0.00 | 30.00 |",
-  ],
+  cash: ["| Available cash | 1000.00 |", "| Available cash | 1000.00 |"],
 };
 
 const FIELDS = ["type", "amount", "costs", "pnl", "entry_costs", "units", "lot_units_left", "price"] as const;
@@ -130,25 +110,8 @@ describe("money numbers written by decision:record (pinned before #79)", () => {
     await rm(vaultDir, { recursive: true, force: true });
   });
 
-  it("entries with costs, a sale over three lots with an owner pnl and costs, a deposit and a conversion", async () => {
+  it("a deposit and a conversion", async () => {
     const out: unknown[] = [];
-    out.push(
-      nums(
-        await run({ type: "entry", ticker: "ADBE", currency: "USD", price: 33.333, units: 3, costs: 1.07, stop: 30 }),
-      ),
-    );
-    out.push(
-      nums(await run({ type: "entry", ticker: "ADBE", currency: "USD", price: 41.1, units: 7, costs: 2.33, stop: 35 })),
-    );
-    out.push(
-      nums(await run({ type: "entry", ticker: "ADBE", currency: "USD", price: 12.5, amount: 100.01, stop: 10 })),
-    );
-    out.push(
-      nums(
-        await run({ type: "exit", ticker: "ADBE", currency: "USD", price: 50, units: 11, costs: 0.37, pnl: 160.09 }),
-      ),
-    );
-    out.push(nums(await run({ type: "exit", ticker: "ADBE", currency: "USD", price: 51, amount: 160.37 })));
     out.push(nums(await run({ type: "deposit", currency: "EUR", amount: 123.45 })));
     out.push(nums(await run({ type: "fx_conversion", currency: "EUR", amount: 100, fx_rate: 1.17, costs: 0.8 })));
     const log = (await readFile(join(vaultDir, "logs", "decisions.jsonl"), "utf8"))
@@ -156,9 +119,7 @@ describe("money numbers written by decision:record (pinned before #79)", () => {
       .split("\n")
       .map((l) => JSON.parse(l));
     const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
-    const cash = portfolio
-      .split("\n")
-      .filter((l) => /Available cash|Total cash|^\| ADBE \| [0-9.]+ \| [0-9.]+ \|/.test(l));
+    const cash = portfolio.split("\n").filter((l) => /Available cash|Total cash/.test(l));
     assert.deepEqual({ out, logNumbers: nums(log), cash }, EXPECTED);
   });
 });

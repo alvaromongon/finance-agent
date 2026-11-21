@@ -287,7 +287,7 @@ export function extractPlanSummary(reviewText: string): string {
 /**
  * The entries of the watchlist.md YAML block, with their tickers parsed (a ticker written in lower case
  * reads as its upper-case value). An entry whose ticker does not parse throws, naming it (the readers
- * that refuse, `decision:record`), or, given `onSkip`, is skipped and reported to it (ADR-0016).
+ * that refuse, `inbox:check` and `inbox:ingest`), or, given `onSkip`, is skipped and reported to it (ADR-0016).
  */
 export function parseWatchlistBlock(block: string, onSkip?: (message: string) => void): WatchlistEntry[] {
   const parsed = yaml.load(block) as { watchlist?: WatchlistEntry[] } | undefined;

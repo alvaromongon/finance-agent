@@ -23,7 +23,7 @@ import {
   SETUP_STATES,
   TREND_BIASES,
 } from "./types.js";
-import { money, withinACent, type Money } from "./money.js";
+import { money, type Money } from "./money.js";
 import { round } from "./utils/round.js";
 import type {
   Benchmark,
@@ -67,8 +67,11 @@ export type DecisionType = (typeof DECISION_TYPES)[number];
 /** Silo money flows: they carry no ticker. */
 export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx_conversion"];
 
-/** What the owner narrates and records with `decision:record`. */
-export const OWNER_TYPES = ["entry", "exit", "adjust_stop", "deposit", "withdrawal", "fx_conversion"] as const;
+/**
+ * What the owner narrates and records with `decision:record`. A buy and a sale (the `entry` and `exit` decisions) are
+ * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry.
+ */
+export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal", "fx_conversion"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
 
 export interface Decision {
@@ -137,10 +140,10 @@ export interface Decision {
    */
   entry_price?: number;
   /**
-   * `entry`: the units bought, written by `decision:record` since the lot contract (#52); the lot's
+   * `entry`: the units bought, written by the inbox since the lot contract (#52); the lot's
    * `Entry units` is this number. An entry whose line carries none predates the lots and is out of the
    * lots check.
-   * `exit`: the units this exit sold from its lot, written by `decision:record` (B1 of PR #56). The
+   * `exit`: the units this exit sold from its lot, written by the inbox (B1 of PR #56). The
    * evaluation measures from it (weights, the check of `lot_units_left`, closure) so the cent rounding
    * of a sale split across lots cannot make a lot look inconsistent; an exit without it (written by
    * hand) falls back to `amount / price`. The exits of one sale add up to the units sold.
@@ -250,7 +253,7 @@ const isStringList = (v: unknown): v is string[] =>
 export const isAssumptionList = (v: unknown): v is string[] => isStringList(v) && v.length >= 1 && v.length <= 3;
 
 /**
- * Units an `entry` or `exit` moved: its own `units` (`decision:record` writes them on every trade) and,
+ * Units an `entry` or `exit` moved: its own `units` (the inbox writes them on every trade) and,
  * only for a line without them (written by hand), `amount / price`, whose units are not exact. The one
  * rule, for every consumer of a line's units. The caller has checked `price` and `amount` are there.
  */
@@ -361,9 +364,16 @@ export function validateDecision(raw: unknown): Decision {
     "units",
   ] as const) {
     const v = raw[field];
-    if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
-      errors.push(`${field} must be a number > 0; got: ${JSON.stringify(v)}`);
+    // An exit that closes a dust lot for nothing has an amount of 0: the lot is closed, so the log must say so (#152).
+    const mayBeZero = field === "amount" && type === "exit";
+    if (v != null && (typeof v !== "number" || !Number.isFinite(v) || (mayBeZero ? v < 0 : v <= 0))) {
+      errors.push(`${field} must be a number ${mayBeZero ? ">= 0" : "> 0"}; got: ${JSON.stringify(v)}`);
     }
+  }
+  // An exit of 0 is a dust lot closed for nothing: its units are what the evaluation measures it from, and
+  // `amount / price` would be 0 (a division by zero in the weights).
+  if (type === "exit" && raw.amount === 0 && raw.units == null) {
+    errors.push("amount 0 in an exit needs units: the evaluation cannot work out the units sold from a zero amount");
   }
   for (const field of ["costs", "entry_costs", "lot_units_left"] as const) {
     const v = raw[field];
@@ -664,27 +674,26 @@ export function strengthFields(s: StrengthSnapshot | undefined): Pick<Decision, 
   };
 }
 
-// ─── Trades narrated by the owner (`decision:record`) ────────────────────────
+// ─── Flows and stop adjustments narrated by the owner (`decision:record`) ────────────────────────
 
 /** What `decision:record` receives on stdin. The engine fills in the rest. */
 export interface OwnerDecisionInput {
   type: OwnerDecisionType;
   /** YYYY-MM-DD; today by default. */
   date?: string;
+  /** Only an `adjust_stop` names a ticker. */
   ticker?: Ticker;
   currency: Currency;
+  /** adjust_stop: the price when the stop was adjusted. */
   price?: number;
-  /** Amount; in entry/exit `units` can be given instead. */
+  /** deposit, withdrawal, fx_conversion: the amount. */
   amount?: number;
-  units?: number;
-  /** entry: initial stop; adjust_stop: new stop. */
+  /** adjust_stop: the new stop. */
   stop?: number;
   /** fx_conversion: market rate; or `received`, what reached the other silo. */
   fx_rate?: number;
   received?: number;
   costs?: Money;
-  /** exit: realized result; if missing, computed with the average price in portfolio.md. */
-  pnl?: Money;
   /** To force the origin when the engine cannot infer it. */
   origin?: DecisionOrigin;
   related_id?: string;
@@ -694,9 +703,13 @@ export interface OwnerDecisionInput {
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
-  const type = raw.type as OwnerDecisionType;
+  const type = raw.type as OwnerDecisionType | "entry" | "exit";
 
-  if (!OWNER_TYPES.includes(type)) {
+  if (type === "entry" || type === "exit") {
+    errors.push(
+      `a ${type === "entry" ? "buy" : "sale"} is told to the engine with a ${type === "entry" ? "buy" : "sale"} command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (!OWNER_TYPES.includes(type)) {
     errors.push(`type must be one of [${OWNER_TYPES.join(", ")}]; got: ${JSON.stringify(raw.type)}`);
   }
   if (!CURRENCIES.includes(raw.currency as Currency)) {
@@ -705,7 +718,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (raw.date != null && (typeof raw.date !== "string" || !DATE_RE.test(raw.date))) {
     errors.push(`date must be YYYY-MM-DD; got: ${JSON.stringify(raw.date)}`);
   }
-  for (const field of ["price", "amount", "units", "stop", "fx_rate", "received"] as const) {
+  for (const field of ["price", "amount", "stop", "fx_rate", "received"] as const) {
     const v = raw[field];
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
       errors.push(`${field} must be a number > 0; got: ${JSON.stringify(v)}`);
@@ -714,15 +727,15 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (raw.costs != null && (typeof raw.costs !== "number" || !Number.isFinite(raw.costs) || raw.costs < 0)) {
     errors.push(`costs must be a number >= 0; got: ${JSON.stringify(raw.costs)}`);
   }
-  if (raw.pnl != null && (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl) || type !== "exit")) {
-    errors.push(`pnl must be a number and only applies to exit; got: ${JSON.stringify(raw.pnl)}`);
+  for (const field of ["units", "pnl"] as const) {
+    if (raw[field] != null) errors.push(`${field} does not apply: it belongs to a buy or a sale, told through inbox/`);
   }
   if (raw.origin != null && !DECISION_ORIGINS.includes(raw.origin as DecisionOrigin)) {
     errors.push(`origin must be one of [${DECISION_ORIGINS.join(", ")}]; got: ${JSON.stringify(raw.origin)}`);
   }
 
   const has = (f: string) => raw[f] != null;
-  if (["entry", "exit", "adjust_stop"].includes(type)) {
+  if (type === "adjust_stop") {
     if (raw.ticker == null) errors.push(`ticker is required in ${type}`);
     else {
       const checked = checkTicker(raw.ticker);
@@ -730,22 +743,6 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     }
   }
   if (FLOW_TYPES.includes(type) && has("ticker")) errors.push(`ticker does not apply in ${type}`);
-  if ((type === "entry" || type === "exit") && !has("price")) errors.push(`price is required in ${type}`);
-  if ((type === "entry" || type === "exit") && !has("amount") && !has("units")) {
-    errors.push(`${type} needs amount or units`);
-  }
-  if ((type === "entry" || type === "exit") && has("units") && has("amount")) {
-    // Units, amount and price are one fact told twice: the lot, the log line and the evaluation (which
-    // measures units as amount / price) must read the same units, so a contradiction is refused.
-    const { units, amount, price } = raw as { units: number; amount: number; price: number };
-    if (Number.isFinite(units) && Number.isFinite(amount) && Number.isFinite(price) && price > 0) {
-      if (!withinACent(amount, units * price)) {
-        errors.push(
-          `units ${units} × price ${price} = ${round(units * price, 2)}, not the amount ${amount} (give units or amount, or make them agree to the cent)`,
-        );
-      }
-    }
-  }
   if (type === "adjust_stop" && !has("stop")) errors.push("stop is required in adjust_stop");
   if ((type === "deposit" || type === "withdrawal" || type === "fx_conversion") && !has("amount")) {
     errors.push(`amount is required in ${type}`);
@@ -762,7 +759,6 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     ...input,
     ...(has("ticker") ? { ticker: parseTicker(input.ticker) } : {}),
     ...(input.costs != null ? { costs: money(input.costs, input.currency) } : {}),
-    ...(input.pnl != null ? { pnl: money(input.pnl, input.currency) } : {}),
   };
 }
 
@@ -782,13 +778,33 @@ export function resolveFxConversion(
 }
 
 /**
+ * The rules about the stop of an entry (ADR-0009 §5): `no_stop` without one, `stop_below_min_atr` when it sits closer
+ * than `minStopAtr` ATRs to the price. `atr` is best-effort: without it the stop distance is not checked.
+ */
+export function stopRuleViolations(input: {
+  price: number;
+  stop?: number | null;
+  atr?: number | null;
+  minStopAtr: number;
+}): string[] {
+  if (input.stop == null) return ["no_stop"];
+  if (input.atr != null && input.atr > 0 && (input.price - input.stop) / input.atr < input.minStopAtr) {
+    return ["stop_below_min_atr"];
+  }
+  return [];
+}
+
+/** The violations `stopRuleViolations` can give: the ones that follow the stop of a lot when a `set_stop` changes it. */
+export const STOP_RULES: readonly string[] = ["no_stop", "stop_below_min_atr"];
+
+/**
  * Rules an owner entry breaks: buying something outside the watchlist, or
- * without a system setup before it (ADR-0013: setups are the only way in).
- * `atr` is best-effort: without it the stop distance is not checked.
+ * without a system setup before it (ADR-0013: setups are the only way in),
+ * and the ones about its stop (`stopRuleViolations`).
  */
 export function entryRuleViolations(input: {
   price: number;
-  stop?: number;
+  stop?: number | null;
   entry?: WatchlistEntry;
   /** System decision the entry comes from, if any. */
   proposal?: Decision;
@@ -798,12 +814,7 @@ export function entryRuleViolations(input: {
   const violations: string[] = [];
   if (!input.entry) violations.push("not_in_watchlist");
   else if (!input.proposal?.setup) violations.push("entry_without_setup");
-  if (input.stop == null) {
-    violations.push("no_stop");
-  } else if (input.atr != null && input.atr > 0 && (input.price - input.stop) / input.atr < input.minStopAtr) {
-    violations.push("stop_below_min_atr");
-  }
-  return violations;
+  return [...violations, ...stopRuleViolations(input)];
 }
 
 /** Calendar days between two YYYY-MM-DD dates (b − a). */
@@ -822,8 +833,10 @@ export const PROPOSAL_WINDOW_DAYS = 10;
 export function findRelatedProposal(
   decisions: readonly Decision[],
   query: { ticker: Ticker; date: string; types: readonly DecisionType[] },
+  /** Ids of proposals already cited by a trade that is not in `decisions` yet (an earlier command of the same run). */
+  alsoCited: ReadonlySet<string> = new Set(),
 ): Decision | undefined {
-  const used = new Set(decisions.map((d) => d.related_id).filter(Boolean));
+  const used = new Set([...decisions.map((d) => d.related_id).filter(Boolean), ...alsoCited]);
   return decisions
     .filter(
       (d) =>

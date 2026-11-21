@@ -3,6 +3,7 @@
 // returns while `inbox:ingest` writes the state it ends with: one code path, `check` being `ingest` without the write.
 import { createHash } from "node:crypto";
 import { CURRENCIES, type Currency, type Lot } from "../types.js";
+import type { DecisionOrigin } from "../decisions.js";
 import type { Ticker } from "../ticker.js";
 import type { Money } from "../money.js";
 import { uniqueDecisionIds } from "./decision-id.js";
@@ -14,6 +15,7 @@ import {
   takeEntryCosts,
   type BatchContext,
   type Command,
+  type EntryContext,
   type InboxState,
   type InitialStopBreach,
   type OpenedLot,
@@ -22,7 +24,7 @@ import {
   type StopSources,
 } from "./inbox-handlers.js";
 import { parseBatch, type CommandKind, type InboxIssue, type ParsedBatch, type ParsedCommand } from "./inbox-parse.js";
-import { printable } from "./printable.js";
+import { printable, quoted } from "./printable.js";
 import { stopOf } from "./stop.js";
 
 export type { StopSource, StopSources };
@@ -50,9 +52,13 @@ export interface RejectedFile {
  * them) and what the exits of the history already took of each lot's entry costs.
  */
 export interface RunContext {
+  /** The rejected batches (names in `inbox/rejected/`) awaiting a replacement or a discard when the run starts. */
+  awaiting: ReadonlySet<string>;
   rulesVersion: string;
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
+  /** What the rules of an entry read (see `EntryContext`) but the trades of the run itself: they add to `cited`. */
+  entry: Omit<EntryContext, "cited">;
 }
 
 /** What the files before the batch under check left behind. */
@@ -63,11 +69,16 @@ export interface Earlier {
   rejected: readonly RejectedFile[];
   /** `openedKey(currency, ticker)` of every ticker the clean files opened, also when all of it was sold since. */
   tickers: ReadonlySet<string>;
+  /** The rejected batches still awaiting a replacement or a discard, as the clean files before this one left them. */
+  awaiting: ReadonlySet<string>;
   /** The ids taken so far: the history's, and those the clean files gave to their lots. */
   takenIds: ReadonlySet<string>;
   /** The entry costs taken so far: the history's, and those the exits of the clean files took. */
   entryCostsTaken: ReadonlyMap<string, Money>;
   rulesVersion: string;
+  /** The ids of the system proposals the buys of the clean files before this one cited. */
+  cited: ReadonlySet<string>;
+  entry: Omit<EntryContext, "cited">;
 }
 
 /** A buy of a clean batch, with the lot it opened as the batch leaves it (its initial stop is the final one). */
@@ -82,6 +93,8 @@ export interface BuyTrade {
   price: number;
   costs?: Money;
   lot: Lot;
+  /** The system proposal the buy follows, cited by its entry as `related_id` (ADR-0009 §8); absent: it follows none. */
+  relatedId?: string;
 }
 
 /** A sale of a clean batch: the exit of each lot it touched, with the lot as the batch leaves it. */
@@ -94,11 +107,20 @@ export interface SaleTrade {
   date: string;
   price: number;
   stopExecuted: boolean;
+  /** `sistema` when the sale follows a sell proposal of the system, `propietario` otherwise (ADR-0009 §8). */
+  origin: DecisionOrigin;
   exits: { share: SaleShare; lot: Lot }[];
 }
 
 /** What a clean batch bought and sold, in order: what `inbox:ingest` writes to the decision log. */
 export type Trade = BuyTrade | SaleTrade;
+
+/** A rejected batch a clean batch gave up for good: replaced (`replaces:`) or discarded (`discard`). */
+export interface Resolved {
+  /** The name in `inbox/rejected/`. */
+  file: string;
+  how: "replaced" | "discarded";
+}
 
 export interface BatchCheck {
   /** Every problem of the batch; empty when the batch is clean. */
@@ -124,9 +146,13 @@ export interface BatchCheck {
   stops: StopSources;
   /** What a clean batch bought and sold, in order; none when it is not clean. */
   trades: Trade[];
+  /** The rejected batches a clean batch replaces or discards; none when it is not clean. */
+  resolved: Resolved[];
   /** The ids taken after a clean batch (those of its lots too), and the entry costs its exits took. */
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
+  /** The proposals cited after a clean batch (its buys' too). */
+  cited: ReadonlySet<string>;
   /** What the batch changes, for the files after it if it is rejected. */
   footprint: readonly Footprint[];
 }
@@ -173,6 +199,9 @@ interface StopBlock {
  */
 export function checkBatch(state: InboxState, text: string, earlier: Earlier): BatchCheck {
   const parsed = parseBatch(text);
+  // What this batch can discard: the rejected batches awaiting one, but the one it replaces (that one is settled by `replaces:`).
+  const awaiting = new Set(earlier.awaiting);
+  const discarded: string[] = [];
   // The ids come from the one source of decision ids, never repeating one of the history's or the state's.
   const takenIds = new Set(earlier.takenIds);
   for (const silo of Object.values(state)) for (const l of silo.lots) takenIds.add(l.entryId);
@@ -180,8 +209,22 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   const entryCostsTaken = new Map(earlier.entryCostsTaken);
   /** The lots this batch opened, as the batch leaves them: a `set_stop` later in it can change their initial stop. */
   const lastSeen = new Map<string, Lot>();
-  const bought: { command: number; line: number; key: string; read: Extract<Command, { kind: "buy" }> }[] = [];
-  const sold: { command: number; line: number; read: Extract<Command, { kind: "sale" }>; exits: SaleShare[] }[] = [];
+  const bought: {
+    command: number;
+    line: number;
+    key: string;
+    read: Extract<Command, { kind: "buy" }>;
+    relatedId?: string;
+  }[] = [];
+  const sold: {
+    command: number;
+    line: number;
+    read: Extract<Command, { kind: "sale" }>;
+    exits: SaleShare[];
+    origin: DecisionOrigin;
+  }[] = [];
+  /** The proposals cited by the buys so far, the earlier files' and this batch's: a proposal is followed by one buy. */
+  const cited = new Set(earlier.cited);
   const trades = (): Trade[] => {
     const final = (key: string, lot: Lot): Lot => lastSeen.get(key) ?? lot;
     return [
@@ -196,6 +239,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         price: b.read.price,
         ...(b.read.costs !== undefined ? { costs: b.read.costs } : {}),
         lot: lastSeen.get(b.key)!,
+        ...(b.relatedId !== undefined ? { relatedId: b.relatedId } : {}),
       })),
       ...sold.map((s): Trade => ({
         kind: "sale",
@@ -206,6 +250,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         date: s.read.date,
         price: s.read.price,
         stopExecuted: s.read.stopExecuted,
+        origin: s.origin,
         exits: s.exits.map((share) => ({
           share,
           lot: final(openedKey(s.read.currency, share.lot.entryId), share.lot),
@@ -214,6 +259,16 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     ].sort((a, b) => a.command - b.command);
   };
   const issues = [...parsed.issues];
+  if (parsed.replaces !== undefined) {
+    if (awaiting.has(parsed.replaces.file)) awaiting.delete(parsed.replaces.file);
+    else {
+      issues.push({
+        command: null,
+        line: parsed.replaces.line,
+        reason: `cannot replace ${quoted(parsed.replaces.file)}: no rejected batch of that name is awaiting a replacement or a discard in inbox/rejected/`,
+      });
+    }
+  }
   const notChecked: InboxIssue[] = [];
   let current = state;
   const present = (currency: Currency): boolean => state[currency] !== undefined;
@@ -260,6 +315,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     const read = byPosition.get(position);
     if (read === undefined) {
       const { currencies, kind, ticker } = unread.get(position)!;
+      // A discard changes no cash, lots or stop: nothing is unknown because of it.
+      if (kind === "discard") continue;
       const written = currencies.length > 0 ? currencies : CURRENCIES;
       const blocker: Blocker = { position, how: "could not be read" };
       // A stop command changes no cash or lots: only the stop of its ticker is unknown.
@@ -303,6 +360,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       newEntryId: (date, ticker) => nextId(date, ticker, "entry"),
       rulesVersion: earlier.rulesVersion,
       entryCostsTaken,
+      awaiting,
+      entry: { ...earlier.entry, cited },
       record: { at: { command: position, line: read.line }, stops },
     };
     const result = applyCommand(current, command, context);
@@ -338,19 +397,36 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
           touch(c, command.ticker, read);
         }
       }
-    } else if (command.kind !== "deposit" && command.kind !== "withdrawal") {
+    } else if (command.kind !== "deposit" && command.kind !== "withdrawal" && command.kind !== "discard") {
       touch(command.currency, command.ticker, read);
       if (command.kind === "set_stop") liftStop(command.currency, command.ticker);
+    }
+    if (result.discarded !== undefined) {
+      awaiting.delete(result.discarded);
+      discarded.push(result.discarded);
     }
     if (result.opened !== undefined && command.kind === "buy") {
       const lot = { currency: command.currency, ticker: command.ticker, command: position, line: read.line };
       opened.set(result.opened, lot);
       own.set(result.opened, lot);
-      bought.push({ command: position, line: read.line, key: result.opened, read: command });
+      if (result.proposal !== undefined) cited.add(result.proposal);
+      bought.push({
+        command: position,
+        line: read.line,
+        key: result.opened,
+        read: command,
+        ...(result.proposal !== undefined ? { relatedId: result.proposal } : {}),
+      });
     }
     if (result.exits !== undefined && command.kind === "sale") {
       takeEntryCosts(entryCostsTaken, result.exits, command.currency);
-      sold.push({ command: position, line: read.line, read: command, exits: [...result.exits] });
+      sold.push({
+        command: position,
+        line: read.line,
+        read: command,
+        exits: [...result.exits],
+        origin: result.origin ?? "propietario",
+      });
     }
     // The lots of this batch as they are now: the last value of one a later command sells out is the one recorded.
     for (const key of own.keys()) {
@@ -426,7 +502,14 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     opened: clean ? own : new Map(),
     stops: clean ? new Map([...stops].filter(([key, source]) => earlier.stops.get(key) !== source)) : new Map(),
     trades: clean ? trades() : [],
+    resolved: clean
+      ? [
+          ...(parsed.replaces ? [{ file: parsed.replaces.file, how: "replaced" as const }] : []),
+          ...discarded.map((file) => ({ file, how: "discarded" as const })),
+        ]
+      : [],
     takenIds: clean ? takenIds : earlier.takenIds,
+    cited: clean ? cited : earlier.cited,
     entryCostsTaken: clean ? entryCostsTaken : earlier.entryCostsTaken,
     footprint: footprintOf(parsed),
   };
@@ -463,7 +546,7 @@ function footprintOf(parsed: ParsedBatch): Footprint[] {
     ...parsed.unread.map((u) => ({
       currencies: u.currencies.length > 0 ? u.currencies : CURRENCIES,
       kind: u.kind ?? null,
-      ticker: u.kind === "deposit" || u.kind === "withdrawal" ? undefined : (u.ticker ?? null),
+      ticker: u.kind === "deposit" || u.kind === "withdrawal" || u.kind === "discard" ? undefined : (u.ticker ?? null),
     })),
   ];
 }
@@ -476,6 +559,7 @@ const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean
   sale: { cash: true, lots: true, stop: false },
   set_stop: { cash: false, lots: false, stop: true },
   clear_stop: { cash: false, lots: false, stop: true },
+  discard: { cash: false, lots: false, stop: false },
 };
 
 /**
@@ -547,6 +631,8 @@ export interface FileCheck {
   clean: boolean;
   /** What a clean file bought and sold, in order. */
   trades: Trade[];
+  /** The rejected batches a clean file replaces or discards. */
+  resolved: Resolved[];
   /** The text of the file, absent for one that could not be read. */
   text?: string;
 }
@@ -569,8 +655,11 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
   const tickers = new Set<string>();
   const stops = new Map<string, StopSource | null>();
   const rejected: RejectedFile[] = [];
+  let awaiting: ReadonlySet<string> = run.awaiting;
   let takenIds: ReadonlySet<string> = run.takenIds;
   let entryCostsTaken: ReadonlyMap<string, Money> = run.entryCostsTaken;
+  // What the history already cites is in `run.entry.history`; these are the proposals cited by this run's own buys.
+  let cited: ReadonlySet<string> = new Set();
   const checks = files.map((file): FileCheck => {
     const { name } = file;
     if ("problem" in file) {
@@ -582,6 +671,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
         warnings: [],
         clean: false,
         trades: [],
+        resolved: [],
       };
     }
     const { text } = file;
@@ -590,17 +680,22 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       stops,
       rejected,
       tickers,
+      awaiting,
       takenIds,
       entryCostsTaken,
       rulesVersion: run.rulesVersion,
+      cited,
+      entry: run.entry,
     });
     const clean = checked.issues.length === 0 && checked.notChecked.length === 0;
     if (!clean) {
       rejected.push({ file: name, footprint: checked.footprint });
     } else {
       current = checked.state;
+      awaiting = new Set([...awaiting].filter((name) => !checked.resolved.some((r) => r.file === name)));
       takenIds = checked.takenIds;
       entryCostsTaken = checked.entryCostsTaken;
+      cited = checked.cited;
       // For the next files, a lot or a stop this one left is the file's.
       for (const [key, lot] of checked.opened) {
         lots.set(key, { ...lot, file: name });
@@ -622,6 +717,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       warnings: checked.warnings,
       clean,
       trades: checked.trades,
+      resolved: checked.resolved,
       text,
     };
   });

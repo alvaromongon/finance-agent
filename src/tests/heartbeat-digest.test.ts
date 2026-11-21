@@ -77,6 +77,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   tickerWarnings: [],
   unreadableCells: [],
   noStop: [],
+  rejectedBatches: [],
   tightStops: [],
   armed: [],
   escalated: [],
@@ -222,6 +223,30 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual(digestKeys(withNoStop), []);
     // Sent today or not, it is in the next digest too: it lasts as long as the position has no stop.
     assert.deepEqual(onlyNew(withNoStop, new Set(["anything"])).noStop, noStop);
+  });
+
+  it("a rejected batch is named in every digest, by its file, and is never marked as sent (#152)", () => {
+    const rejectedBatches = ["2026-11-12.yaml", "2026-11-13-2.yaml"];
+    const withRejected = digest({ rejectedBatches });
+    const email = renderHeartbeatDigest(withRejected)!;
+
+    assert.match(email.subject, /lote rechazado/);
+    assert.match(email.body, /## Lotes rechazados a la espera de respuesta/);
+    assert.ok(email.body.includes("- `inbox/rejected/2026-11-12.yaml`"));
+    assert.ok(email.body.includes("- `inbox/rejected/2026-11-13-2.yaml`"));
+    assert.match(email.body, /replaces: <archivo>/);
+    assert.match(email.body, /discard/);
+    assert.deepEqual(digestKeys(withRejected), []);
+    assert.deepEqual(onlyNew(withRejected, new Set(["anything"])).rejectedBatches, rejectedBatches);
+    assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
+  });
+
+  it("a rejected file name is written inside its code span safely: a backtick or a control character cannot end it or reach the email (#152)", () => {
+    const hostile = "a`b\n## injected\u001b[31m.yaml";
+    const email = renderHeartbeatDigest(digest({ rejectedBatches: [hostile] }))!;
+    assert.ok(email.body.includes("- `inbox/rejected/a\\u0060b\\n## injected\\u001b[31m.yaml`"), email.body);
+    assert.ok(!email.body.includes("\n## injected"));
+    assert.ok(!email.body.includes("\u001b"));
   });
 
   it("the crossed stop leaves no key: there is nothing to remember", () => {

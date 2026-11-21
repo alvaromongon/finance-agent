@@ -1,8 +1,6 @@
-// Lot keeping for `decision:record` (ADR-0015, #42). Pure: no I/O, no config, no text of any file. The
-// recorder reads the portfolio and the log, plans with these functions, then writes the log and hands the
-// new lots to the portfolio store.
+// Lot keeping (ADR-0015, #42). Pure: no I/O, no config, no text of any file. The inbox's sale handler plans with
+// these functions over the lots of the state.
 //
-// - `lotOfEntry`: the lot an entry opens.
 // - `planSale`: which lots a sale consumes (first in, first out) and what each exit carries.
 import type { Decision } from "../decisions.js";
 import type { Currency, Lot } from "../types.js";
@@ -65,23 +63,6 @@ export function entryCostsTaken(history: readonly Decision[]): Map<string, Money
     }
   }
   return taken;
-}
-
-/** The lot an entry opens: all the units it bought, with the entry's own data as its snapshot. */
-export function lotOfEntry<C extends Currency>(entry: Decision & { currency: C }, units: number): Lot<C> {
-  return {
-    ticker: entry.ticker!,
-    entryId: entry.id,
-    date: entry.date,
-    units,
-    entryUnits: units,
-    entryPrice: entry.price!,
-    initialStop: entry.stop_initial ?? null,
-    entryCosts: (entry.costs as Money<C> | undefined) ?? null,
-    origin: entry.origin,
-    rulesVersion: entry.rules_version,
-    rulesViolations: entry.rule_violations ?? [],
-  };
 }
 
 // ─── Sale: first in, first out ────────────────────────────────────────────────

@@ -1,8 +1,8 @@
 /**
  * The documented quarter-archive program (docs/log-retention.md) against the engine: after a quarter is
- * archived, `decision:record` must record every later sale as it would with the whole history, even when
+ * archived, `inbox:ingest` must record every later sale as it would with the whole history, even when
  * no archive is readable at all (`DECISIONS_ARCHIVE_DIR` unset, or CI without it). The program runs on a
- * log the engine itself wrote; then the same sale is recorded on three copies of the vault: never
+ * log the engine itself wrote; then the same sale is applied on three copies of the vault: never
  * archived, archived and readable, archived and unreadable.
  */
 import { before, after, describe, it } from "node:test";
@@ -58,10 +58,11 @@ ${lotsSection(c as "EUR" | "USD")}`,
   )
   .join("\n")}`;
 
-const fakeProvider = {
-  getPrices: async (tickers: string[]) => new Map(tickers.map((t) => [t, 700])),
-  getHistorical: async () => [],
-};
+const NOW = new Date("2026-09-14T09:00:00Z");
+
+/** A batch of commands, one line each; a field of a command is written after a `|`. */
+const batch = (...commands: string[]): string =>
+  `schema_version: 1\ncommands:\n${commands.map((c) => `  - ${c.replace(/\n/g, "\n    ")}`).join("\n")}\n`;
 
 const cleanEnv = (): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
@@ -75,11 +76,11 @@ const archiveBlocks = (md: string): string[] => {
 /** A decision without what differs between runs of the same trade (its id and the ids it cites). */
 const shape = (d: Decision) => ({ ...d, id: undefined, related_id: d.related_id ? "lot" : undefined });
 
-describe("after the quarter-archive program, decision:record needs no archive", () => {
+describe("after the quarter-archive program, inbox:ingest needs no archive", () => {
   let root: string;
   let vault: string;
   let archive: string;
-  let recordOwnerDecision: (raw: unknown, provider?: typeof fakeProvider, today?: string) => Promise<Decision[]>;
+  let ingestInbox: (now?: Date) => Promise<{ lines: string[]; exitCode: number }>;
   const logOf = async (dir: string) =>
     (await readFile(join(dir, "logs", "decisions.jsonl"), "utf8"))
       .split("\n")
@@ -97,23 +98,33 @@ describe("after the quarter-archive program, decision:record needs no archive", 
     await writeFile(join(vault, "portfolio.md"), PORTFOLIO_MD, "utf8");
     process.env.VAULT_PROJECT_DIR = vault;
     delete process.env.DECISIONS_ARCHIVE_DIR;
-    ({ recordOwnerDecision } = await import("../decision.js"));
+    ({ ingestInbox } = await import("../inbox.js"));
   });
 
   after(async () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  const trade = (extra: object) =>
-    recordOwnerDecision({ type: "entry", ticker: "ADBE", currency: "USD", stop: 20, ...extra }, fakeProvider, TODAY);
+  const applyBatch = async (dir: string, name: string, text: string) => {
+    await mkdir(join(dir, "inbox"), { recursive: true });
+    await writeFile(join(dir, "inbox", name), text, "utf8");
+    const result = await ingestInbox(NOW);
+    assert.equal(result.exitCode, 0, result.lines.join("\n"));
+  };
 
   it("records the same sale from the live file alone as from the live file plus the archive", async () => {
     // Q2: lot A (10 units, costs 4) and lot B (6 units, costs 3); a sale that uses A up and takes 2 of B,
     // then a second partial sale of B. Both exits of B are partial: they leave B open.
-    await trade({ date: "2026-04-10", price: 25, units: 10, costs: 4 });
-    await trade({ date: "2026-04-12", price: 26, units: 6, costs: 3 });
-    await trade({ type: "exit", date: "2026-05-02", price: 30, units: 12, costs: 2 });
-    await trade({ type: "exit", date: "2026-05-20", price: 30, units: 1, costs: 1 });
+    await applyBatch(
+      vault,
+      "q2.yaml",
+      batch(
+        "command: buy\nticker: ADBE\ndate: 2026-04-10\nunits: 10\nprice: 25 USD\ncosts: 4 USD",
+        "command: buy\nticker: ADBE\ndate: 2026-04-12\nunits: 6\nprice: 26 USD\ncosts: 3 USD",
+        "command: sale\nticker: ADBE\ndate: 2026-05-02\nunits: 12\nprice: 30 USD\ncosts: 2 USD",
+        "command: sale\nticker: ADBE\ndate: 2026-05-20\nunits: 1\nprice: 30 USD\ncosts: 1 USD",
+      ),
+    );
     const before = await logOf(vault);
     assert.equal(before.length, 5);
 
@@ -131,13 +142,14 @@ describe("after the quarter-archive program, decision:record needs no archive", 
 
     const liveOnly = join(root, "live-only");
     await cp(vault, liveOnly, { recursive: true });
-    const sale = { type: "exit", ticker: "ADBE", currency: "USD", date: TODAY, price: 31, units: 3, costs: 1 };
+    const sale = batch(`command: sale\nticker: ADBE\ndate: ${TODAY}\nunits: 3\nprice: 31 USD\ncosts: 1 USD`);
 
     const run = async (dir: string, archiveDir: string | undefined) => {
       process.env.VAULT_PROJECT_DIR = dir;
       if (archiveDir) process.env.DECISIONS_ARCHIVE_DIR = archiveDir;
       else delete process.env.DECISIONS_ARCHIVE_DIR;
-      return (await recordOwnerDecision(sale, fakeProvider, TODAY)).map(shape);
+      await applyBatch(dir, "sale.yaml", sale);
+      return (await logOf(dir)).filter((d) => d.type === "exit" && d.date === TODAY).map(shape);
     };
     const truth = await run(never, undefined);
     const full = await run(vault, archive);
@@ -148,8 +160,8 @@ describe("after the quarter-archive program, decision:record needs no archive", 
     assert.deepEqual(full, truth);
     assert.deepEqual(live, truth);
     assert.equal(
-      await readFile(join(liveOnly, "portfolio.md"), "utf8"),
-      await readFile(join(never, "portfolio.md"), "utf8"),
+      await readFile(join(liveOnly, "state", "portfolio.json"), "utf8"),
+      await readFile(join(never, "state", "portfolio.json"), "utf8"),
     );
   });
 });

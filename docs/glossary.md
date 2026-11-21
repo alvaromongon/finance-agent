@@ -87,7 +87,14 @@ sale can share a batch.
 
 The folder where a person, an AI or a routine drops one file per [batch](#batch) of [commands](#command). The
 engine never edits a file there: `inbox:ingest` moves it to `applied/`, or to `rejected/` with the line and the
-reason of each error.
+reason of each error (a [rejected batch](#rejected-batch)). It is the only way a buy or a sale is recorded.
+
+### Rejected batch
+
+A [batch](#batch) that `inbox:ingest` refused: it applied nothing, and the file stays in `inbox/rejected/` as the audit
+trail, never retried. It awaits an answer, named in every digest of the [heartbeat](#heartbeat), until a later batch
+replaces it (`replaces: <file>` at its top) or discards it (a `discard` [command](#command) with `file: <file>`). A
+batch that depends on it fails its own validation.
 
 ### Stop
 

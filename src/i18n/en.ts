@@ -92,6 +92,7 @@ export const en = {
       tickers: "ticker that does not read",
       unreadableCells: "cell that cannot be counted",
       noStop: "position without a stop",
+      rejectedBatches: "rejected batch",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -118,8 +119,8 @@ export const en = {
       `## \`portfolio.md\`: problem with the lots`,
       ``,
       `The \`Lots\` table cannot be read, is missing, or does not match \`Positions\` or the decision log. The heartbeat keeps`,
-      `watching your positions (stops, \`Volume\`, \`Avg price\`), but \`decision:record\` and the`,
-      `evaluation refuse the file until it is fixed:`,
+      `watching your positions (stops, \`Volume\`, \`Avg price\`), but the evaluation and the`,
+      `inbox refuse the file until it is fixed:`,
       ``,
     ],
     lotsOutro: [
@@ -139,6 +140,20 @@ export const en = {
       ``,
       `Give each a stop with a \`set_stop\` command in \`inbox/\` (see \`docs/input-format.md\`). The warning stays in every`,
       `digest until you do.`,
+    ],
+    rejectedBatchesIntro: [
+      `## Rejected batches awaiting an answer`,
+      ``,
+      `The engine refused these batches of \`inbox/\` and applied nothing of them. A rejected batch is never retried`,
+      `and never forgotten: it stays here until you answer it. The errors are in \`inbox/rejected/<file>.errors.txt\`:`,
+      ``,
+    ],
+    rejectedBatchesLine: (file: string) => `- \`inbox/rejected/${file}\``,
+    rejectedBatchesOutro: [
+      ``,
+      `Replace each with a new batch that starts with \`replaces: <file>\`, or give it up with a \`discard\` command`,
+      `(\`file: <file>\`) in \`inbox/\` (see \`docs/input-format.md\`). The file stays in \`inbox/rejected/\` as the audit`,
+      `trail. The notice stays in every digest until you do.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,
@@ -206,7 +221,7 @@ export const en = {
     ],
     armedOutro: [
       ``,
-      "They are logged in logs/decisions.jsonl as setup_armed. If the order fills, record it with decision:record.",
+      "They are logged in logs/decisions.jsonl as setup_armed. If the order fills, tell the engine with a buy command in inbox/.",
     ],
     escalatedIntro: [`## Signals sent to analysis`, ``],
     escalatedLine: (ticker: string, triggers: string, price: string, currency: string) =>

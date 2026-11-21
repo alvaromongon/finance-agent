@@ -21,6 +21,7 @@ import {
   writeHeartbeatSent,
 } from "./vault-io.js";
 import { readPortfolio, refreshPrices } from "./portfolio-store.js";
+import { readAwaitingRejected } from "./inbox-rejected.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
 import { volumeMismatches } from "./utils/lots-check.js";
@@ -62,6 +63,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     tickerWarnings: [],
     unreadableCells: [],
     noStop: [],
+    rejectedBatches: [],
     tightStops: [],
     armed: [],
     escalated: [],
@@ -120,6 +122,14 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     console.warn(`[finance-agent] WARNING, unreadable cell: ${message}`);
   }
 
+  // A batch the inbox rejected and nobody answered (replaced or discarded) is named in every digest (#152). Only the
+  // list of the rejected files is read, never a batch run; a folder that cannot be read is said and never stops the run:
+  // the stops below must still be watched.
+  digest.rejectedBatches = await readAwaitingRejected().catch((err: unknown) => {
+    console.warn(`[finance-agent] WARNING, inbox/rejected: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  });
+
   const checkLots = (): void => {
     digest.lotsWarnings = lotsProblem ? [lotsProblem] : lotsCheck(portfolio);
     for (const w of digest.lotsWarnings) console.warn(`[finance-agent] WARNING, Lots: ${w}`);
@@ -166,7 +176,7 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
 
   // 2b'. Volume against the lots (ADR-0015), from portfolio.md alone: each lot names its ticker, so the
   // alerting path does not read the decision log. The checks that need the log run where it is read
-  // (decision:record and the evaluation). Unlike them, the heartbeat never refuses the file for a
+  // (the evaluation). Unlike them, the heartbeat never refuses the file for a
   // mismatch: a typo in Lots must not switch off the stop alerts. It keeps watching the positions and
   // says so loudly, in the log and in every digest while it lasts (they are not deduplicated). A Lots table
   // that does not read is the same: the warning replaces the volume check (no lots to compare).

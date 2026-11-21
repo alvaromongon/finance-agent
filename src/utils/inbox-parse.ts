@@ -47,13 +47,15 @@ export interface UnreadCommand {
 }
 
 export interface ParsedBatch {
+  /** The rejected batch this one replaces (`replaces:`), by its name in `inbox/rejected/`; absent: it replaces none. */
+  replaces?: { file: string; line: number };
   commands: ParsedCommand[];
   /** The commands that did not parse, in order. Every problem of them is in `issues`. */
   unread: UnreadCommand[];
   issues: InboxIssue[];
 }
 
-const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale", "set_stop", "clear_stop"] as const;
+const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale", "set_stop", "clear_stop", "discard"] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 const FIELDS: Record<CommandKind, readonly string[]> = {
   deposit: ["command", "amount"],
@@ -62,6 +64,7 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   sale: ["command", "ticker", "date", "units", "price", "costs", "lot", "stop_executed"],
   set_stop: ["command", "ticker", "date", "price"],
   clear_stop: ["command", "ticker", "date"],
+  discard: ["command", "file"],
 };
 
 /** Fields that used to exist: a command that still carries one is told where it went. */
@@ -103,6 +106,19 @@ function amountWithCurrency(raw: string, what: string, cents: boolean): { value:
     return `${what} must not have more than two decimals; got: ${quoted(raw)}`;
   }
   return { value, currency };
+}
+
+/**
+ * The name of a rejected batch as `inbox:ingest` moved it: a plain `.yaml` or `.yml` file name, never a path, never a
+ * hidden file. Not a reason to read a file: the name is only looked up in the list of the rejected ones.
+ */
+function batchName(raw: string, what: string): string | { problem: string } {
+  if (raw === "" || raw.length > 255 || /[/\\\0]/.test(raw) || raw.startsWith(".") || !/\.ya?ml$/i.test(raw)) {
+    return {
+      problem: `${what} must be the name of a rejected batch, a .yaml or .yml file in inbox/rejected/ (no folder); got: ${quoted(raw)}`,
+    };
+  }
+  return raw;
 }
 
 /** A real calendar date, YYYY-MM-DD. */
@@ -236,6 +252,14 @@ function readCommand(raw: unknown): Command | Unread {
     return { kind, currency: read.currency, amount: money(read.value, read.currency) };
   }
 
+  if (kind === "discard") {
+    const raw = text("file", true);
+    const named = raw === undefined ? undefined : batchName(raw, '"file"');
+    if (typeof named === "object") problems.push(named.problem);
+    if (problems.length > 0 || named === undefined || typeof named === "object") return unread();
+    return { kind, file: named };
+  }
+
   if (kind === "set_stop" || kind === "clear_stop") {
     const t = ticker();
     const when = date(false);
@@ -281,6 +305,12 @@ function readCommand(raw: unknown): Command | Unread {
     ...(lot ? { lot } : {}),
     stopExecuted: executed === "true",
   };
+}
+
+/** The 1-based line of a top-level field, 1 if it cannot be found. */
+function topFieldLine(text: string, name: string): number {
+  const index = text.split("\n").findIndex((row) => row.startsWith(`${name}:`) || row.startsWith(`${name} :`));
+  return index < 0 ? 1 : index + 1;
 }
 
 /**
@@ -360,7 +390,20 @@ export function parseBatch(text: string): ParsedBatch {
     return { commands: [], unread: [], issues };
   }
   for (const name of Object.keys(top)) {
-    if (name !== "schema_version" && name !== "commands") fileIssue(`unknown field ${quoted(name)}`);
+    if (name !== "schema_version" && name !== "commands" && name !== "replaces") {
+      fileIssue(`unknown field ${quoted(name)}`);
+    }
+  }
+  let replaces: ParsedBatch["replaces"];
+  if (top.replaces !== undefined) {
+    const line = topFieldLine(text, "replaces");
+    const named = typeof top.replaces === "string" ? batchName(top.replaces.trim(), '"replaces"') : undefined;
+    if (typeof named === "string") replaces = { file: named, line };
+    else {
+      const problem =
+        named?.problem ?? '"replaces" must be the name of a rejected batch, a .yaml or .yml file in inbox/rejected/';
+      issues.push({ command: null, line, reason: problem });
+    }
   }
   if (!Array.isArray(top.commands) || top.commands.length === 0) {
     fileIssue('"commands" must be a list with at least one command');
@@ -384,5 +427,5 @@ export function parseBatch(text: string): ParsedBatch {
       commands.push({ position, line, command: read });
     }
   });
-  return { commands, unread, issues };
+  return { ...(replaces ? { replaces } : {}), commands, unread, issues };
 }

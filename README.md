@@ -61,7 +61,7 @@ Every variable is documented in [`.env.example`](.env.example). Copy it to `.env
 In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
-   - `portfolio.md`, which you keep in sync with your broker by hand, recording each trade and cash flow with `decision:record`: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on you change the portfolio with batches of commands in `inbox/`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson));
+   - `portfolio.md`, your starting portfolio, kept in sync with your broker: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a cash flow or a currency conversion with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
    - `watchlist.md`, `screening-universe.md` and the theses.
 
    The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
@@ -190,15 +190,15 @@ are possible.
 | `npm run monday-briefing`               | Monday briefing (API mode)                            |
 | `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report |
 | `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart   |
-| `npm run decision:record`               | Records a trade or cash flow you made (JSON on stdin) |
+| `npm run decision:record`               | Records a cash flow or a stop adjustment (JSON stdin) |
 | `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio |
 | `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each  |
 | `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
 | `npm run outbox:send`                   | Sends the queued emails (relay)                       |
 | `npm run smoke-test`                    | Connectivity check                                    |
 
-`decision:record` takes one JSON event on stdin: `entry`, `exit`, `adjust_stop`, `deposit`,
-`withdrawal` or `fx_conversion`. The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
+`decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit`, `withdrawal` or
+`fx_conversion`; a buy and a sale are no longer recorded there but with the `buy` and `sale` commands of a batch in `inbox/`. The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
 gives the JSON for each and the order that keeps the P&L right. What to delete, move and archive
 in `logs/`, and how `DECISIONS_ARCHIVE_DIR` reads old quarters back: [Log retention](docs/log-retention.md).
 
