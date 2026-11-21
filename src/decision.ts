@@ -251,31 +251,3 @@ export function describeOwnerDecision(d: Decision): string {
   if (!d.benchmark) lines.push("No silo benchmark price for that date.");
   return lines.join("\n");
 }
-
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-// CLI dispatch only when the file runs directly — not when index.ts,
-// pending.ts or the tests import it (same pattern as pending.ts).
-const isMain = process.argv[1] != null && import.meta.filename === process.argv[1];
-if (isMain) {
-  const [cmd] = process.argv.slice(2);
-  if (cmd !== "record") {
-    throw new Error("Usage: decision.ts record  (trade JSON on stdin)");
-  }
-  readStdin()
-    .then((stdin) => recordOwnerDecision(JSON.parse(stdin)))
-    .then((decisions) => {
-      for (const decision of decisions) {
-        console.log(describeOwnerDecision(decision));
-        console.log(JSON.stringify(decision));
-      }
-    })
-    .catch((err) => {
-      console.error("[decision]", err instanceof Error ? err.message : err);
-      process.exitCode = 1;
-    });
-}

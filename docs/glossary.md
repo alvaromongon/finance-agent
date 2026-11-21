@@ -121,6 +121,16 @@ writes a state file.
 The engine's own file of the portfolio, `state/portfolio.json`, written only by the engine. `portfolio.md` is a
 view generated from it, read by nobody; to change the portfolio, drop a [batch](#batch) in the [inbox](#inbox).
 
+### Compare-and-swap
+
+How the engine's state is committed to the data repository when runs can overlap: a run reads the last commit, works
+over it and pushes its result on top of exactly that commit. If the repository moved meanwhile the push is refused
+(the run "lost the race"): the run throws its work away, reads the state as it is now and does the work again, a
+bounded number of times, so a retried [batch](#batch) is judged against the state it now meets and the result is that
+of a fresh run. A run that keeps losing applies nothing and rejects nothing, and its batches stay in the
+[inbox](#inbox) for the next run: a delay, never a verdict on them. It takes no lock, and the [heartbeat](#heartbeat)
+does not take part in it: its stop checks read the last commit.
+
 ### Heartbeat
 
 The daily run, after each market's close: it refreshes prices, checks stops, looks for

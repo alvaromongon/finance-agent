@@ -251,6 +251,22 @@ export const config = {
       return referenceTicker("REFERENCE_TICKER_USD");
     },
   },
+  // Where the engine commits the state it writes (ADR-0018, #134): unset, nowhere (the files are left in the
+  // working copy, as when the owner runs the engine by hand); `git`, onto the remote's last commit as a
+  // compare-and-swap with retry (a CI checkout, see `state-commit.ts`). Read on use.
+  stateCommit: {
+    get mode(): "none" | "git" {
+      const v = optional("STATE_COMMIT", "none").toLowerCase();
+      if (v !== "none" && v !== "git")
+        throw new Error(`Environment variable STATE_COMMIT="${v}" is neither none nor git`);
+      return v;
+    },
+    remote: () => optional("STATE_COMMIT_REMOTE", "origin"),
+    // The branch the state is committed to; in Actions, the one the run was started on.
+    branch: () => optional("STATE_COMMIT_BRANCH", optional("GITHUB_REF_NAME", "main")),
+    // Times a run that keeps losing the race tries before it leaves its work for the next run.
+    attempts: () => Math.max(1, Math.floor(optionalNumber("STATE_COMMIT_ATTEMPTS", "3"))),
+  },
   paths: {
     // Directory with the data files (the "brain"). Required and without a
     // default; read on use so tests can set it per file.

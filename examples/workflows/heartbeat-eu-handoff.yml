@@ -44,7 +44,10 @@ jobs:
       - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
-          paths: finance-agent/logs/ finance-agent/portfolio.md
+          # The price refresh writes the store and the view generated from it (state-paths): if another run
+          # committed state since this one started, the refresh is dropped and the rest is committed.
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json
+          state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat EUR"
 
   wake-routine:
