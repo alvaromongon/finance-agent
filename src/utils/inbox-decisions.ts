@@ -1,6 +1,7 @@
 // The decision-log lines of the trades a clean batch applied (#132): one `entry` per buy and one `exit` per lot a sale
 // touched, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
-// recorded; the lines are telemetry: the state is what the batch changed. Pure; the ids of the exits come from the one
+// recorded; the lines are telemetry: the state is what the batch changed. A trade that follows a proposal of the
+// system carries its origin (`sistema`), so it stays in the system's expectancy (ADR-0009 §8). Pure; the ids of the exits come from the one
 // source of decision ids (`uniqueDecisionIds`).
 import { createHash } from "node:crypto";
 import { buildDecision, type Decision } from "../decisions.js";
@@ -27,7 +28,6 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
       date: trade.date,
       ticker: trade.ticker,
       currency: trade.currency,
-      origin: "propietario" as const,
       source: "portfolio-sync" as const,
       price: trade.price,
       rules_version: context.rulesVersion,
@@ -37,6 +37,9 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
       return [
         buildDecision({
           ...common,
+          // The system's when the buy follows one of its proposals (ADR-0009 §8), which the entry then cites.
+          origin: lot.origin,
+          ...(trade.relatedId !== undefined ? { related_id: trade.relatedId } : {}),
           id: lot.entryId,
           type: "entry",
           amount: exactAmount(trade.units * trade.price),
@@ -52,6 +55,7 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
     return trade.exits.map(({ share, lot }) =>
       buildDecision({
         ...common,
+        origin: trade.origin,
         id: nextId(trade.date, trade.ticker, "exit"),
         type: "exit",
         amount: share.amount,

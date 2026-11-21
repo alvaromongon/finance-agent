@@ -22,6 +22,7 @@ import { formatNumber, messages, type Messages } from "../i18n/index.js";
 import { STOP_ATR_BY_HORIZON, type TightStop } from "./atr-stop.js";
 import { describeSetup, type SetupEvaluation } from "./setups/index.js";
 import type { StopBreach } from "./stop-breach.js";
+import { printable } from "./printable.js";
 import type { Ticker } from "../ticker.js";
 import type { Currency, Signal } from "../types.js";
 
@@ -175,7 +176,9 @@ function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [
     ...t.rejectedBatchesIntro,
-    ...d.rejectedBatches.map((file) => t.rejectedBatchesLine(file)),
+    // A file name is the owner's text inside a Markdown code span: its control characters are escaped (`printable`)
+    // and a backtick, which would end the span, is written as an escape too.
+    ...d.rejectedBatches.map((file) => t.rejectedBatchesLine(printable(file).replaceAll("`", "\\u0060"))),
     ...t.rejectedBatchesOutro,
   ];
 }

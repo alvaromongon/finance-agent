@@ -5,7 +5,23 @@
 // The state is both silos of the portfolio. The currency is enforced by the type only where a silo is
 // picked at run time (`state[command.currency]`, #145), so every handler checks it explicitly before it
 // touches a silo (`siloOf`).
-import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
+import {
+  CURRENCIES,
+  type Currency,
+  type Lot,
+  type PortfolioSnapshot,
+  type Position,
+  type WatchlistEntry,
+} from "../types.js";
+import {
+  entryRuleViolations,
+  findRelatedProposal,
+  originOf,
+  STOP_RULES,
+  stopRuleViolations,
+  type Decision,
+  type DecisionOrigin,
+} from "../decisions.js";
 import type { Ticker } from "../ticker.js";
 import {
   addCounted,
@@ -114,11 +130,41 @@ export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
  * says which rejected batch it gave up (`discarded`).
  */
 export type HandlerResult =
-  | { state: InboxState; opened?: string; lot?: Lot; exits?: readonly SaleShare[]; discarded?: string }
+  | {
+      state: InboxState;
+      opened?: string;
+      lot?: Lot;
+      /** A buy: the id of the system proposal it follows (`related_id` of its entry), when it follows one. */
+      proposal?: string;
+      exits?: readonly SaleShare[];
+      /** A sale: `sistema` when it follows a sell proposal of the system, `propietario` otherwise (ADR-0009 §8). */
+      origin?: DecisionOrigin;
+      discarded?: string;
+    }
   | { reason: string };
 
 /** The id of the lot a buy opens: from the one source of decision ids, never one the history or the state holds. */
 export type NewEntryId = (date: string, ticker: Ticker) => string;
+
+/**
+ * What the rules of an entry (ADR-0013 §4, ADR-0009 §5 and §8) read, from whoever runs the batch: the watchlist of
+ * each silo, the decision history (where the system proposal a trade follows is found), the proposals earlier trades
+ * of the run already cited, and the ATR of the tickers bought. Everything is read before the run, so the handlers
+ * stay pure.
+ */
+export interface EntryContext {
+  watchlist: Readonly<Partial<Record<Currency, readonly WatchlistEntry[]>>>;
+  history: readonly Decision[];
+  /** Ids of the proposals the buys before this command (earlier files included) cited: one proposal, one trade. */
+  cited: ReadonlySet<string>;
+  /** ATR14 by ticker, best-effort: a ticker with none has no stop distance checked. */
+  atr: ReadonlyMap<Ticker, number>;
+  /** `strategy.stopMinAtr`: the least a stop may sit from the entry price, in ATRs. */
+  minStopAtr: number;
+}
+
+/** The decisions of the system an entry can follow: its own proposal, a block it overrides, an armed breakout. */
+const ENTRY_PROPOSALS = ["buy_proposal", "buy_blocked", "setup_armed"] as const;
 
 /**
  * What the handlers need besides the state and the command, from whoever runs the batch (`inbox:check`,
@@ -137,6 +183,8 @@ export interface BatchContext {
   entryCostsTaken: ReadonlyMap<string, Money>;
   /** The rejected batches (names in `inbox/rejected/`) still awaiting a replacement or a discard: what a `discard` can name. */
   awaiting: ReadonlySet<string>;
+  /** What the rules of an entry read, see `EntryContext`. */
+  entry: EntryContext;
   /** Where a `set_stop` or `clear_stop` writes who changed the stop. */
   record?: StopRecord;
 }
@@ -266,8 +314,14 @@ export function withdrawal<C extends Currency>(state: InboxState, command: Withd
 /** The rule an entry id must follow before it reaches a path or a cell: what `newDecisionId` writes, and the example ids. */
 const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-/** The rule violations a lot carries from its stop: `no_stop` while it has none (ADR-0009 §5), nothing otherwise. */
-const violationsOf = (initialStop: number | null): string[] => (initialStop === null ? ["no_stop"] : []);
+/**
+ * The rule violations of a lot once its initial stop is `stop`: the ones it was opened with that do not depend on the
+ * stop stay, the ones about the stop (`no_stop`, `stop_below_min_atr`) are judged again.
+ */
+const withStopRules = (lot: Lot, stop: number | null, { atr, minStopAtr }: EntryContext): string[] => [
+  ...lot.rulesViolations.filter((v) => !STOP_RULES.includes(v)),
+  ...stopRuleViolations({ price: lot.entryPrice, stop, atr: atr.get(lot.ticker), minStopAtr }),
+];
 
 export function buy<C extends Currency>(state: InboxState, command: Buy<C>, context: BatchContext): HandlerResult {
   const silo = siloOf(state, command.currency);
@@ -289,6 +343,15 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>, cont
     );
   }
   const held = silo.positions.find((p) => p.ticker === ticker);
+  // The system proposal this buy follows (ADR-0009 §8): it decides the origin, so that a buy of what the engine
+  // proposed stays in the system's expectancy. Its own block, if it skips one, is a violation (`overrode_block`).
+  const { entry } = context;
+  const proposal = findRelatedProposal(
+    entry.history,
+    { ticker, date: command.date, types: ENTRY_PROPOSALS },
+    entry.cited,
+  );
+  const origin = originOf(proposal);
   const lot: Lot<C> = {
     ticker,
     entryId: context.newEntryId(command.date, ticker),
@@ -300,9 +363,19 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>, cont
     // the batch replaces it), or none, and then it carries `no_stop` (`withStop` keeps that true).
     initialStop: held ? stopOf(held) : null,
     entryCosts: command.costs ?? null,
-    origin: "propietario",
+    origin,
     rulesVersion: context.rulesVersion,
-    rulesViolations: violationsOf(held ? stopOf(held) : null),
+    rulesViolations: [
+      ...entryRuleViolations({
+        price: command.price,
+        stop: held ? stopOf(held) : null,
+        entry: entry.watchlist[currency]?.find((e) => e.ticker === ticker),
+        proposal,
+        atr: entry.atr.get(ticker),
+        minStopAtr: entry.minStopAtr,
+      }),
+      ...(origin === "propietario" && proposal?.origin === "sistema" ? ["overrode_block"] : []),
+    ],
   };
   const position: Position<C> = held
     ? {
@@ -332,6 +405,7 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>, cont
     }),
     opened: openedKey(currency, lot.entryId),
     lot,
+    ...(proposal !== undefined ? { proposal: proposal.id } : {}),
   };
 }
 
@@ -375,13 +449,14 @@ function withStop<C extends Currency>(
   ticker: Ticker,
   stop: number | null,
   opened: OpenedLots,
+  entry: EntryContext,
 ): PortfolioSnapshot<C> {
   return {
     ...silo,
     positions: silo.positions.map((p) => (p.ticker === ticker ? { ...p, stopLoss: stop } : p)),
     lots: silo.lots.map((l) =>
       l.ticker === ticker && ownLot(opened, openedKey(silo.currency, l.entryId))
-        ? { ...l, initialStop: stop, rulesViolations: violationsOf(stop) }
+        ? { ...l, initialStop: stop, rulesViolations: withStopRules(l, stop, entry) }
         : l,
     ),
   };
@@ -390,7 +465,7 @@ function withStop<C extends Currency>(
 export function setStop<C extends Currency>(
   state: InboxState,
   command: SetStop<C>,
-  { opened, record }: Pick<BatchContext, "opened" | "record">,
+  { opened, record, entry }: Pick<BatchContext, "opened" | "record" | "entry">,
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
@@ -402,13 +477,13 @@ export function setStop<C extends Currency>(
     return refused(`cannot set a stop: there is no open position in ${printable(ticker)} in the ${currency} silo`);
   }
   record?.stops.set(openedKey(currency, ticker), { ...record.at });
-  return { state: withSilo(state, withStop(silo, ticker, command.price, opened)) };
+  return { state: withSilo(state, withStop(silo, ticker, command.price, opened, entry)) };
 }
 
 export function clearStop(
   state: InboxState,
   command: ClearStop,
-  { opened, record }: Pick<BatchContext, "opened" | "record">,
+  { opened, record, entry }: Pick<BatchContext, "opened" | "record" | "entry">,
 ): HandlerResult {
   const { ticker } = command;
   // A silo the portfolio does not have holds nothing. One that fails to read may hold the ticker, so its error
@@ -433,7 +508,7 @@ export function clearStop(
   }
   for (const silo of stopped) record?.stops.set(openedKey(silo.currency, ticker), null);
   // The position ends with no stop, so the lots this batch opened start with none (they carry `no_stop`).
-  return { state: stopped.reduce((next, silo) => withSilo(next, withStop(silo, ticker, null, opened)), state) };
+  return { state: stopped.reduce((next, silo) => withSilo(next, withStop(silo, ticker, null, opened, entry)), state) };
 }
 
 /**
@@ -481,7 +556,12 @@ export function takeEntryCosts(taken: Map<string, Money>, exits: readonly SaleSh
 export function sale<C extends Currency>(
   state: InboxState,
   command: Sale<C>,
-  { opened, earlierTickers, entryCostsTaken }: Pick<BatchContext, "opened" | "earlierTickers" | "entryCostsTaken">,
+  {
+    opened,
+    earlierTickers,
+    entryCostsTaken,
+    entry,
+  }: Pick<BatchContext, "opened" | "earlierTickers" | "entryCostsTaken" | "entry">,
 ): HandlerResult {
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
@@ -561,7 +641,14 @@ export function sale<C extends Currency>(
   const positions = silo.positions.flatMap((p) =>
     p.ticker !== ticker ? [p] : volume > UNITS_TOLERANCE ? [{ ...p, volume, avgPrice }] : [],
   );
-  return { state: withSilo(state, { ...credited, lots, positions }), exits: shares };
+  // A sale that follows a sell proposal of the system is the system's (ADR-0009 §8); it is not a line `related_id`
+  // cites, so a proposal can be followed by more than one sale.
+  const followed = findRelatedProposal(entry.history, { ticker, date: command.date, types: ["sell"] });
+  return {
+    state: withSilo(state, { ...credited, lots, positions }),
+    exits: shares,
+    origin: originOf(followed),
+  };
 }
 
 export function discard(

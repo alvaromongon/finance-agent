@@ -241,6 +241,14 @@ describe("onlyNew / digestKeys", () => {
     assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
   });
 
+  it("a rejected file name is written inside its code span safely: a backtick or a control character cannot end it or reach the email (#152)", () => {
+    const hostile = "a`b\n## injected\u001b[31m.yaml";
+    const email = renderHeartbeatDigest(digest({ rejectedBatches: [hostile] }))!;
+    assert.ok(email.body.includes("- `inbox/rejected/a\\u0060b\\n## injected\\u001b[31m.yaml`"), email.body);
+    assert.ok(!email.body.includes("\n## injected"));
+    assert.ok(!email.body.includes("\u001b"));
+  });
+
   it("the crossed stop leaves no key: there is nothing to remember", () => {
     assert.ok(!digestKeys(digest({ breaches })).length);
   });

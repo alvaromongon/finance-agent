@@ -3,6 +3,7 @@
 // returns while `inbox:ingest` writes the state it ends with: one code path, `check` being `ingest` without the write.
 import { createHash } from "node:crypto";
 import { CURRENCIES, type Currency, type Lot } from "../types.js";
+import type { DecisionOrigin } from "../decisions.js";
 import type { Ticker } from "../ticker.js";
 import type { Money } from "../money.js";
 import { uniqueDecisionIds } from "./decision-id.js";
@@ -14,6 +15,7 @@ import {
   takeEntryCosts,
   type BatchContext,
   type Command,
+  type EntryContext,
   type InboxState,
   type InitialStopBreach,
   type OpenedLot,
@@ -55,6 +57,8 @@ export interface RunContext {
   rulesVersion: string;
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
+  /** What the rules of an entry read (see `EntryContext`) but the trades of the run itself: they add to `cited`. */
+  entry: Omit<EntryContext, "cited">;
 }
 
 /** What the files before the batch under check left behind. */
@@ -72,6 +76,9 @@ export interface Earlier {
   /** The entry costs taken so far: the history's, and those the exits of the clean files took. */
   entryCostsTaken: ReadonlyMap<string, Money>;
   rulesVersion: string;
+  /** The ids of the system proposals the buys of the clean files before this one cited. */
+  cited: ReadonlySet<string>;
+  entry: Omit<EntryContext, "cited">;
 }
 
 /** A buy of a clean batch, with the lot it opened as the batch leaves it (its initial stop is the final one). */
@@ -86,6 +93,8 @@ export interface BuyTrade {
   price: number;
   costs?: Money;
   lot: Lot;
+  /** The system proposal the buy follows, cited by its entry as `related_id` (ADR-0009 §8); absent: it follows none. */
+  relatedId?: string;
 }
 
 /** A sale of a clean batch: the exit of each lot it touched, with the lot as the batch leaves it. */
@@ -98,6 +107,8 @@ export interface SaleTrade {
   date: string;
   price: number;
   stopExecuted: boolean;
+  /** `sistema` when the sale follows a sell proposal of the system, `propietario` otherwise (ADR-0009 §8). */
+  origin: DecisionOrigin;
   exits: { share: SaleShare; lot: Lot }[];
 }
 
@@ -140,6 +151,8 @@ export interface BatchCheck {
   /** The ids taken after a clean batch (those of its lots too), and the entry costs its exits took. */
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
+  /** The proposals cited after a clean batch (its buys' too). */
+  cited: ReadonlySet<string>;
   /** What the batch changes, for the files after it if it is rejected. */
   footprint: readonly Footprint[];
 }
@@ -196,8 +209,22 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   const entryCostsTaken = new Map(earlier.entryCostsTaken);
   /** The lots this batch opened, as the batch leaves them: a `set_stop` later in it can change their initial stop. */
   const lastSeen = new Map<string, Lot>();
-  const bought: { command: number; line: number; key: string; read: Extract<Command, { kind: "buy" }> }[] = [];
-  const sold: { command: number; line: number; read: Extract<Command, { kind: "sale" }>; exits: SaleShare[] }[] = [];
+  const bought: {
+    command: number;
+    line: number;
+    key: string;
+    read: Extract<Command, { kind: "buy" }>;
+    relatedId?: string;
+  }[] = [];
+  const sold: {
+    command: number;
+    line: number;
+    read: Extract<Command, { kind: "sale" }>;
+    exits: SaleShare[];
+    origin: DecisionOrigin;
+  }[] = [];
+  /** The proposals cited by the buys so far, the earlier files' and this batch's: a proposal is followed by one buy. */
+  const cited = new Set(earlier.cited);
   const trades = (): Trade[] => {
     const final = (key: string, lot: Lot): Lot => lastSeen.get(key) ?? lot;
     return [
@@ -212,6 +239,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         price: b.read.price,
         ...(b.read.costs !== undefined ? { costs: b.read.costs } : {}),
         lot: lastSeen.get(b.key)!,
+        ...(b.relatedId !== undefined ? { relatedId: b.relatedId } : {}),
       })),
       ...sold.map((s): Trade => ({
         kind: "sale",
@@ -222,6 +250,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         date: s.read.date,
         price: s.read.price,
         stopExecuted: s.read.stopExecuted,
+        origin: s.origin,
         exits: s.exits.map((share) => ({
           share,
           lot: final(openedKey(s.read.currency, share.lot.entryId), share.lot),
@@ -332,6 +361,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       rulesVersion: earlier.rulesVersion,
       entryCostsTaken,
       awaiting,
+      entry: { ...earlier.entry, cited },
       record: { at: { command: position, line: read.line }, stops },
     };
     const result = applyCommand(current, command, context);
@@ -379,11 +409,24 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       const lot = { currency: command.currency, ticker: command.ticker, command: position, line: read.line };
       opened.set(result.opened, lot);
       own.set(result.opened, lot);
-      bought.push({ command: position, line: read.line, key: result.opened, read: command });
+      if (result.proposal !== undefined) cited.add(result.proposal);
+      bought.push({
+        command: position,
+        line: read.line,
+        key: result.opened,
+        read: command,
+        ...(result.proposal !== undefined ? { relatedId: result.proposal } : {}),
+      });
     }
     if (result.exits !== undefined && command.kind === "sale") {
       takeEntryCosts(entryCostsTaken, result.exits, command.currency);
-      sold.push({ command: position, line: read.line, read: command, exits: [...result.exits] });
+      sold.push({
+        command: position,
+        line: read.line,
+        read: command,
+        exits: [...result.exits],
+        origin: result.origin ?? "propietario",
+      });
     }
     // The lots of this batch as they are now: the last value of one a later command sells out is the one recorded.
     for (const key of own.keys()) {
@@ -466,6 +509,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         ]
       : [],
     takenIds: clean ? takenIds : earlier.takenIds,
+    cited: clean ? cited : earlier.cited,
     entryCostsTaken: clean ? entryCostsTaken : earlier.entryCostsTaken,
     footprint: footprintOf(parsed),
   };
@@ -614,6 +658,8 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
   let awaiting: ReadonlySet<string> = run.awaiting;
   let takenIds: ReadonlySet<string> = run.takenIds;
   let entryCostsTaken: ReadonlyMap<string, Money> = run.entryCostsTaken;
+  // What the history already cites is in `run.entry.history`; these are the proposals cited by this run's own buys.
+  let cited: ReadonlySet<string> = new Set();
   const checks = files.map((file): FileCheck => {
     const { name } = file;
     if ("problem" in file) {
@@ -638,6 +684,8 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       takenIds,
       entryCostsTaken,
       rulesVersion: run.rulesVersion,
+      cited,
+      entry: run.entry,
     });
     const clean = checked.issues.length === 0 && checked.notChecked.length === 0;
     if (!clean) {
@@ -647,6 +695,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       awaiting = new Set([...awaiting].filter((name) => !checked.resolved.some((r) => r.file === name)));
       takenIds = checked.takenIds;
       entryCostsTaken = checked.entryCostsTaken;
+      cited = checked.cited;
       // For the next files, a lot or a stop this one left is the file's.
       for (const [key, lot] of checked.opened) {
         lots.set(key, { ...lot, file: name });

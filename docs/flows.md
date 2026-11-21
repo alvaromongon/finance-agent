@@ -141,13 +141,15 @@ Only setups that are new compared with yesterday are alerted and recorded.
   `hold` is recorded. A blocked one is recorded as `buy_blocked` without escalating. Armed
   breakouts are recorded as `setup_armed` and emailed with their Buy Stop.
 - **Single way in (§4)**: the Monday briefing does not propose buys. A buy from the reasoner without
-  a setup is blocked with `no_setup`; a user entry with no preceding setup is flagged
-  `entry_without_setup`.
+  a setup is blocked with `no_setup`. The owner's `buy` in `inbox/` is judged when
+  [`inbox:ingest`](#apply-the-inbox) applies it: flagged `not_in_watchlist`, `entry_without_setup` (no system proposal
+  with a setup within 10 days), `no_stop` and `stop_below_min_atr`, and, if it follows a proposal of the system, logged
+  as the system's and citing it (a buy of a block is the owner's and flagged `overrode_block`).
 - **Record (§5)**: every new detection is recorded with its `setup` (pattern, state, level),
   whether or not it is acted on.
 
 An armed Buy Stop that fills without a close above the ceiling is not seen as confirmed: the owner
-tells the engine that trade with a `buy` command in `inbox/`. Why: [ADR-0013](decisions/0013-entry-setups.md).
+tells the engine that trade with a `buy` command in `inbox/`, which cites the armed setup. Why: [ADR-0013](decisions/0013-entry-setups.md).
 
 ### Entry eligibility
 
@@ -324,7 +326,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   `inbox/`, then `npm run inbox:check`. No LLM, no network.
 - **Steps**:
   1. Read the `.yaml` and `.yml` files of `inbox/` in name order. With none, the check returns "nothing to
-     check" before the portfolio is read. Otherwise read both silos of the portfolio through the
+     check" before the portfolio is read, and names the rejected batches awaiting an answer, if any. Otherwise read both silos of the portfolio through the
      [state port](glossary.md#state-port); a silo the file has no heading of at all is absent (each command of its
      currency gets a reason), and a portfolio it cannot read whole stops the check: a silo whose headings are
      all misspelt (the error names the headings found), a `Positions` row that does not read or a ticker on two
@@ -391,7 +393,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 
 ## Apply the inbox
 
-- **Starts with**: the same as [Check the inbox](#check-the-inbox), then `npm run inbox:ingest`. No LLM, no network.
+- **Starts with**: the same as [Check the inbox](#check-the-inbox), then `npm run inbox:ingest`. No LLM. The only network
+  call is one best-effort request of daily history per ticker a batch buys (for its ATR, see step 2), and only if one does.
 - **Steps**:
   1. Read the files of `inbox/`: a regular file only, opened without following a link and read from the handle that
      was checked; a symbolic link, a folder or a named pipe called like a batch is reported and never read. A symbolic
@@ -400,12 +403,19 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      there is none, `portfolio.md` read whole (a row that does not read is refused, not dropped, so a position is
      never lost on the way). First write to the decision log the lines an earlier run committed to the store and did
      not get to write (the ones the log lacks by id), then read the decision history, whose ids no new lot may take.
-     Without a `version` in `strategies/base.md` nothing is applied (the lots carry it): the run fails.
+     Without a `version` in `strategies/base.md` nothing is applied (the lots carry it): the run fails. When a batch
+     buys, read also what the rules of an entry judge it with: the watchlist of each silo (a `watchlist.md` that cannot
+     be read fails the run, as it did `decision:record`) and the ATR of each ticker bought (a failure to get it only
+     leaves the stop distance unjudged). A rejected folder that cannot be read, or a file in it that is a link or hidden, is
+     said in the output and stops nothing.
   3. Run the files in name order with the [same code as the check](#check-the-inbox) (`runFiles`): each command checked
      by its handler against the state the ones before it produce, a refused batch contributing nothing. The handlers
-     also give each buy its lot (an id from the one source of decision ids, the rules version, `no_stop` while it has
-     no stop) and each sale the exits of its lots, with the entry costs earlier exits took (from the history and from
-     the batches before) and its own proceeds (`units × price`).
+     also give each buy its lot (an id from the one source of decision ids, the rules version, the rules it breaks:
+     `not_in_watchlist` or `entry_without_setup`, `overrode_block`, and `no_stop` or `stop_below_min_atr` judged with the
+     stop the batch ends with; and its origin: `sistema` when it follows the latest proposal of the system for that
+     ticker within 10 days that no trade cited yet, `propietario` otherwise) and each sale the exits of its lots, with the entry costs earlier exits took (from the history and from
+     the batches before), its own proceeds (`units × price`) and its origin (`sistema` after a `sell` proposal of the system
+     within 10 days, `propietario` otherwise).
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
      with the hash of its file), and the decision-log lines of their trades (an `entry` per buy and an `exit` per lot

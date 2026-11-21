@@ -1,9 +1,9 @@
 // Builders for the inbox tests (#131): a state of both silos for the pure handlers, and a portfolio.md for the
 // flow tests. No engine config: this file is imported before VAULT_PROJECT_DIR is set.
-import type { Currency, Lot, PortfolioSnapshot, Position } from "../../types.js";
+import type { Currency, Lot, PortfolioSnapshot, Position, WatchlistEntry } from "../../types.js";
 import { money } from "../../money.js";
 import { parseTicker } from "../../ticker.js";
-import type { InboxState } from "../../utils/inbox-handlers.js";
+import type { EntryContext, InboxState } from "../../utils/inbox-handlers.js";
 import { lotsSection, mdTable, type HeldLot } from "./lots.js";
 
 export const lot = <C extends Currency>(
@@ -99,3 +99,50 @@ ${lotsSection("USD", usd)}`;
 /** A state whose USD silo is the EUR one: the type cannot tell, only a check of the currency at run time can (#145). */
 export const crossedState = (state: Required<InboxState>): Required<InboxState> =>
   ({ ...state, USD: state.EUR }) as unknown as Required<InboxState>;
+
+/**
+ * What the rules of an entry read (`EntryContext`) with nothing to flag: the tickers the tests buy are in the
+ * watchlist of both silos and follow no proposal, no ATR is known. `over` changes any of it.
+ */
+export function entryContext(over: Partial<EntryContext> = {}): EntryContext {
+  const entry = (ticker: string, currency: Currency): WatchlistEntry => ({
+    ticker: parseTicker(ticker),
+    name: ticker,
+    market: "TEST",
+    currency,
+    horizon: "medium",
+    thesis: "test",
+  });
+  const tickers = ["SAP.DE", "TCK", "AAA", "BBB", "ADBE"];
+  return {
+    watchlist: { EUR: tickers.map((t) => entry(t, "EUR")), USD: tickers.map((t) => entry(t, "USD")) },
+    history: [],
+    cited: new Set(),
+    atr: new Map(),
+    minStopAtr: 2,
+    ...over,
+  };
+}
+
+/** A watchlist.md with the given entries (ticker and silo), the file `inbox:ingest` reads for the rules of an entry. */
+export const watchlistMd = (entries: readonly (readonly [string, Currency])[]): string =>
+  [
+    "---",
+    "schema_version: 1",
+    "---",
+    "",
+    "# Watchlist",
+    "",
+    "```yaml",
+    "watchlist:",
+    ...entries.flatMap(([ticker, currency]) => [
+      `  - ticker: ${ticker}`,
+      `    name: ${ticker}`,
+      "    market: TEST",
+      `    currency: ${currency}`,
+      "    horizon: medium",
+      '    thesis: "test"',
+    ]),
+    "```",
+    "",
+  ].join("\n");

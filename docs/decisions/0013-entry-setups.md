@@ -56,12 +56,12 @@ Chosen option: "deterministic detectors in the heartbeat", numbered so code can 
    - A confirmed, eligible setup is escalated to the reasoner. If the reasoner holds, the engine records an eligible `hold`.
    - A blocked one is recorded as `buy_blocked`, without escalating.
    - Armed breakouts are recorded as `setup_armed` and emailed with their Buy Stop.
-4. **Single way in.** The Monday briefing no longer proposes buys. A buy from the reasoner without a setup is blocked with `no_setup`. A user entry with no preceding setup is flagged `entry_without_setup`.
+4. **Single way in.** The Monday briefing no longer proposes buys. A buy from the reasoner without a setup is blocked with `no_setup`. The owner tells the engine a buy with a `buy` command in `inbox/` (the only way a trade is recorded, since the trade part of `decision:record` was removed in #152), and `inbox:ingest` judges it when it applies it: a buy of a ticker that is not in the watchlist of its silo is flagged `not_in_watchlist`, one with no preceding setup (no system proposal with a `setup` within 10 days, see ADR-0009 §8) is flagged `entry_without_setup`, and the stop rules of ADR-0009 §5 flag `no_stop` and `stop_below_min_atr`. These are flags on the entry and its lot, never refusals. A buy that follows a proposal of the system (a `buy_proposal` or an armed `setup_armed`) is logged as the system's and cites it, so it stays in the system's expectancy; a buy of what the engine blocked is the owner's, cites the block and is also flagged `overrode_block`.
 5. **Record.** Every new detection is recorded with its `setup` (pattern, state, level), whether or not it is acted on.
 
-**What we give up**: the heartbeat downloads a year of history per candidate per run. An armed Buy Stop that fills without a close above the ceiling is not seen as confirmed: the user records that trade by hand, citing the armed setup.
+**What we give up**: the heartbeat downloads a year of history per candidate per run. An armed Buy Stop that fills without a close above the ceiling is not seen as confirmed: the owner tells that trade with a `buy` command in `inbox/`, and the engine cites the armed setup itself.
 
-**Scope**: the heartbeat, the Monday briefing, `decision:record`.
+**Scope**: the heartbeat, the Monday briefing, the inbox (`inbox:check`, `inbox:ingest`).
 
 **Confidence**: low. Revisit when 30 setup proposals and 30 R:R-blocked setups have been evaluated at 20 sessions.
 

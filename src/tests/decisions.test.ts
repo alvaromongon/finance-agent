@@ -671,6 +671,8 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
   it("the amount of an exit may be 0, the only one that may: a dust lot closed for nothing is still closed in the log (#152)", () => {
     assert.equal(buildDecision(exitLine({ amount: 0, units: 4 })).amount, 0);
     assert.throws(() => buildDecision(exitLine({ amount: -1 })), /amount must be a number >= 0/);
+    // Without units the evaluation would divide the amount by the price: 0 units, and a division by zero after it.
+    assert.throws(() => buildDecision(exitLine({ amount: 0 })), /amount 0 in an exit needs units/);
     for (const type of ["entry", "deposit", "withdrawal"] as const) {
       assert.throws(
         () => buildDecision(base({ type, price: 120, amount: 0, source: "portfolio-sync" })),

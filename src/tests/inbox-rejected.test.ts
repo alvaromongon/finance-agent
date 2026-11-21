@@ -5,10 +5,10 @@
  */
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { portfolioMd } from "./fixtures/inbox.js";
+import { portfolioMd, watchlistMd } from "./fixtures/inbox.js";
 
 const batch = (...commands: string[]): string =>
   `schema_version: 1\ncommands:\n${commands.map((c) => `  - ${c.replace(/\n/g, "\n    ")}`).join("\n")}\n`;
@@ -47,6 +47,7 @@ describe("rejected batches (#152)", () => {
     await mkdir(dir("strategies"), { recursive: true });
     await writeFile(dir("strategies", "base.md"), `---\nversion: "1.4"\n---\n`, "utf8");
     await writeFile(dir("portfolio.md"), portfolioMd(), "utf8");
+    await writeFile(dir("watchlist.md"), watchlistMd([["ABC", "EUR"]]), "utf8");
   });
 
   describe("until it is replaced or discarded", () => {
@@ -87,6 +88,63 @@ describe("rejected batches (#152)", () => {
       const result = await inbox.ingestInbox();
       assert.equal(result.exitCode, 1);
       assert.match(result.lines.join("\n"), /1-sell\.yaml: command 1, line 3: Cannot sell ABC: no open lots/);
+    });
+  });
+
+  describe("inbox:check names the waiting batches in every case", () => {
+    beforeEach(async () => {
+      await drop("bad.yaml", batch(TOO_MUCH));
+      await inbox.ingestInbox();
+    });
+
+    it("also with an empty inbox: nothing to check, and the batch that awaits an answer", async () => {
+      const result = await inbox.checkInbox();
+      assert.equal(result.exitCode, 0);
+      assert.deepEqual(result.lines, [
+        "Inbox is empty: nothing to check.",
+        "1 rejected batch(es) awaiting a replacement or a discard: inbox/rejected/bad.yaml.",
+      ]);
+    });
+
+    it("does not list a batch a clean file of the same inbox replaces or discards", async () => {
+      await drop("fix.yaml", replacing("bad.yaml", DEPOSIT));
+      const result = await inbox.checkInbox();
+      assert.equal(result.exitCode, 0);
+      assert.doesNotMatch(result.lines.join("\n"), /awaiting a replacement/);
+    });
+
+    it("still lists it when the file that would settle it is refused", async () => {
+      await drop("fix.yaml", replacing("bad.yaml", TOO_MUCH));
+      assert.match(
+        (await inbox.checkInbox()).lines.join("\n"),
+        /awaiting a replacement or a discard: inbox\/rejected\/bad\.yaml/,
+      );
+    });
+
+    it("a rejected/ that cannot be read is said and stops neither check nor ingest", async () => {
+      await rm(dir("inbox", "rejected"), { recursive: true });
+      await mkdir(dir("elsewhere"));
+      await symlink(dir("elsewhere"), dir("inbox", "rejected"));
+      await drop("later.yaml", batch(DEPOSIT));
+      const checked = await inbox.checkInbox();
+      assert.equal(checked.exitCode, 0);
+      assert.match(checked.lines.join("\n"), /inbox\/rejected could not be read: inbox\/rejected is not a real folder/);
+      const ingested = await inbox.ingestInbox();
+      assert.equal(ingested.exitCode, 0, ingested.lines.join("\n"));
+      assert.match(ingested.lines.join("\n"), /inbox\/rejected could not be read/);
+      assert.equal((await storeDoc()).silos.EUR.cash, "1010.00 EUR");
+    });
+
+    it("a link or a hidden file in rejected/ is named, never read, and the batches next to it are", async () => {
+      await writeFile(dir("elsewhere.yaml"), batch(DEPOSIT), "utf8");
+      await symlink(dir("elsewhere.yaml"), dir("inbox", "rejected", "linked.yaml"));
+      await writeFile(dir("inbox", "rejected", "._hidden.yaml"), "x", "utf8");
+      const result = await inbox.checkInbox();
+      const text = result.lines.join("\n");
+      assert.match(text, /inbox\/rejected\/\._hidden\.yaml is a hidden file/);
+      assert.match(text, /inbox\/rejected\/linked\.yaml is a symbolic link/);
+      assert.match(text, /awaiting a replacement or a discard: inbox\/rejected\/bad\.yaml\./);
+      assert.deepEqual(await rejected.readAwaitingRejected(), ["bad.yaml"]);
     });
   });
 

@@ -13,13 +13,22 @@ export function awaitingOf(
   rejected: readonly { name: string; text: string }[],
   resolved: readonly ResolvedRejection[],
 ): string[] {
+  // Each file is hashed once, and only when something was settled under its name.
   return rejected
-    .filter(({ name, text }) => !resolved.some((r) => r.file === name && r.sha256 === sha256(text)))
+    .filter(({ name, text }) => {
+      const settled = resolved.filter((r) => r.file === name);
+      if (settled.length === 0) return true;
+      const hash = sha256(text);
+      return !settled.some((r) => r.sha256 === hash);
+    })
     .map(({ name }) => name);
 }
 
 /** The rejected batches awaiting a replacement or a discard, from the folder and the store: what the digest names. */
 export async function readAwaitingRejected(): Promise<string[]> {
-  const [rejected, store] = await Promise.all([readRejected(), readStoreIfAny()]);
-  return awaitingOf(rejected, store?.resolvedRejections ?? []);
+  const [{ batches, unread }, store] = await Promise.all([readRejected(), readStoreIfAny()]);
+  // A file that is not a batch the engine could have moved there is never settled (it has no text to match): said,
+  // not followed, and left for the owner to remove.
+  for (const { problem } of unread) console.warn(`[finance-agent] WARNING, ${problem}`);
+  return awaitingOf(batches, store?.resolvedRejections ?? []);
 }

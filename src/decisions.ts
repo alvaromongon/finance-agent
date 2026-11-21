@@ -38,6 +38,7 @@ import type {
   Signal,
   StrengthSnapshot,
   TrendBias,
+  WatchlistEntry,
 } from "./types.js";
 
 // Spanish values ("system", "owner"): they are part of the stored format.
@@ -368,6 +369,11 @@ export function validateDecision(raw: unknown): Decision {
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || (mayBeZero ? v < 0 : v <= 0))) {
       errors.push(`${field} must be a number ${mayBeZero ? ">= 0" : "> 0"}; got: ${JSON.stringify(v)}`);
     }
+  }
+  // An exit of 0 is a dust lot closed for nothing: its units are what the evaluation measures it from, and
+  // `amount / price` would be 0 (a division by zero in the weights).
+  if (type === "exit" && raw.amount === 0 && raw.units == null) {
+    errors.push("amount 0 in an exit needs units: the evaluation cannot work out the units sold from a zero amount");
   }
   for (const field of ["costs", "entry_costs", "lot_units_left"] as const) {
     const v = raw[field];
@@ -771,6 +777,46 @@ export function resolveFxConversion(
   return { costs, fx_rate };
 }
 
+/**
+ * The rules about the stop of an entry (ADR-0009 §5): `no_stop` without one, `stop_below_min_atr` when it sits closer
+ * than `minStopAtr` ATRs to the price. `atr` is best-effort: without it the stop distance is not checked.
+ */
+export function stopRuleViolations(input: {
+  price: number;
+  stop?: number | null;
+  atr?: number | null;
+  minStopAtr: number;
+}): string[] {
+  if (input.stop == null) return ["no_stop"];
+  if (input.atr != null && input.atr > 0 && (input.price - input.stop) / input.atr < input.minStopAtr) {
+    return ["stop_below_min_atr"];
+  }
+  return [];
+}
+
+/** The violations `stopRuleViolations` can give: the ones that follow the stop of a lot when a `set_stop` changes it. */
+export const STOP_RULES: readonly string[] = ["no_stop", "stop_below_min_atr"];
+
+/**
+ * Rules an owner entry breaks: buying something outside the watchlist, or
+ * without a system setup before it (ADR-0013: setups are the only way in),
+ * and the ones about its stop (`stopRuleViolations`).
+ */
+export function entryRuleViolations(input: {
+  price: number;
+  stop?: number | null;
+  entry?: WatchlistEntry;
+  /** System decision the entry comes from, if any. */
+  proposal?: Decision;
+  atr?: number | null;
+  minStopAtr: number;
+}): string[] {
+  const violations: string[] = [];
+  if (!input.entry) violations.push("not_in_watchlist");
+  else if (!input.proposal?.setup) violations.push("entry_without_setup");
+  return [...violations, ...stopRuleViolations(input)];
+}
+
 /** Calendar days between two YYYY-MM-DD dates (b − a). */
 export function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
@@ -787,8 +833,10 @@ export const PROPOSAL_WINDOW_DAYS = 10;
 export function findRelatedProposal(
   decisions: readonly Decision[],
   query: { ticker: Ticker; date: string; types: readonly DecisionType[] },
+  /** Ids of proposals already cited by a trade that is not in `decisions` yet (an earlier command of the same run). */
+  alsoCited: ReadonlySet<string> = new Set(),
 ): Decision | undefined {
-  const used = new Set(decisions.map((d) => d.related_id).filter(Boolean));
+  const used = new Set([...decisions.map((d) => d.related_id).filter(Boolean), ...alsoCited]);
   return decisions
     .filter(
       (d) =>

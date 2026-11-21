@@ -470,7 +470,15 @@ violation `no_stop`. A sale takes the entry costs earlier exits already took of 
 to its `Entry costs`. A sale dated before the buy of a lot it would consume is refused (the same day is allowed), in
 `check` and in `ingest`, and the `lot` of a sale must look like an entry id (letters, digits, `.`, `_` and `-`).
 `inbox:ingest` also appends the decision-log line of each trade (`source: portfolio-sync`): an `entry` per buy, with the
-lot's `Entry id` as its id, and an `exit` per lot a sale touched. Since #152 the inbox is the only way a trade is
+lot's `Entry id` as its id, and an `exit` per lot a sale touched. A buy that follows a proposal of the system
+(the latest `buy_proposal` or `setup_armed` of its ticker within 10 days that no trade cited yet; or one it blocked,
+`buy_blocked`) cites it as `related_id`; the entry and its lot are `sistema` unless the proposal was a block, and a sale
+that follows a `sell` proposal is logged as `sistema` too, so the trade stays in the system's expectancy
+([ADR-0009 §8](decisions/0009-swing-framework-risk-sizing-and-measurement.md)). The rules an entry broke go in `Rules
+violations`, as flags and never refusals: `not_in_watchlist` (the ticker is not in the watchlist of its silo),
+`entry_without_setup` (no proposal with a setup precedes it, [ADR-0013 §4](decisions/0013-entry-setups.md)), `overrode_block`,
+and `no_stop` or `stop_below_min_atr` (the initial stop is closer than `STOP_MIN_ATR` ATRs, judged when the ATR is
+available) once the batch has set the stop. Since #152 the inbox is the only way a trade is
 recorded, and these lines are telemetry: the state is what the batch changed. A sale whose proceeds round to 0.00 (it
 must use up every lot it touches) credits 0.00 and records the exact amounts of its exits (their sum is the exact
 proceeds, not the cash credited); an exit whose share of the proceeds is 0 is recorded with an `amount` of 0, the

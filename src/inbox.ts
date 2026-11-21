@@ -4,9 +4,15 @@
 import { awaitingOf, sha256 } from "./inbox-rejected.js";
 import { moveBatch, readInbox, readRejected } from "./inbox-store.js";
 import { readStoreIfAny, saveStore, storeFromPortfolioFile, type PortfolioStore } from "./portfolio-store.js";
-import { appendDecisions, readDecisionHistory, readRulesVersion } from "./vault-io.js";
+import { appendDecisions, readDecisionHistory, readRulesVersion, readWatchlist } from "./vault-io.js";
+import { config } from "./config.js";
+import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { validateDecision, type Decision } from "./decisions.js";
-import { CURRENCIES } from "./types.js";
+import { CURRENCIES, type Currency, type WatchlistEntry } from "./types.js";
+import type { Ticker } from "./ticker.js";
+import type { PriceSource } from "./utils/benchmark.js";
+import { atr14d } from "./utils/technicals.js";
+import { parseBatch } from "./utils/inbox-parse.js";
 import { entryCostsTaken } from "./utils/portfolio-lots.js";
 import { decisionsOf } from "./utils/inbox-decisions.js";
 import {
@@ -17,7 +23,7 @@ import {
   type InboxFile,
   type InboxRun,
 } from "./utils/inbox-check.js";
-import type { InboxState } from "./utils/inbox-handlers.js";
+import type { EntryContext, InboxState } from "./utils/inbox-handlers.js";
 import { printable } from "./utils/printable.js";
 
 export interface InboxOutcome {
@@ -36,6 +42,8 @@ interface Plan {
   rejected: { name: string; text: string }[];
   /** The rejected batches (names in `inbox/rejected/`) awaiting a replacement or a discard before this run's batches. */
   awaiting: string[];
+  /** Why `inbox/rejected/` or a file in it was not read; said, never a reason to stop the run (the batches are not rejected for it). */
+  rejectedProblems: string[];
   run: InboxRun;
 }
 
@@ -44,33 +52,102 @@ const stateOf = (store: PortfolioStore): InboxState => ({
   ...(store.silos.USD ? { USD: store.silos.USD } : {}),
 });
 
+/** The ATR14 of `ticker` for the stop distance of an entry. Best-effort: without it that distance is not checked. */
+async function fetchAtr(source: PriceSource, ticker: Ticker): Promise<number | null> {
+  try {
+    return atr14d((await source.getHistorical?.(ticker, "1y")) ?? []);
+  } catch (err) {
+    console.warn(
+      `[inbox] ${ticker}: no ATR, the stop distance is not evaluated (${err instanceof Error ? err.message : String(err)})`,
+    );
+    return null;
+  }
+}
+
+/**
+ * What the rules of an entry read (ADR-0013 §4, ADR-0009 §5 and §8), read once for the run and only when a batch
+ * buys something: the watchlist of each silo, the history and, from `atrSource` (none: no stop distance is checked),
+ * the ATR of the tickers bought. A watchlist that cannot be read refuses an `ingest` (an entry cannot be judged
+ * without it); `check` goes on without it, as it does without the rules version.
+ */
+async function entryContext(
+  files: readonly InboxFile[],
+  store: PortfolioStore,
+  history: readonly Decision[],
+  mustKnow: boolean,
+  atrSource: PriceSource | undefined,
+): Promise<Omit<EntryContext, "cited">> {
+  const bought = new Set<Ticker>();
+  for (const file of files) {
+    if (!("text" in file)) continue;
+    for (const { command } of parseBatch(file.text).commands) if (command.kind === "buy") bought.add(command.ticker);
+  }
+  const base = { history, minStopAtr: config.strategy.stopMinAtr };
+  if (bought.size === 0) return { ...base, watchlist: {}, atr: new Map() };
+  const currencies = CURRENCIES.filter((c) => store.silos[c] !== undefined);
+  const lists = await Promise.all(
+    currencies.map(async (c): Promise<[Currency, WatchlistEntry[]]> => {
+      try {
+        return [c, await readWatchlist(c)];
+      } catch (err) {
+        if (mustKnow) throw err;
+        return [c, []];
+      }
+    }),
+  );
+  const atrs = await Promise.all(
+    atrSource === undefined ? [] : [...bought].map(async (t) => [t, await fetchAtr(atrSource, t)] as const),
+  );
+  return {
+    ...base,
+    watchlist: Object.fromEntries(lists),
+    atr: new Map(atrs.flatMap(([t, atr]) => (atr !== null && atr > 0 ? [[t, atr] as const] : []))),
+  };
+}
+
+/** The rejected batches of `inbox/rejected/`; a folder that cannot be read is reported and the run goes on. */
+async function readRejectedBatches(): Promise<{ batches: { name: string; text: string }[]; problems: string[] }> {
+  try {
+    const { batches, unread } = await readRejected();
+    return { batches, problems: unread.map((u) => u.problem) };
+  } catch (err) {
+    return {
+      batches: [],
+      problems: [`inbox/rejected could not be read: ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
+}
+
 /**
  * Runs the files of the inbox over `store`. The state is read once per run, by the caller; what is read here is the
  * history of the decision log and the `version` of `strategies/base.md`, which a batch cannot be applied without:
  * `check` goes on without it (it cannot change what a batch accepts) and `ingest` refuses with the reason.
  */
-async function plan(all: InboxFile[], store: PortfolioStore, mustKnowRules: boolean): Promise<Plan> {
-  const [history, rulesVersion, rejected] = await Promise.all([
+async function plan(
+  all: InboxFile[],
+  store: PortfolioStore,
+  mustKnowRules: boolean,
+  atrSource?: PriceSource,
+): Promise<Plan> {
+  const [history, rulesVersion, { batches: rejected, problems: rejectedProblems }] = await Promise.all([
     readDecisionHistory(),
     readRulesVersion().catch((err) => {
       if (mustKnowRules) throw err;
       return "";
     }),
-    readRejected(),
+    readRejectedBatches(),
   ]);
   const isWaiting = (file: InboxFile): boolean =>
     "text" in file && store.unmoved.some((u) => u.file === file.name && u.sha256 === sha256(file.text));
   const awaiting = awaitingOf(rejected, store.resolvedRejections);
-  const run = runFiles(
-    stateOf(store),
-    all.filter((file) => !isWaiting(file)),
-    {
-      awaiting: new Set(awaiting),
-      rulesVersion,
-      takenIds: new Set(history.map((d) => d.id)),
-      entryCostsTaken: entryCostsTaken(history),
-    },
-  );
+  const toRun = all.filter((file) => !isWaiting(file));
+  const run = runFiles(stateOf(store), toRun, {
+    awaiting: new Set(awaiting),
+    rulesVersion,
+    takenIds: new Set(history.map((d) => d.id)),
+    entryCostsTaken: entryCostsTaken(history),
+    entry: await entryContext(toRun, store, history, mustKnowRules, atrSource),
+  });
   return {
     waiting: all.filter(isWaiting).map((file) => file.name),
     store,
@@ -78,6 +155,7 @@ async function plan(all: InboxFile[], store: PortfolioStore, mustKnowRules: bool
     rulesVersion,
     rejected,
     awaiting,
+    rejectedProblems,
     run,
   };
 }
@@ -90,10 +168,33 @@ function errorSummary(checks: readonly FileCheck[]): string {
   return `${errors} error(s) in ${bad} of ${checks.length} batch(es)${skipped > 0 ? `; ${skipped} command(s) not checked` : ""}`;
 }
 
-/** Checks the inbox and returns what to print and the exit code: 0 for a clean inbox, 1 for any error. */
+/** Not an error of the inbox: the batches it rejected before are named until one replaces or discards them. */
+const awaitingLine = (awaiting: readonly string[]): string[] =>
+  awaiting.length > 0
+    ? [
+        `${awaiting.length} rejected batch(es) awaiting a replacement or a discard: ${awaiting.map((n) => `inbox/rejected/${printable(n)}`).join(", ")}.`,
+      ]
+    : [];
+
+/**
+ * Checks the inbox and returns what to print and the exit code: 0 for a clean inbox, 1 for any error. It makes no
+ * network call: the ATR the stop distance of a buy is judged with is for `ingest` (which writes the flag), and a flag
+ * changes no verdict.
+ */
 export async function checkInbox(): Promise<InboxOutcome> {
   const all = await readInbox();
-  if (all.length === 0) return { lines: ["Inbox is empty: nothing to check."], exitCode: 0 };
+  if (all.length === 0) {
+    // An empty inbox can still have a rejected batch waiting: it is named, as with any other run.
+    const [{ batches, problems }, existing] = await Promise.all([readRejectedBatches(), readStoreIfAny()]);
+    return {
+      lines: [
+        "Inbox is empty: nothing to check.",
+        ...problems,
+        ...awaitingLine(awaitingOf(batches, existing?.resolvedRejections ?? [])),
+      ],
+      exitCode: 0,
+    };
+  }
   const planned = await plan(all, (await readStoreIfAny()) ?? (await storeFromPortfolioFile()), false);
   const { checks } = planned.run;
   const problems = renderIssues(checks);
@@ -103,13 +204,12 @@ export async function checkInbox(): Promise<InboxOutcome> {
     planned.waiting.length > 0
       ? [`${planned.waiting.length} batch(es) already applied, waiting to be moved by the next ingest.`]
       : [];
-  // Not an error of the inbox: the batches it rejected before are named until one replaces or discards them.
-  const awaiting =
-    planned.awaiting.length > 0
-      ? [
-          `${planned.awaiting.length} rejected batch(es) awaiting a replacement or a discard: ${planned.awaiting.map((n) => `inbox/rejected/${printable(n)}`).join(", ")}.`,
-        ]
-      : [];
+  // The ones a clean file of this inbox replaces or discards are settled by it, so they are not waiting.
+  const settled = new Set(checks.flatMap((c) => (c.clean ? c.resolved.map((r) => r.file) : [])));
+  const awaiting = [
+    ...planned.rejectedProblems,
+    ...awaitingLine(planned.awaiting.filter((name) => !settled.has(name))),
+  ];
   if (problems.length === 0) {
     return {
       lines: [`Inbox is clean: ${checks.length} batch(es) would apply.`, ...waiting, ...warnings, ...awaiting],
@@ -143,7 +243,7 @@ async function writePendingDecisions(store: PortfolioStore): Promise<PortfolioSt
  * anything twice. Throws for a failure that is not a verdict on a batch (the store or the log cannot be read or
  * written, `strategies/base.md` has no version).
  */
-export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome> {
+export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSource): Promise<InboxOutcome> {
   const all = await readInbox();
   // The state is read once. A store that exists first gets what an earlier run left in it written to the log.
   const existing = await readStoreIfAny();
@@ -161,7 +261,8 @@ export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome>
     waiting,
     store,
     rejected: inRejected,
-  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true);
+    rejectedProblems,
+  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true, atrSource);
   const clean = run.checks.filter((c) => c.clean);
   const rejected = run.checks.filter((c) => !c.clean && c.text !== undefined);
   const unreadable = run.checks.filter((c) => !c.clean && c.text === undefined);
@@ -225,6 +326,7 @@ export async function ingestInbox(now: Date = new Date()): Promise<InboxOutcome>
 
   const files = (names: readonly string[]): string => names.map((n) => `inbox/${printable(n)}`).join(", ");
   const lines = [
+    ...rejectedProblems,
     ...(applied.length > 0 ? [`Applied ${applied.length} batch(es): ${files(applied)}.`] : []),
     ...renderWarnings(clean),
     ...(rejected.length > 0
@@ -247,7 +349,9 @@ if (isMain) {
     console.error("Usage: inbox.ts check|ingest");
     process.exitCode = 2;
   } else {
-    (cmd === "check" ? checkInbox() : ingestInbox())
+    // The ATR of the tickers bought, for the stop distance of an entry, comes from the market data provider; only
+    // `ingest` asks for it, `check` makes no network call.
+    (cmd === "check" ? checkInbox() : ingestInbox(new Date(), new YahooFinanceProvider()))
       .then(({ lines, exitCode }) => {
         for (const line of lines) (exitCode === 0 ? console.log : console.error)(line);
         process.exitCode = exitCode;
