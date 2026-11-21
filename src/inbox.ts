@@ -25,6 +25,7 @@ import {
 } from "./utils/inbox-check.js";
 import type { EntryContext, InboxState } from "./utils/inbox-handlers.js";
 import { printable } from "./utils/printable.js";
+import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
 
 export interface InboxOutcome {
   lines: string[];
@@ -342,6 +343,63 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
   return { lines, exitCode: rejected.length + unreadable.length > 0 ? 1 : 0 };
 }
 
+/**
+ * A price source that asks the provider for a history once per ticker and range: a retried ingest (see
+ * `ingestCommitted`) judges the stop distance of the same buys again and must not ask again. Only the history is
+ * cached; the source is read-only and best-effort, so a failure is cached too (the stop distance is then unjudged,
+ * as it was in the attempt that lost).
+ */
+export function remembering(source: PriceSource): PriceSource {
+  const histories = new Map<string, ReturnType<NonNullable<PriceSource["getHistorical"]>>>();
+  return {
+    getPrices: (tickers) => source.getPrices(tickers),
+    ...(source.getHistorical
+      ? {
+          getHistorical: (ticker: string, range?: string) => {
+            const key = `${ticker}|${range ?? ""}`;
+            const known = histories.get(key);
+            if (known !== undefined) return known;
+            const asked = source.getHistorical!(ticker, range);
+            histories.set(key, asked);
+            return asked;
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * `ingestInbox` as a write of the state (ADR-0018, #134): over the remote's last commit, committed on top of exactly
+ * that commit as a compare-and-swap. A run that loses the race (another run committed state meanwhile) throws its
+ * work away and ingests again over what is there now, `attempts` times at most, so the batches are judged against the
+ * state they meet and the result is that of a fresh run (a batch valid before and invalid now is rejected like any
+ * other). A run that keeps losing applies nothing, rejects nothing and exits 0: the batches stay in `inbox/` for the
+ * next run, which is a delay and never a verdict on them. With no remote the files are left in place, as `ingestInbox`.
+ */
+export async function ingestCommitted(
+  remote: StateRemote | null,
+  attempts: number,
+  now: Date = new Date(),
+  atrSource?: PriceSource,
+): Promise<InboxOutcome> {
+  if (remote === null) return ingestInbox(now, atrSource);
+  const source = atrSource && remembering(atrSource);
+  const write = await commitState(remote, () => ingestInbox(now, source), {
+    attempts,
+    message: `chore(state): apply inbox ${now.toISOString().slice(0, 10)}`,
+  });
+  if (write.status === "deferred") {
+    return {
+      lines: [
+        `State not committed: another run committed state ${write.attempts} time(s) while this one worked. Nothing was ` +
+          `applied or rejected; the batches stay in inbox/ and the next run applies them.`,
+      ],
+      exitCode: 0,
+    };
+  }
+  return write.result;
+}
+
 const isMain = process.argv[1] != null && import.meta.filename === process.argv[1];
 if (isMain) {
   const [cmd] = process.argv.slice(2);
@@ -351,7 +409,15 @@ if (isMain) {
   } else {
     // The ATR of the tickers bought, for the stop distance of an entry, comes from the market data provider; only
     // `ingest` asks for it, `check` makes no network call.
-    (cmd === "check" ? checkInbox() : ingestInbox(new Date(), new YahooFinanceProvider()))
+    (cmd === "check"
+      ? checkInbox()
+      : ingestCommitted(
+          stateRemoteFromConfig(config.stateCommit, config.paths.vaultProjectDir),
+          config.stateCommit.attempts(),
+          new Date(),
+          new YahooFinanceProvider(),
+        )
+    )
       .then(({ lines, exitCode }) => {
         for (const line of lines) (exitCode === 0 ? console.log : console.error)(line);
         process.exitCode = exitCode;

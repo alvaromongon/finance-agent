@@ -49,5 +49,8 @@ jobs:
           # What a heartbeat writes: decision logs, sent-alert markers, pending
           # escalations and the outbox (all under logs/), and the prices in portfolio.md.
           # Change the finance-agent/ prefix together with data-path.
-          paths: finance-agent/logs/ finance-agent/portfolio.md
+          # The price refresh writes the store and the view generated from it (state-paths): if another run
+          # committed state since this one started, the refresh is dropped and the rest is committed.
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json
+          state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat EUR"

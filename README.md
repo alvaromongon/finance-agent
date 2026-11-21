@@ -142,14 +142,36 @@ calls the Anthropic API itself, on a schedule. Copy the callers you need from
 `commit` job that applies the run's patch and commits only the paths that flow writes. Other
 runners are possible, for example Claude Code routines with `handoff` (below).
 
-| Example                                                                   | Triggers                                                                           | Commits                                               |
-| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`                               |
-| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`                               |
-| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`                               |
-| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `watchlist.md`, `tesis/`     |
-| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md` |
-| [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                               |
+| Example                                                                   | Triggers                                                                           | Commits                                                                                     |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
+| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `state/portfolio.json`, `watchlist.md`, `tesis/`                   |
+| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md`                                       |
+| [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
+| [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                     |
+
+##### State writes never overlap
+
+The engine's state (`state/portfolio.json`, the [store](docs/glossary.md#store), and the `portfolio.md` view generated
+from it) is written by runs that can start at any time: the three triggers of `inbox.yml`, a heartbeat or a briefing
+refreshing prices, and `decision:record`. Any trigger is valid as long as the writes do not overlap
+([ADR-0018](docs/decisions/0018-commands-are-the-only-way-to-change-state.md)):
+
+- **The three triggers of `inbox.yml` share one `concurrency` group**, so one run applies the inbox at a time. A run that
+  waits is replaced by a newer one, which loses nothing: it reads the whole inbox when it starts. (A push made with the
+  default `GITHUB_TOKEN`, the engine's own included, starts no workflow, so a run never starts another.)
+- **`inbox:ingest` and `decision:record` commit the state as a [compare-and-swap](docs/glossary.md#compare-and-swap)**
+  (`STATE_COMMIT=git`, which `inbox.yml` sets), retrying at most `STATE_COMMIT_ATTEMPTS` times (3); a run that keeps
+  losing leaves its batches in `inbox/` for the next run and its output says so.
+  `inbox.yml` is therefore the one workflow of the engine that commits itself and needs `contents: write`.
+- **The heartbeat and the briefing take no lock.** Stop detection reads the checkout it started from (the last commit)
+  and never waits for a write. Their price refresh reaches the data repository through `commit-changes` with
+  `state-paths`: if another run committed the store or its view since they started, the refresh is dropped with a
+  warning and the rest (logs, briefing files) is committed; the next run refreshes prices again.
+
+`state-paths` and `inbox.yml` need a release newer than `v0.1.0`, as `email` does.
 
 The relay is only needed for runners that use `MAIL_TRANSPORT=outbox` (they can't open SMTP); do
 not install it in API mode, where the other flows send their own emails. Its hourly cron costs

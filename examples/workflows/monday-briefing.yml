@@ -48,5 +48,8 @@ jobs:
           # the refreshed prices in portfolio.md, and the entries it retires from
           # watchlist.md together with their archived tesis/ notes.
           # Change the finance-agent/ prefix together with data-path.
-          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/watchlist.md finance-agent/tesis/
+          # The price refresh writes the store and the view generated from it (state-paths): if another run
+          # committed state since this one started, the refresh is dropped and the rest is committed.
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json finance-agent/watchlist.md finance-agent/tesis/
+          state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): Monday briefing"

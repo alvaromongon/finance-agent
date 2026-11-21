@@ -1,0 +1,35 @@
+# Example caller: applies the batches in inbox/ (the only way a trade is recorded, ADR-0018) and commits the state.
+# Copy to .github/workflows/ in your data repository. See the README, "API runner: GitHub Actions".
+# Needs a release newer than v0.1.0 (the reusable workflow and the compare-and-swap are not in it).
+name: Finance Agent — inbox
+
+on:
+  # The three triggers, one run each: the owner's push of a batch, a fallback every morning (a push made with the
+  # default GITHUB_TOKEN, such as the engine's own, starts no workflow), and a manual run.
+  push:
+    branches: [main]
+    paths: # change the finance-agent/ prefix together with data-path
+      - finance-agent/inbox/*.yaml
+      - finance-agent/inbox/*.yml
+  schedule:
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# One run at a time for all three triggers, and a run that waits is replaced by a newer one (it reads the whole
+# inbox when it starts, so nothing is lost). The state write is also a compare-and-swap, so a heartbeat, a
+# `decision:record` or another repository's run that commits state meanwhile makes this run read it again and retry.
+concurrency:
+  group: finance-agent-state
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    permissions:
+      contents: write # the one engine workflow that commits: the retry needs the engine (see inbox.yml)
+    uses: alvaromongon/finance-agent/.github/workflows/inbox.yml@v0.1.0
+    with:
+      data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
+      engine-repository: alvaromongon/finance-agent
+      engine-ref: v0.1.0

@@ -1,0 +1,93 @@
+name: Finance Agent Engine — Inbox
+
+# Reusable workflow: applies the batches in the calling repo's `inbox/` (`npm run inbox:ingest`) and COMMITS the
+# result itself, unlike the others, which return a patch. It needs `contents: write`.
+#
+# Why this one commits (ADR-0018, #134): the state is written by runs that can overlap (a schedule, a manual run, a
+# push to `inbox/`, a heartbeat), so the write is a compare-and-swap. A run that finds the data repository moved when
+# it pushes cannot just merge: it reads the state again and applies the batches over it, and only the engine can do
+# that. The credential reaches only the ingest step (never `npm ci`), through the environment of that step.
+#
+# Call it from ONE workflow whose `concurrency` group is shared by its three triggers, so they do not overlap: see
+# examples/workflows/inbox.yml.
+
+on:
+  workflow_call:
+    inputs:
+      data-path:
+        description: "Path of the brain (portfolio, inbox, logs…) inside the calling repo"
+        required: true
+        type: string
+      engine-repository:
+        description: "Engine repository (owner/name); empty = the calling repo"
+        required: false
+        type: string
+        default: ""
+      engine-ref:
+        description: "Engine ref (tag, branch or SHA); empty = the run's commit"
+        required: false
+        type: string
+        default: ""
+      engine-dir:
+        description: "Engine folder inside its repository"
+        required: false
+        type: string
+        default: "."
+      attempts:
+        description: "Times a run that keeps losing the race to another run tries before it leaves the batches for the next run"
+        required: false
+        type: number
+        default: 3
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout data
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: ${{ inputs.data-path }}
+
+      - name: Checkout engine
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.engine-repository || github.repository }}
+          ref: ${{ inputs.engine-ref || github.sha }}
+          path: _engine
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: _engine/${{ inputs.engine-dir }}/package-lock.json
+
+      - name: Install deps
+        working-directory: _engine/${{ inputs.engine-dir }}
+        run: npm ci
+
+      - name: Apply the inbox
+        working-directory: _engine/${{ inputs.engine-dir }}
+        env:
+          # The step's cwd is the engine folder, so the data is referenced by its absolute workspace path.
+          VAULT_PROJECT_DIR: ${{ github.workspace }}/${{ inputs.data-path }}
+          # The engine commits the state onto the branch's last commit as a compare-and-swap (src/state-commit.ts).
+          STATE_COMMIT: git
+          STATE_COMMIT_BRANCH: ${{ github.ref_name }}
+          STATE_COMMIT_ATTEMPTS: ${{ inputs.attempts }}
+          GITHUB_TOKEN: ${{ github.token }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${SERVER_URL}/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
+          unset GITHUB_TOKEN
+          npx tsx src/inbox.ts ingest
