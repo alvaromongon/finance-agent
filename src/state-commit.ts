@@ -9,7 +9,8 @@
 //
 // Nothing here takes a lock, and the heartbeat never calls it: stop detection reads the last commit of the checkout
 // it started with, so a run that keeps losing delays the state and never a stop check (ADR-0015).
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -56,8 +57,18 @@ export async function commitState<T>(
   return { status: "deferred", attempts };
 }
 
-/** What `GitStateRemote` runs git with; a test gives its own. */
-export type Git = (args: readonly string[]) => Promise<string>;
+/**
+ * What `GitStateRemote` runs git with; a test gives its own. `env` is what is added to the environment of that one git
+ * process: the credential, for the two commands that talk to the remote.
+ */
+export type Git = (args: readonly string[], env?: NodeJS.ProcessEnv) => Promise<string>;
+
+/** How the commands that talk to the remote (`fetch`, `push`) sign in; no other process of the engine gets it. */
+export interface RemoteAuth {
+  /** The git server, e.g. `https://github.com`. */
+  serverUrl: string;
+  token: string;
+}
 
 export interface GitStateRemoteOptions {
   /** A folder of the checkout of the data repository; the paths are relative to it. */
@@ -67,22 +78,34 @@ export interface GitStateRemoteOptions {
   /** What the engine writes and the commit may hold: `state`, `inbox`, `portfolio.md`, `logs`. */
   paths: readonly string[];
   git?: Git;
+  auth?: RemoteAuth;
 }
 
 /** Commit identity of the engine's own commits, the one the `commit-changes` action uses. */
 const IDENTITY = ["-c", "user.name=finance-agent[bot]", "-c", "user.email=finance-agent@users.noreply.github.com"];
 
-/**
- * True for the refusal of a push because the remote moved: it has commits the local branch lacks, or its branch moved
- * between the push's start and its update (`cannot lock ref`). Both are the lost race.
- */
-export const isLostRace = (message: string): boolean =>
-  /\[(remote )?rejected\]/.test(message) &&
-  /(non-fast-forward|fetch first|stale info|failed to update ref|cannot lock ref)/.test(message);
+/** The one definition of a lost race: a script, because the `commit-changes` action (bash) needs the same rule. */
+const LOST_RACE_RULE = join(import.meta.dirname, "..", ".github", "actions", "commit-changes", "is-lost-race.sh");
 
 /**
- * The remote as a git remote. It is for a CI checkout: it moves the checkout to the remote's last commit (a hard
- * reset, and a clean of the state paths), so it refuses to start over changes it did not make.
+ * True for the refusal of a push because the remote moved: it has commits the local branch lacks, or its branch moved
+ * between the push's start and its update (`cannot lock ref`). Both are the lost race. `output` is the whole output of
+ * the push, which spreads the refusal and its reason over several lines. The rule is `is-lost-race.sh`, shared with the
+ * `commit-changes` action: it needs bash, as the CI checkout this runs on has.
+ */
+export const isLostRace = (output: string): Promise<boolean> =>
+  new Promise((resolve, reject) => {
+    const rule = spawn("bash", [LOST_RACE_RULE], { stdio: ["pipe", "ignore", "ignore"] });
+    rule.on("error", reject);
+    rule.on("close", (code) => resolve(code === 0));
+    rule.stdin.on("error", () => undefined); // the rule may answer before it has read it all
+    rule.stdin.end(output);
+  });
+
+/**
+ * The remote as a git remote. It is for a CI checkout: it moves the checkout to the remote's last commit and brings
+ * the state paths to what is there (nothing outside them is touched), so it refuses to start over changes it did not
+ * make under them.
  */
 export class GitStateRemote implements StateRemote {
   private readonly git: Git;
@@ -90,7 +113,25 @@ export class GitStateRemote implements StateRemote {
   constructor(private readonly options: GitStateRemoteOptions) {
     this.git =
       options.git ??
-      (async (args) => (await run("git", ["-C", options.dir, ...args], { maxBuffer: 16 * 1024 * 1024 })).stdout);
+      (async (args, env) =>
+        (
+          await run("git", ["-C", options.dir, ...args], {
+            maxBuffer: 16 * 1024 * 1024,
+            ...(env ? { env: { ...process.env, ...env } } : {}),
+          })
+        ).stdout);
+  }
+
+  /** The credential as git's configuration for one process (`GIT_CONFIG_*`), or nothing when there is none. */
+  private get authEnv(): NodeJS.ProcessEnv | undefined {
+    const auth = this.options.auth;
+    if (auth === undefined) return undefined;
+    const basic = Buffer.from(`x-access-token:${auth.token}`).toString("base64");
+    return {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: `http.${auth.serverUrl}/.extraheader`,
+      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+    };
   }
 
   private get ref(): string {
@@ -125,8 +166,15 @@ export class GitStateRemote implements StateRemote {
   }
 
   async refresh(): Promise<void> {
-    await this.git(["fetch", "--quiet", this.options.remote, this.options.branch]);
-    await this.git(["reset", "--quiet", "--hard", this.ref]);
+    await this.git(["fetch", "--quiet", this.options.remote, this.options.branch], this.authEnv);
+    // Only the state paths are brought to the remote's commit: HEAD and the index move, the working tree does not, and
+    // what is under the paths is then restored from the commit and cleaned. Nothing else of the checkout is touched
+    // (a `reset --hard` would reach the whole repository).
+    await this.git(["reset", "--quiet", "--mixed", this.ref]);
+    const there = (await this.git(["ls-tree", "--name-only", "-z", this.ref, "--", ...this.options.paths]))
+      .split("\0")
+      .filter((name) => name !== "");
+    if (there.length > 0) await this.git(["checkout", "--quiet", this.ref, "--", ...there]);
     await this.git(["clean", "--quiet", "-fd", "--", ...this.options.paths]);
   }
 
@@ -137,26 +185,38 @@ export class GitStateRemote implements StateRemote {
     await this.git(["add", "-A", "--", ...changed]);
     await this.git([...IDENTITY, "commit", "--quiet", "-m", message]);
     try {
-      await this.git(["push", "--quiet", this.options.remote, `HEAD:${this.options.branch}`]);
+      await this.git(["push", "--quiet", this.options.remote, `HEAD:${this.options.branch}`], this.authEnv);
       return "published";
     } catch (err) {
-      const text = `${(err as { stderr?: string }).stderr ?? ""}${err instanceof Error ? err.message : ""}`;
-      if (isLostRace(text)) return "lost";
+      const text = `${(err as { stderr?: string }).stderr ?? ""}\n${err instanceof Error ? err.message : ""}`;
+      if (await isLostRace(text)) return "lost";
       throw err; // a network or permission failure is transient, never a lost race
     }
   }
 }
 
-/** The remote the environment asks for (`STATE_COMMIT=git`), or `null`: the work then leaves its files in place. */
+/**
+ * The remote the environment asks for (`STATE_COMMIT=git`), or `null`: the work then leaves its files in place. The
+ * credential is taken out of the environment here (`takeToken`), so that it reaches the `git fetch` and `git push` of
+ * this remote and no other process of the engine.
+ */
 export function stateRemoteFromConfig(
-  config: { mode: "none" | "git"; remote(): string; branch(): string },
+  config: {
+    mode: "none" | "git";
+    remote(): string;
+    branch(): string;
+    serverUrl(): string;
+    takeToken(): string | undefined;
+  },
   dir: string,
 ): GitStateRemote | null {
   if (config.mode !== "git") return null;
+  const token = config.takeToken();
   return new GitStateRemote({
     dir,
     remote: config.remote(),
     branch: config.branch(),
     paths: ["state", "inbox", "portfolio.md", "logs"],
+    ...(token ? { auth: { serverUrl: config.serverUrl(), token } } : {}),
   });
 }

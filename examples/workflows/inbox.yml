@@ -18,8 +18,8 @@ on:
 permissions: {}
 
 # One run at a time for all three triggers, and a run that waits is replaced by a newer one (it reads the whole
-# inbox when it starts, so nothing is lost). The state write is also a compare-and-swap, so a heartbeat, a
-# `decision:record` or another repository's run that commits state meanwhile makes this run read it again and retry.
+# inbox when it starts, so nothing is lost). The state write is also a compare-and-swap, so a heartbeat or another
+# repository's run that commits state meanwhile makes this run read it again and retry.
 concurrency:
   group: finance-agent-state
   cancel-in-progress: false

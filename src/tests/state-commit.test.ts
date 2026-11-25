@@ -5,12 +5,29 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { commitState, GitStateRemote, isLostRace, stateRemoteFromConfig, type StateRemote } from "../state-commit.js";
+import { config } from "../config.js";
+import {
+  commitState,
+  GitStateRemote,
+  isLostRace,
+  stateRemoteFromConfig,
+  type Git,
+  type StateRemote,
+} from "../state-commit.js";
+
+/** What the runner's git (GitHub Actions, 2026-11-21) prints when the branch moved during the push. */
+const RUNNER_LOST_RACE = [
+  "remote: error: cannot lock ref 'refs/heads/main': is at 6e1f5a2 but expected 0b3c9d1",
+  "To https://github.com/owner/data",
+  " ! [remote rejected] HEAD -> main (incorrect old value provided)",
+  "error: failed to push some refs to 'https://github.com/owner/data'",
+].join("\n");
+const LOST_RACE_RULE = join(import.meta.dirname, "..", "..", ".github", "actions", "commit-changes", "is-lost-race.sh");
 
 /** A remote that answers `outcomes` one publish at a time and counts what is asked of it. */
 function scripted(...outcomes: ("published" | "nothing" | "lost")[]) {
@@ -82,24 +99,98 @@ describe("commitState", () => {
 });
 
 describe("isLostRace", () => {
-  it("is a push the remote refused because it has commits the local branch lacks, and nothing else", () => {
-    assert.ok(isLostRace(" ! [rejected]        HEAD -> main (fetch first)\nerror: failed to push some refs"));
-    assert.ok(isLostRace(" ! [rejected]        HEAD -> main (non-fast-forward)"));
-    assert.ok(isLostRace(" ! [remote rejected] HEAD -> main (stale info)"));
+  it("is a push the remote refused because it has commits the local branch lacks, and nothing else", async () => {
+    assert.ok(await isLostRace(" ! [rejected]        HEAD -> main (fetch first)\nerror: failed to push some refs"));
+    assert.ok(await isLostRace(" ! [rejected]        HEAD -> main (non-fast-forward)"));
+    assert.ok(await isLostRace(" ! [remote rejected] HEAD -> main (stale info)"));
     assert.ok(
-      isLostRace(" ! [remote rejected] HEAD -> main (failed to update ref)\nerror: cannot lock ref 'refs/heads/main'"),
+      await isLostRace(
+        " ! [remote rejected] HEAD -> main (failed to update ref)\nerror: cannot lock ref 'refs/heads/main'",
+      ),
     );
-    assert.equal(isLostRace("fatal: unable to access 'https://github.com/x/y/': Could not resolve host"), false);
-    assert.equal(isLostRace(" ! [remote rejected] HEAD -> main (protected branch hook declined)"), false);
-    assert.equal(isLostRace("remote: Permission to x/y.git denied"), false);
+    assert.equal(await isLostRace("fatal: unable to access 'https://github.com/x/y/': Could not resolve host"), false);
+    assert.equal(await isLostRace(" ! [remote rejected] HEAD -> main (protected branch hook declined)"), false);
+    assert.equal(await isLostRace("remote: Permission to x/y.git denied"), false);
+  });
+
+  it("classifies the whole output: the runner's git says the refusal and its reason on separate lines", async () => {
+    assert.ok(await isLostRace(RUNNER_LOST_RACE));
+  });
+
+  it("is the same rule the commit-changes action uses: one definition, in is-lost-race.sh", async () => {
+    for (const [output, lost] of [
+      [RUNNER_LOST_RACE, true],
+      [" ! [rejected]        HEAD -> main (fetch first)", true],
+      [" ! [remote rejected] HEAD -> main (protected branch hook declined)", false],
+      ["remote: Permission to x/y.git denied", false],
+    ] as const) {
+      const script = spawnSync("bash", [LOST_RACE_RULE], { input: output, encoding: "utf8" });
+      assert.equal(script.status === 0, lost, output);
+      assert.equal(await isLostRace(output), lost, output);
+    }
   });
 });
 
 describe("stateRemoteFromConfig", () => {
-  const settings = (mode: "none" | "git") => ({ mode, remote: () => "origin", branch: () => "main" });
+  const settings = (mode: "none" | "git") => ({
+    mode,
+    remote: () => "origin",
+    branch: () => "main",
+    serverUrl: () => "https://github.com",
+    takeToken: () => undefined,
+  });
   it("is no remote unless STATE_COMMIT=git", () => {
     assert.equal(stateRemoteFromConfig(settings("none"), "/data"), null);
     assert.ok(stateRemoteFromConfig(settings("git"), "/data") instanceof GitStateRemote);
+  });
+});
+
+describe("the credential of the state commit", () => {
+  const SECRET = "ghs_secret";
+  const basic = Buffer.from(`x-access-token:${SECRET}`).toString("base64");
+
+  /** A git that answers nothing and records which commands got which extra environment. */
+  function recording() {
+    const calls: { command: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const git: Git = async (args, env) => {
+      calls.push({ command: args[0] ?? "", env });
+      return args[0] === "ls-files" ? "state/portfolio.json\0" : "";
+    };
+    return { git, calls };
+  }
+  const remote = (git: Git) =>
+    new GitStateRemote({
+      dir: "/data",
+      remote: "origin",
+      branch: "main",
+      paths: ["state"],
+      git,
+      auth: { serverUrl: "https://github.com", token: SECRET },
+    });
+
+  it("signs in the commands that talk to the remote (fetch, push) and no other git command", async () => {
+    const { git, calls } = recording();
+    const r = remote(git);
+    await r.refresh();
+    assert.equal(await r.publish("m"), "published");
+    const withCredential = calls.filter((call) => call.env !== undefined).map((call) => call.command);
+    assert.deepEqual(withCredential, ["fetch", "push"]);
+    assert.deepEqual(calls.find((call) => call.command === "fetch")?.env, {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+    });
+  });
+
+  it("is taken out of the environment when the remote is built, so no other process inherits it", () => {
+    process.env.STATE_COMMIT_TOKEN = SECRET;
+    try {
+      assert.equal(config.stateCommit.takeToken(), SECRET);
+      assert.equal(process.env.STATE_COMMIT_TOKEN, undefined);
+      assert.equal(config.stateCommit.takeToken(), undefined);
+    } finally {
+      delete process.env.STATE_COMMIT_TOKEN;
+    }
   });
 });
 
@@ -198,6 +289,25 @@ describe("GitStateRemote, over a real git remote in a temporary folder", () => {
     assert.equal(headFile("state/portfolio.json"), "from run1, then run2\n");
   });
 
+  it("brings only the state paths to the remote's commit: what is outside them is left as it is", async () => {
+    const [first, second] = [remoteOf("run1"), remoteOf("run2")];
+    await first.begin();
+    await second.begin();
+    await write("run2", "state/portfolio.json", "lost work\n");
+    await write("run2", "scratch/untracked.txt", "created by the run, outside the state paths\n");
+    await write("run2", "notes.md", "modified outside the state paths\n");
+    git(clone("run2"), "add", "data/notes.md"); // staged outside the state paths too
+    await write("run1", "state/portfolio.json", "from run1\n");
+    assert.equal(await first.publish("run1"), "published");
+    assert.equal(await second.publish("run2"), "lost");
+
+    await second.refresh();
+    const data = (file: string) => readFile(join(clone("run2"), "data", file), "utf8");
+    assert.equal(await data("state/portfolio.json"), "from run1\n");
+    assert.equal(await data("scratch/untracked.txt"), "created by the run, outside the state paths\n");
+    assert.equal(await data("notes.md"), "modified outside the state paths\n");
+  });
+
   it("starts from the remote's last commit, even for a checkout that is behind", async () => {
     const [first, second] = [remoteOf("run1"), remoteOf("run2")];
     await first.begin();
@@ -240,15 +350,24 @@ describe("every writer of the engine's store", () => {
   };
 
   it("are exactly these, and each says how its write is serialized", () => {
+    // The whole source tree, not only the top folder: a writer in a subfolder (`utils/`, `providers/`) counts as well.
     const src = join(import.meta.dirname, "..");
     const found: string[] = [];
-    for (const entry of readdirSync(src).filter((name) => name.endsWith(".ts"))) {
-      if (entry === "portfolio-store.ts") continue;
+    for (const entry of readdirSync(src, { recursive: true, encoding: "utf8" }).map((name) =>
+      name.split(sep).join("/"),
+    )) {
+      if (!entry.endsWith(".ts") || entry.startsWith("tests/") || entry === "portfolio-store.ts") continue;
       const text = readFileSync(join(src, entry), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/^\s*\/\/.*$/gm, "");
       if (/\b(saveStore|changeCash|refreshPrices|seedStore)\(/.test(text)) found.push(entry);
     }
     assert.deepEqual(found.sort(), Object.keys(WRITERS).sort());
+  });
+
+  it("finds a writer in a subfolder: the scan is recursive", () => {
+    const src = join(import.meta.dirname, "..");
+    const listed = readdirSync(src, { recursive: true, encoding: "utf8" }).map((name) => name.split(sep).join("/"));
+    assert.ok(listed.includes("utils/printable.ts"), "the scan reaches the subfolders of src/");
   });
 });

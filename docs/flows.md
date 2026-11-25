@@ -61,7 +61,11 @@ parentheses so a code comment that cites it can be found here.
      The price refresh is the heartbeat's only write of the state, and it takes no lock and runs no compare-and-swap: the
      run reads the last commit it was started from and the write reaches the data repository through `commit-changes`
      with `state-paths`. If another run committed the [store](glossary.md#store) or its view since, the refresh is dropped
-     with a warning and the rest of the run's changes (logs) is committed; the next run refreshes the prices again. Stop
+     with a warning and the rest of the run's changes (logs) is committed; the next run refreshes the prices again. The
+     run's lines of `logs/decisions.jsonl` are merged with the ones another run appended meanwhile only if the data
+     repository's `.gitattributes` gives that file `merge=union` (README, _State writes never overlap_); without it the
+     patch conflicts, `commit-changes` fails with an error and that run's logs are not committed. A push that loses a
+     race is retried from the new head and puts back only the files the run's patch touched. Stop
      detection (step 4) never waits for any of this, and a run that keeps losing the
      [compare-and-swap](glossary.md#compare-and-swap) of an ingest delays the state and never a stop check (ADR-0015).
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
@@ -235,9 +239,11 @@ them. It needs one history request per position with a stop; without ATR the pos
   temporary file in the same directory renamed over it). Every writer of the store (this one, `inbox:ingest` and the
   price update that the heartbeat and the Monday briefing run) goes through the portfolio
   [state port](glossary.md#state-port) (`src/portfolio-store.ts`).
-  With `STATE_COMMIT=git` the run (`src/decision-record.ts`) is a [compare-and-swap](glossary.md#compare-and-swap)
+  Only with `STATE_COMMIT=git` is the run (`src/decision-record.ts`) a [compare-and-swap](glossary.md#compare-and-swap)
   like `inbox:ingest`: the log line and the cash move are committed on top of the last commit, and done again over the
-  new state if another run committed first. Losing every attempt records nothing and says so: say it again.
+  new state if another run committed first. Losing every attempt records nothing and says so: say it again. No
+  workflow of the engine or of `examples/workflows/` runs `decision:record` or sets `STATE_COMMIT=git` for it: the owner
+  runs it by hand or from the portfolio-sync routine, which leaves its files in the working copy to commit.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the record, because a
   Markdown log without its decision line would mean measuring halfway. A failure of the store write after the log
   append (no permission, disk full) says the decision is recorded and the cash was not updated, and that the cash is
@@ -447,8 +453,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      batch was rejected or left unread, 0 otherwise.
   7. Commit (only with `STATE_COMMIT=git`): the changes under `state/`, `inbox/`, `portfolio.md` and `logs/` are committed
      and pushed on top of the commit the run started from, the branch's last one. If the push is refused because the
-     branch moved (another run committed), the run throws its changes away, moves the checkout to the new last commit and
-     does steps 1 to 6 again over it, at most `STATE_COMMIT_ATTEMPTS` times (3). A retry therefore judges each batch
+     branch moved (another run committed), the run throws its changes away, brings `state/`, `inbox/`, `portfolio.md` and
+     `logs/` to the new last commit (nothing else of the checkout is touched) and does steps 1 to 6 again over it, at most `STATE_COMMIT_ATTEMPTS` times (3). A retry therefore judges each batch
      against the state it now meets: valid before and invalid now is rejected like any other, and the result is that of a
      fresh run. It asks again for nothing it already asked: the history of a ticker is requested once per run, not once
      per attempt. A push that fails for another reason (network, permission) is not a lost race: it is not retried and

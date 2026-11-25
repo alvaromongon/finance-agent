@@ -7,7 +7,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync } from "node:fs";
+import { chmodSync, existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -72,6 +72,35 @@ describe("commit-changes script", () => {
   const otherPushes = (change: string) =>
     `cd "${dir("other")}" && git pull -q --rebase origin main && ${change} && git add -A && ` +
     `git -c user.name=t -c user.email=t@t commit -q -m raced && git push -q origin main`;
+
+  /**
+   * The runner's git for one push: refuses it the way GitHub Actions' git does when the branch moved during the push,
+   * with the refusal and its reason on separate lines, and does nothing; every other command and every later push is
+   * the real git's.
+   */
+  async function runnerRefusesFirstPush(): Promise<string> {
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    const real = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    const shim = join(bin, "git");
+    await writeFile(
+      shim,
+      `#!/usr/bin/env bash
+if [ "$1" = push ] && [ ! -e "${root}/refused" ]; then
+  touch "${root}/refused"
+  echo "remote: error: cannot lock ref 'refs/heads/main': is at 6e1f5a2 but expected 0b3c9d1" >&2
+  echo "To https://github.com/owner/data" >&2
+  echo " ! [remote rejected] HEAD -> main (incorrect old value provided)" >&2
+  echo "error: failed to push some refs to 'https://github.com/owner/data'" >&2
+  exit 1
+fi
+exec "${real}" "$@"
+`,
+      "utf8",
+    );
+    chmodSync(shim, 0o755);
+    return `${bin}:${process.env.PATH ?? ""}`;
+  }
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "finance-agent-commit-"));
@@ -141,6 +170,81 @@ describe("commit-changes script", () => {
     assert.match(result.stdout, /Attempt 1 of 3 lost the race/);
     assert.equal(onRemote("data/state/portfolio.json"), "raced\n", "the run that won the race keeps its state");
     assert.equal(onRemote("data/logs/b.md"), "heartbeat log\n");
+  });
+
+  it("retries a push the runner's git refuses with the reason on another line (the lost race is classified whole)", async () => {
+    const patch = await heartbeat();
+    const result = commit(patch, { PATH: await runnerRefusesFirstPush() });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Attempt 1 of 3 lost the race/);
+    assert.equal(onRemote("data/logs/b.md"), "heartbeat log\n");
+  });
+
+  it("does not retry a push refused for another reason: it fails with git's message", async () => {
+    const patch = await heartbeat();
+    await raceBeforePush("echo '! [remote rejected] HEAD -> main (protected branch hook declined)' >&2; exit 1");
+    const result = commit(patch);
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /lost the race/);
+  });
+
+  it("after a lost race, files the patch created outside the given paths do not make the retry fail", async () => {
+    const patch = await patchOf("heartbeat", async () => {
+      await put("heartbeat", "data/logs/b.md", "heartbeat log\n");
+      await put("heartbeat", "data/other/new.md", "outside, new\n");
+    });
+    const result = commit(patch, { PATH: await runnerRefusesFirstPush() });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Attempt 1 of 3 lost the race/);
+    assert.equal(onRemote("data/logs/b.md"), "heartbeat log\n");
+    assert.throws(() => onRemote("data/other/new.md"));
+  });
+
+  it("a lost race touches only what the run changed: other files of the checkout stay as they were", async () => {
+    await put("heartbeat", "scratch/untracked.txt", "made by an earlier step\n");
+    await put("heartbeat", "keep.md", "modified by an earlier step\n");
+    git(dir("heartbeat"), "add", "keep.md");
+    const patch = await heartbeat();
+    const result = commit(patch, { PATH: await runnerRefusesFirstPush() });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Attempt 1 of 3 lost the race/);
+    assert.ok(existsSync(join(dir("heartbeat"), "scratch", "untracked.txt")), "an untracked file is not cleaned");
+    assert.equal(await readFile(join(dir("heartbeat"), "keep.md"), "utf8"), "modified by an earlier step\n");
+  });
+
+  it("merges the lines two runs appended to logs/decisions.jsonl when the data repository says merge=union", async () => {
+    await put("seed", ".gitattributes", "data/logs/decisions.jsonl merge=union\n");
+    await put("seed", "data/logs/decisions.jsonl", '{"id":0}\n');
+    git(dir("seed"), "add", "-A");
+    git(dir("seed"), "commit", "--quiet", "-m", "attributes");
+    git(dir("seed"), "push", "--quiet", "origin", "main");
+    for (const name of ["heartbeat", "other"]) git(dir(name), "pull", "--quiet");
+    const patch = await patchOf("heartbeat", () =>
+      put("heartbeat", "data/logs/decisions.jsonl", '{"id":0}\n{"id":"heartbeat"}\n'),
+    );
+    await otherCommits("data/logs/decisions.jsonl", '{"id":0}\n{"id":"ingest"}\n', "ingest");
+
+    const result = commit(patch);
+    assert.equal(result.status, 0, result.stderr);
+    const lines = onRemote("data/logs/decisions.jsonl").trim().split("\n").sort();
+    assert.deepEqual(lines, ['{"id":"heartbeat"}', '{"id":"ingest"}', '{"id":0}']);
+  });
+
+  it("without merge=union the same two appends conflict: the run fails loudly and commits nothing", async () => {
+    await put("seed", "data/logs/decisions.jsonl", '{"id":0}\n');
+    git(dir("seed"), "add", "-A");
+    git(dir("seed"), "commit", "--quiet", "-m", "log");
+    git(dir("seed"), "push", "--quiet", "origin", "main");
+    for (const name of ["heartbeat", "other"]) git(dir(name), "pull", "--quiet");
+    const patch = await patchOf("heartbeat", () =>
+      put("heartbeat", "data/logs/decisions.jsonl", '{"id":0}\n{"id":"heartbeat"}\n'),
+    );
+    await otherCommits("data/logs/decisions.jsonl", '{"id":0}\n{"id":"ingest"}\n', "ingest");
+
+    const result = commit(patch);
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /::error::The run's changes do not apply/);
+    assert.equal(onRemote("data/logs/decisions.jsonl"), '{"id":0}\n{"id":"ingest"}\n');
   });
 
   it("fails, committing nothing, when the push keeps losing", async () => {
