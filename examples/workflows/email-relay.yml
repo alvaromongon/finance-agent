@@ -39,8 +39,8 @@ jobs:
       output-language: en
       smtp-user: ${{ vars.SMTP_USER }}
       alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
-      # Email off makes this workflow a no-op, so you can simply not install it.
-      # To switch email off instead, pass: email: false
+      # With email off this workflow does nothing, so you can simply not install it.
+      # To keep it installed but switch email off, pass: email: false
     secrets:
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
 

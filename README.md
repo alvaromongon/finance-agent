@@ -122,7 +122,8 @@ jobs:
       - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
-          paths: finance-agent/logs/ finance-agent/portfolio.md
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json
+          state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat EUR"
 ```
 
@@ -185,7 +186,7 @@ not install it in API mode, where the other flows send their own emails. Its hou
 runner minutes even when the outbox is empty, and if `outbox:send` fails after sending some files,
 they are sent again the next hour. It runs one at a time (`concurrency`) and also polls hourly,
 because a push made with the default `GITHUB_TOKEN` does not trigger workflows. To run without
-email, see _Email_ above; the examples carry `email: false` commented out.
+email, see _Email_ above; `heartbeat-eu`, `heartbeat-us`, `monday-briefing` and `screening` carry `email: false` commented out.
 
 #### Handoff
 
