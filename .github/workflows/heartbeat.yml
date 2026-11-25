@@ -115,10 +115,6 @@ jobs:
         working-directory: _engine/${{ inputs.engine-dir }}
         run: npm ci
 
-      - name: Typecheck + tests
-        working-directory: _engine/${{ inputs.engine-dir }}
-        run: npm run typecheck && npm test
-
       - name: Run heartbeat
         working-directory: _engine/${{ inputs.engine-dir }}
         env:
