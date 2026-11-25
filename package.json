@@ -29,7 +29,7 @@
     "pending:list": "tsx src/pending.ts list",
     "pending:show": "tsx src/pending.ts show",
     "pending:resolve": "tsx src/pending.ts resolve",
-    "decision:record": "tsx src/decision.ts record",
+    "decision:record": "tsx src/decision-record.ts record",
     "demo": "tsx src/demo.ts",
     "lint": "eslint .",
     "format": "prettier --write .",

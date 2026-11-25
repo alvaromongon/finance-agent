@@ -58,6 +58,16 @@ parentheses so a code comment that cites it can be found here.
      goes through the file's one codec and edits the priced cells in place, then replaces the file
      atomically (a temporary file renamed over it), so every other line stays where it was (notes and spacing included); every `Positions` row of a ticker that has a
      price and a readable `Volume` and `Avg price` is updated, its ticker written in upper case.
+     The price refresh is the heartbeat's only write of the state, and it takes no lock and runs no compare-and-swap: the
+     run reads the last commit it was started from and the write reaches the data repository through `commit-changes`
+     with `state-paths`. If another run committed the [store](glossary.md#store) or its view since, the refresh is dropped
+     with a warning and the rest of the run's changes (logs) is committed; the next run refreshes the prices again. The
+     run's lines of `logs/decisions.jsonl` are merged with the ones another run appended meanwhile only if the data
+     repository's `.gitattributes` gives that file `merge=union` (README, _State writes never overlap_); without it the
+     patch conflicts, `commit-changes` fails with an error and that run's logs are not committed. A push that loses a
+     race is retried from the new head and puts back only the files the run's patch touched. Stop
+     detection (step 4) never waits for any of this, and a run that keeps losing the
+     [compare-and-swap](glossary.md#compare-and-swap) of an ingest delays the state and never a stop check (ADR-0015).
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
      4'. Name every open position with no stop (`stopOf`: a stop that is not above zero is none) in the digest, with its
@@ -229,6 +239,11 @@ them. It needs one history request per position with a stop; without ATR the pos
   temporary file in the same directory renamed over it). Every writer of the store (this one, `inbox:ingest` and the
   price update that the heartbeat and the Monday briefing run) goes through the portfolio
   [state port](glossary.md#state-port) (`src/portfolio-store.ts`).
+  Only with `STATE_COMMIT=git` is the run (`src/decision-record.ts`) a [compare-and-swap](glossary.md#compare-and-swap)
+  like `inbox:ingest`: the log line and the cash move are committed on top of the last commit, and done again over the
+  new state if another run committed first. Losing every attempt records nothing and says so: say it again. No
+  workflow of the engine or of `examples/workflows/` runs `decision:record` or sets `STATE_COMMIT=git` for it: the owner
+  runs it by hand or from the portfolio-sync routine, which leaves its files in the working copy to commit.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the record, because a
   Markdown log without its decision line would mean measuring halfway. A failure of the store write after the log
   append (no permission, disk full) says the decision is recorded and the cash was not updated, and that the cash is
@@ -263,6 +278,10 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   `watchlist.md`, `tesis/`, `logs/decisions.jsonl`, the briefing log and email.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
+  In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
+  with no lock: if another run committed the [store](glossary.md#store) or its view since the briefing started, the
+  refresh is dropped with a warning and the rest (logs, briefing files, watchlist, thesis notes) is committed; the
+  next run refreshes the prices again. `commit-changes` commits only the paths the workflow gives it.
 - **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
 
 ## Weekly screening
@@ -285,6 +304,8 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
 - **Reads / writes**: reads `screening-universe.md`, `watchlist.md`, both portfolios, the screening
   log; writes `screening-log.md`, `tesis/`, `watchlist.md`, `logs/decisions.jsonl`,
   `logs/pending-screening/` and email.
+- **State**: it never writes the [store](glossary.md#store) or `portfolio.md`, so its workflow gives `commit-changes`
+  no `state-paths` and commits only `logs/`, `tesis/`, `watchlist.md` and `screening-log.md`.
 - **When it fails**: if the ranking cannot be trusted the run falls back to a random draw among
   filter-0 eligibles and the email says **NO RANKING** with the reason. A candidate that fails to
   prepare is skipped with a warning.
@@ -395,6 +416,9 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 
 - **Starts with**: the same as [Check the inbox](#check-the-inbox), then `npm run inbox:ingest`. No LLM. The only network
   call is one best-effort request of daily history per ticker a batch buys (for its ATR, see step 2), and only if one does.
+  The inbox workflow starts it from a push to `inbox/`, a daily schedule or by hand, all in one `concurrency` group.
+  With `STATE_COMMIT=git` (that workflow) the whole run below is one [compare-and-swap](glossary.md#compare-and-swap):
+  see _Commit_ at the end of the steps.
 - **Steps**:
   1. Read the files of `inbox/`: a regular file only, opened without following a link and read from the handle that
      was checked; a symbolic link, a folder or a named pipe called like a batch is reported and never read. A symbolic
@@ -427,12 +451,27 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      batches moved.
   6. Print what was applied, the warnings (a position with no stop), each error and what was left unread; exit 1 if any
      batch was rejected or left unread, 0 otherwise.
-- **Writes**: `state/portfolio.json` and `portfolio.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
-  `inbox/`. A batch with an error changes none of them.
+  7. Commit (only with `STATE_COMMIT=git`): the changes under `state/`, `inbox/`, `portfolio.md` and `logs/` are committed
+     and pushed on top of the commit the run started from, the branch's last one. If the push is refused because the
+     branch moved (another run committed), the run throws its changes away, brings `state/`, `inbox/`, `portfolio.md` and
+     `logs/` to the new last commit (nothing else of the checkout is touched) and does steps 1 to 6 again over it, at most `STATE_COMMIT_ATTEMPTS` times (3). A retry therefore judges each batch
+     against the state it now meets: valid before and invalid now is rejected like any other, and the result is that of a
+     fresh run. It asks again for nothing it already asked: the history of a ticker is requested once per run, not once
+     per attempt. A push that fails for another reason (network, permission) is not a lost race: it is not retried and
+     the run fails with the batches still in `inbox/`.
+- **Reads / writes**: reads the last commit of the branch (with `STATE_COMMIT=git`), the state and the rest above. Writes
+  `state/portfolio.json` and `portfolio.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
+  `inbox/`; with `STATE_COMMIT=git` it commits and pushes them as one commit, `chore(state): apply inbox <date>`. A batch
+  with an error changes none of them. The writers of the store found when this was written: `inbox:ingest` and
+  `decision:record` (compare-and-swap), and the price refresh of the heartbeat and the Monday briefing (through
+  `commit-changes`, see [Heartbeat](#heartbeat)).
 - **When it fails**: a transient failure (the store or the log cannot be written, a file cannot be moved) leaves the
   files in `inbox/` and throws; the next run finishes it without applying anything twice (the store remembers the batches
   it applied, and the lines it owes the log).
-- **Never**: touches the stop check. The [heartbeat](#heartbeat) never runs a batch, so a rejected batch cannot stop it
+  A run that loses the race every time (step 7) leaves the batches in `inbox/`, commits nothing, says "State not committed"
+  and exits 0: a delay of the state, never a rejection of a batch. The next run applies them.
+- **Never**: touches the stop check, waits for it or makes it wait (the compare-and-swap takes no lock and the
+  heartbeat does not import it). The [heartbeat](#heartbeat) never runs a batch, so a rejected batch cannot stop it
   (it names it in its digest); it reads the state last applied, and a refused batch leaves it as it was.
 
 ## Evaluate decisions
