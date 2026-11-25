@@ -19,12 +19,12 @@ jobs:
   heartbeat:
     permissions:
       contents: read
-    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.1.0
+    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.2.0
     with:
       currency: EUR
       data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
       engine-repository: alvaromongon/finance-agent
-      engine-ref: v0.1.0
+      engine-ref: v0.2.0
       analyst-provider: handoff
       output-language: en
       reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
@@ -41,7 +41,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
           # The price refresh writes the store and the view generated from it (state-paths): if another run

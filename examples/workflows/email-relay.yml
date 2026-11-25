@@ -31,16 +31,16 @@ jobs:
   relay:
     permissions:
       contents: read
-    uses: alvaromongon/finance-agent/.github/workflows/email-relay.yml@v0.1.0
+    uses: alvaromongon/finance-agent/.github/workflows/email-relay.yml@v0.2.0
     with:
       data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
       engine-repository: alvaromongon/finance-agent
-      engine-ref: v0.1.0
+      engine-ref: v0.2.0
       output-language: en
       smtp-user: ${{ vars.SMTP_USER }}
       alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
-      # Email off makes this workflow a no-op, so you can simply not install it.
-      # With a release newer than v0.1.0 you can also pass: email: false
+      # With email off this workflow does nothing, so you can simply not install it.
+      # To keep it installed but switch email off, pass: email: false
     secrets:
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
 
@@ -51,7 +51,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.relay.outputs.changes-artifact }}
           # What it deletes or closes, all under logs/: sent outbox files and
