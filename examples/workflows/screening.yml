@@ -17,18 +17,18 @@ jobs:
   screening:
     permissions:
       contents: read
-    uses: alvaromongon/finance-agent/.github/workflows/screening.yml@v0.1.0
+    uses: alvaromongon/finance-agent/.github/workflows/screening.yml@v0.2.0
     with:
       data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
       engine-repository: alvaromongon/finance-agent
-      engine-ref: v0.1.0
+      engine-ref: v0.2.0
       output-language: en
       reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
       reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
       smtp-user: ${{ vars.SMTP_USER }}
       alert-email-to: ${{ vars.ALERT_EMAIL_TO }}
       # To run without email, delete the two lines above and the SMTP_PASS secret
-      # below, and uncomment this line (needs a release newer than v0.1.0):
+      # below, and uncomment this line:
       # email: false
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -41,7 +41,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.screening.outputs.changes-artifact }}
           # What a screening writes: the run's files under logs/, new and

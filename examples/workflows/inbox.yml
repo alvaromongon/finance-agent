@@ -1,6 +1,5 @@
 # Example caller: applies the batches in inbox/ (the only way a trade is recorded, ADR-0018) and commits the state.
 # Copy to .github/workflows/ in your data repository. See the README, "API runner: GitHub Actions".
-# Needs a release newer than v0.1.0 (the reusable workflow and the compare-and-swap are not in it).
 name: Finance Agent — inbox
 
 on:
@@ -28,8 +27,8 @@ jobs:
   ingest:
     permissions:
       contents: write # the one engine workflow that commits: the retry needs the engine (see inbox.yml)
-    uses: alvaromongon/finance-agent/.github/workflows/inbox.yml@v0.1.0
+    uses: alvaromongon/finance-agent/.github/workflows/inbox.yml@v0.2.0
     with:
       data-path: finance-agent # where your brain lives in this repo; change it together with the finance-agent/ paths in this file
       engine-repository: alvaromongon/finance-agent
-      engine-ref: v0.1.0
+      engine-ref: v0.2.0

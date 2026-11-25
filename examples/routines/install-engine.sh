@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ENGINE_REPOSITORY="${ENGINE_REPOSITORY:-https://github.com/alvaromongon/finance-agent.git}"
-ENGINE_REF="${ENGINE_REF:-v0.1.0}"
+ENGINE_REF="${ENGINE_REF:-v0.2.0}"
 ENGINE_DIR="${ENGINE_DIR:-$HOME/finance-agent-engine}"
 
 if [ -d "$ENGINE_DIR/.git" ]; then

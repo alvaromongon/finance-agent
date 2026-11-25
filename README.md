@@ -98,12 +98,12 @@ jobs:
   heartbeat:
     permissions:
       contents: read
-    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.1.0
+    uses: alvaromongon/finance-agent/.github/workflows/heartbeat.yml@v0.2.0
     with:
       currency: EUR
       data-path: finance-agent # where your brain lives in this repo
       engine-repository: alvaromongon/finance-agent
-      engine-ref: v0.1.0
+      engine-ref: v0.2.0
       output-language: en
       reference-ticker-eur: ${{ vars.REFERENCE_TICKER_EUR }}
       reference-ticker-usd: ${{ vars.REFERENCE_TICKER_USD }}
@@ -119,7 +119,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.1.0
+      - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
           paths: finance-agent/logs/ finance-agent/portfolio.md
@@ -180,15 +180,12 @@ refreshing prices, and `decision:record`. Any trigger is valid as long as the wr
   merged, and without it the heartbeat's patch conflicts, `commit-changes` fails with an error and that heartbeat's
   logs are not committed (the file is append-only and each line is independent, so the union loses none).
 
-`state-paths` and `inbox.yml` need a release newer than `v0.1.0`, as `email` does.
-
 The relay is only needed for runners that use `MAIL_TRANSPORT=outbox` (they can't open SMTP); do
 not install it in API mode, where the other flows send their own emails. Its hourly cron costs
 runner minutes even when the outbox is empty, and if `outbox:send` fails after sending some files,
 they are sent again the next hour. It runs one at a time (`concurrency`) and also polls hourly,
 because a push made with the default `GITHUB_TOKEN` does not trigger workflows. To run without
-email, see _Email_ above; the `email` input needs a release newer than `v0.1.0`, so the examples
-carry it commented out.
+email, see _Email_ above; the examples carry `email: false` commented out.
 
 #### Handoff
 

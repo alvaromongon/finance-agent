@@ -33,7 +33,7 @@ and report if one is missing.
 | `MAIL_TRANSPORT`                               | `outbox`: the sandbox cannot open SMTP, so emails are queued and the relay sends them ([ADR-0005](decisions/0005-email-outbox-and-relay.md)). |
 | `OUTPUT_LANGUAGE`                              | `en` or `es`: the language of emails, reports and notes.                                                                                      |
 | `REFERENCE_TICKER_EUR`, `REFERENCE_TICKER_USD` | The silo benchmark ETFs, as in the [configuration](../README.md#configuration-step-by-step).                                                  |
-| `ENGINE_REF`                                   | The engine tag to install, for example `v0.1.0` (used by the hook below).                                                                     |
+| `ENGINE_REF`                                   | The engine tag to install, for example `v0.2.0` (used by the hook below).                                                                     |
 | `ENGINE_DIR`                                   | Where the hook installs the engine; the prompts run their commands from there.                                                                |
 
 Leave the SMTP variables and `ANTHROPIC_API_KEY` out: neither is used in this runner. The other
