@@ -24,7 +24,6 @@ import {
   TREND_BIASES,
 } from "./types.js";
 import { money, type Money } from "./money.js";
-import { round } from "./utils/round.js";
 import type {
   Benchmark,
   Conviction,
@@ -69,9 +68,10 @@ export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx
 
 /**
  * What the owner narrates and records with `decision:record`. A buy and a sale (the `entry` and `exit` decisions) are
- * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry.
+ * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry. A currency
+ * conversion is the `convert` command of the inbox too (#135).
  */
-export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal", "fx_conversion"] as const;
+export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
 
 export interface Decision {
@@ -686,13 +686,10 @@ export interface OwnerDecisionInput {
   currency: Currency;
   /** adjust_stop: the price when the stop was adjusted. */
   price?: number;
-  /** deposit, withdrawal, fx_conversion: the amount. */
+  /** deposit, withdrawal: the amount. */
   amount?: number;
   /** adjust_stop: the new stop. */
   stop?: number;
-  /** fx_conversion: market rate; or `received`, what reached the other silo. */
-  fx_rate?: number;
-  received?: number;
   costs?: Money;
   /** To force the origin when the engine cannot infer it. */
   origin?: DecisionOrigin;
@@ -703,11 +700,15 @@ export interface OwnerDecisionInput {
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
-  const type = raw.type as OwnerDecisionType | "entry" | "exit";
+  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion";
 
   if (type === "entry" || type === "exit") {
     errors.push(
       `a ${type === "entry" ? "buy" : "sale"} is told to the engine with a ${type === "entry" ? "buy" : "sale"} command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (type === "fx_conversion") {
+    errors.push(
+      `a currency conversion is told to the engine with a convert command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
     );
   } else if (!OWNER_TYPES.includes(type)) {
     errors.push(`type must be one of [${OWNER_TYPES.join(", ")}]; got: ${JSON.stringify(raw.type)}`);
@@ -718,7 +719,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (raw.date != null && (typeof raw.date !== "string" || !DATE_RE.test(raw.date))) {
     errors.push(`date must be YYYY-MM-DD; got: ${JSON.stringify(raw.date)}`);
   }
-  for (const field of ["price", "amount", "stop", "fx_rate", "received"] as const) {
+  for (const field of ["price", "amount", "stop"] as const) {
     const v = raw[field];
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
       errors.push(`${field} must be a number > 0; got: ${JSON.stringify(v)}`);
@@ -744,11 +745,8 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   }
   if (FLOW_TYPES.includes(type) && has("ticker")) errors.push(`ticker does not apply in ${type}`);
   if (type === "adjust_stop" && !has("stop")) errors.push("stop is required in adjust_stop");
-  if ((type === "deposit" || type === "withdrawal" || type === "fx_conversion") && !has("amount")) {
+  if ((type === "deposit" || type === "withdrawal") && !has("amount")) {
     errors.push(`amount is required in ${type}`);
-  }
-  if (type === "fx_conversion" && !has("fx_rate") && !has("received")) {
-    errors.push("fx_conversion needs fx_rate or received");
   }
 
   if (errors.length > 0) {
@@ -760,21 +758,6 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     ...(has("ticker") ? { ticker: parseTicker(input.ticker) } : {}),
     ...(input.costs != null ? { costs: money(input.costs, input.currency) } : {}),
   };
-}
-
-/**
- * Fee and rate of a conversion. If the owner gives what was received, the rate
- * is inferred; if they give the rate, what was received. The fee, if not
- * given, is the ADR-0009 §7 one (proportional, no minimum).
- */
-export function resolveFxConversion(
-  input: Pick<OwnerDecisionInput, "amount" | "fx_rate" | "received" | "costs" | "currency">,
-  commissionPct: number,
-): { costs: Money; fx_rate: number } {
-  const amount = input.amount!;
-  const costs = input.costs ?? money((amount * commissionPct) / 100, input.currency);
-  const fx_rate = input.fx_rate ?? round(input.received! / (amount - costs), 6);
-  return { costs, fx_rate };
 }
 
 /**

@@ -186,14 +186,6 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.equal(d.related_id, proposal.id);
   });
 
-  it("a conversion at the market rate applies the default fee; on a Sunday, the benchmark is the previous close", async () => {
-    const d = await record({ type: "fx_conversion", currency: "EUR", amount: 200, fx_rate: 1.17, date: "2026-09-13" });
-    assert.equal(d.fx_rate, 1.17);
-    assert.equal(d.costs, 1);
-    // No session on 13-Sep: the 12-Sep close.
-    assert.deepEqual(d.benchmark, { ticker: "EXSA.DE", price: 129 });
-  });
-
   it("a corrupt log line is ignored with a warning and does not prevent attributing or recording", async () => {
     const adjust = await adjustment();
     await writeFile(
@@ -212,23 +204,6 @@ describe("decision:record (recordOwnerDecision)", () => {
     const raw = await readFile(decisionsPath(), "utf8");
     assert.ok(raw.startsWith(`{"id":"roto"\n`), "the log is not rewritten");
     assert.equal(raw.trim().split("\n").length, 4);
-  });
-
-  it("a conversion with the received amount infers the fee and the rate, with that day's benchmark", async () => {
-    const d = await record({
-      type: "fx_conversion",
-      currency: "EUR",
-      amount: 100,
-      received: 115.42,
-      date: "2026-09-12",
-    });
-
-    assert.equal(d.ticker, null);
-    assert.equal(d.origin, "propietario");
-    assert.equal(d.costs, 0.5);
-    assert.equal(d.fx_rate, 1.16);
-    // Past date: that session's close, not the current price (700).
-    assert.deepEqual(d.benchmark, { ticker: "EXSA.DE", price: 129 });
   });
 
   it("a deposit or a withdrawal is a flow without a ticker", async () => {
@@ -282,48 +257,15 @@ describe("decision:record (recordOwnerDecision)", () => {
       assert.equal((await readLines()).length, 2, "the proposal and the withdrawal of 1000");
     });
 
-    it("a currency conversion takes the amount from the source silo and gives what arrived to the other", async () => {
-      await seed();
-      await recordAll({ type: "fx_conversion", currency: "EUR", amount: 100, received: 116, costs: 1 });
-      assert.equal(await storeCash("EUR"), "900.00 EUR");
-      assert.equal(await storeCash("USD"), "1116.00 USD");
-      await recordAll({ type: "fx_conversion", currency: "USD", amount: 200, fx_rate: 0.9, costs: 2 });
-      assert.equal(await storeCash("USD"), "916.00 USD");
-      assert.equal(await storeCash("EUR"), "1078.20 EUR", "(200 - 2) x 0.9 arrived");
-    });
-
-    it("a conversion the source silo cannot pay is refused before anything is recorded", async () => {
+    it("a currency conversion is refused, naming the convert command, with nothing recorded and no cash moved (#135)", async () => {
       await seed();
       await assert.rejects(
-        recordAll({ type: "fx_conversion", currency: "EUR", amount: 5000, received: 5800 }),
-        /more than the available cash/,
+        recordAll({ type: "fx_conversion", currency: "EUR", amount: 100, received: 116, costs: 1 }),
+        /a currency conversion is told to the engine with a convert command in inbox\//,
       );
-      assert.equal((await readLines()).length, 1);
+      assert.equal((await readLines()).length, 1, "only the proposal of the seed");
+      assert.equal(await storeCash("EUR"), "1000.00 EUR");
       assert.equal(await storeCash("USD"), "1000.00 USD");
-    });
-
-    for (const [name, input] of [
-      ["costs above the amount", { amount: 10, costs: 11, fx_rate: 1.1 }],
-      ["costs equal to the amount", { amount: 10, costs: 10, received: 5 }],
-    ] as const) {
-      it(`a conversion with ${name} is refused: nothing would reach the other silo, and nothing is recorded`, async () => {
-        await seed();
-        await assert.rejects(
-          recordAll({ type: "fx_conversion", currency: "EUR", ...input }),
-          /the costs of \d+\.\d\d EUR are not below the amount of 10\.00 EUR converted: nothing would reach the other silo \(nothing was recorded\)/,
-        );
-        assert.equal((await readLines()).length, 1);
-        assert.equal(await storeCash("EUR"), "1000.00 EUR");
-        assert.equal(await storeCash("USD"), "1000.00 USD");
-      });
-    }
-
-    it("a conversion whose costs exceed the amount is refused without a store too", async () => {
-      await assert.rejects(
-        recordAll({ type: "fx_conversion", currency: "EUR", amount: 10, costs: 12, fx_rate: 1.1 }),
-        /are not below the amount/,
-      );
-      assert.equal((await readLines()).length, 1);
     });
 
     it("a store that cannot be written after the log is said to be, and never tells the owner to edit by hand", async () => {

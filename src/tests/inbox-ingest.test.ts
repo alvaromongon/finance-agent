@@ -203,6 +203,85 @@ describe("inbox:ingest", () => {
     });
   });
 
+  describe("a conversion between the silos (#135)", () => {
+    const CONVERT = "command: convert\namount: 1100 EUR\nreceived: 1320 USD\ncosts: 5 EUR";
+    const KO_BUY = "command: buy\nticker: KO\ndate: 2026-09-15\nunits: 10\nprice: 100 USD";
+
+    it("moves the cash of both silos in one write: a deposit, a conversion and a buy that spends the converted cash", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 100 EUR", CONVERT, KO_BUY));
+      const result = await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"));
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const doc = JSON.parse(await storeText());
+      assert.equal(doc.silos.EUR.cash, "0.00 EUR"); // 1000 + 100 - 1100
+      assert.equal(doc.silos.USD.cash, "820.00 USD"); // 500 + 1320 - 10 x 100
+      assert.equal(doc.silos.EUR.synced_at, "2026-11-12T09:00:00.000Z");
+      assert.equal(doc.silos.USD.synced_at, "2026-11-12T09:00:00.000Z");
+      assert.deepEqual(await ls("inbox", "applied"), ["a.yaml"]);
+    });
+
+    it("applies all or nothing: a batch whose last command fails leaves both silos as they were", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 1 EUR"));
+      await inbox.ingestInbox();
+      const stored = await storeText();
+      await drop("b.yaml", batch(CONVERT, "command: withdrawal\namount: 99999 USD"));
+      const result = await inbox.ingestInbox();
+      assert.equal(result.exitCode, 1);
+      assert.equal(await storeText(), stored);
+      assert.deepEqual(await ls("inbox", "rejected"), ["b.yaml", "b.yaml.errors.txt"]);
+    });
+
+    it("writes one fx_conversion line per conversion, so the shadow portfolio sees it (ADR-0009 §1)", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: convert\namount: 100 EUR\nrate: 1.17\ncosts: 1 EUR\ndate: 2026-11-10",
+          "command: convert\namount: 200 EUR\nreceived: 234 USD",
+        ),
+      );
+      assert.equal((await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"))).exitCode, 0);
+      assert.equal(JSON.parse(await storeText()).silos.USD.cash, "849.83 USD"); // 500 + 99 x 1.17 + 234
+      const lines = (await log()).map((d) => ({
+        type: d.type,
+        date: d.date,
+        ticker: d.ticker,
+        currency: d.currency,
+        amount: d.amount,
+        costs: d.costs,
+        fx_rate: d.fx_rate,
+        source: d.source,
+      }));
+      assert.deepEqual(lines, [
+        {
+          type: "fx_conversion",
+          date: "2026-11-10",
+          ticker: null,
+          currency: "EUR",
+          amount: 100,
+          costs: 1,
+          fx_rate: 1.17,
+          source: "portfolio-sync",
+        },
+        // No date: the day of the run. The rate is what arrived over what was converted, before the fee (here no fee).
+        {
+          type: "fx_conversion",
+          date: "2026-11-12",
+          ticker: null,
+          currency: "EUR",
+          amount: 200,
+          costs: 0,
+          fx_rate: 1.17,
+          source: "portfolio-sync",
+        },
+      ]);
+    });
+
+    it("writes no line for a batch that is refused", async () => {
+      await drop("a.yaml", batch(CONVERT, "command: withdrawal\namount: 99999 USD"));
+      assert.equal((await inbox.ingestInbox()).exitCode, 1);
+      assert.deepEqual(await log(), []);
+    });
+  });
+
   describe("a refused batch", () => {
     it("changes nothing: a batch that fails on its last command leaves the store byte-identical", async () => {
       await drop("a-clean.yaml", batch("command: deposit\namount: 1 EUR"));

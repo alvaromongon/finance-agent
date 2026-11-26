@@ -18,7 +18,7 @@ const problem = (command: string): string => {
 };
 
 describe("inbox format", () => {
-  it("reads the six commands with their amounts, currency and optional fields", () => {
+  it("reads the commands with their amounts, currency and optional fields", () => {
     const { commands, issues } = parseBatch(
       batch(
         "command: deposit\namount: 1000.50 EUR",
@@ -137,6 +137,61 @@ describe("inbox format", () => {
         problem("command: set_stop\nticker: TCK\nprice: 9 EUR\ndate: 2026-09-15\ncosts: 1 USD"),
         /unknown field "costs" for a set_stop/,
       );
+    });
+  });
+
+  describe("a conversion between the silos (#135)", () => {
+    it("reads the amount taken out and what arrived, or the rate, with optional costs and date", () => {
+      const { commands, issues } = parseBatch(
+        batch(
+          "command: convert\namount: 1000 EUR\nreceived: 1160.50 USD\ncosts: 5 EUR\ndate: 2026-09-15",
+          "command: convert\namount: 200 USD\nrate: 0.9",
+        ),
+      );
+      assert.deepEqual(issues, []);
+      assert.deepEqual(
+        commands.map(({ command }) => command),
+        [
+          { kind: "convert", from: "EUR", to: "USD", amount: 1000, received: 1160.5, costs: 5, date: "2026-09-15" },
+          { kind: "convert", from: "USD", to: "EUR", amount: 200, rate: 0.9 },
+        ],
+      );
+    });
+
+    it("needs the amount with its currency, and received or rate, one of the two", () => {
+      assert.match(problem("command: convert\namount: 100 EUR"), /"received".*"rate": one of the two/);
+      assert.match(problem("command: convert\namount: 100 EUR\nreceived: 116 USD\nrate: 1.16"), /not both/);
+      assert.match(problem("command: convert\nreceived: 116 USD"), /missing field "amount"/);
+      assert.match(problem("command: convert\namount: 100\nrate: 1.1"), /needs its currency/);
+    });
+
+    it("writes every number in plain decimal notation, greater than zero", () => {
+      assert.match(problem("command: convert\namount: 100 EUR\nrate: 1e0"), /"rate" must be a plain decimal number/);
+      assert.match(problem("command: convert\namount: 100 EUR\nrate: 0"), /"rate" must be greater than zero/);
+      assert.match(problem("command: convert\namount: 100 EUR\nrate: -1.1"), /"rate" must be a plain decimal number/);
+      assert.match(problem("command: convert\namount: 0 EUR\nreceived: 5 USD"), /"amount" must be greater than zero/);
+      assert.match(problem("command: convert\namount: 5 EUR\nreceived: 0 USD"), /"received" must be greater than zero/);
+      assert.match(
+        problem("command: convert\namount: 100 EUR\nrate: 1.1\ncosts: 0 EUR"),
+        /"costs" must be greater than zero/,
+      );
+    });
+
+    it("takes the costs in the currency of the amount, and refuses fields of other commands", () => {
+      assert.match(
+        problem("command: convert\namount: 100 EUR\nrate: 1.1\ncosts: 1 USD"),
+        /"costs" is in USD but "amount" is in EUR: one command, one currency/,
+      );
+      assert.match(
+        problem("command: convert\namount: 100 EUR\nrate: 1.1\nticker: KO"),
+        /unknown field "ticker" for a convert/,
+      );
+    });
+
+    it("reads the same currency on both sides: the handler refuses it, with the command's position", () => {
+      const { commands, issues } = parseBatch(batch("command: convert\namount: 100 EUR\nreceived: 100 EUR"));
+      assert.deepEqual(issues, []);
+      assert.deepEqual(commands[0].command, { kind: "convert", from: "EUR", to: "EUR", amount: 100, received: 100 });
     });
   });
 

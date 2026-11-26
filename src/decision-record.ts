@@ -1,4 +1,4 @@
-// CLI of `decision:record` (#134): the owner's stop adjustments, deposits, withdrawals and conversions, as a write of the
+// CLI of `decision:record` (#134): the owner's stop adjustments, deposits and withdrawals, as a write of the
 // state. It lives apart from `decision.ts` because the heartbeat imports that, and stop detection must not import the
 // compare-and-swap (ADR-0015, ADR-0018).
 import { config } from "./config.js";
@@ -8,7 +8,7 @@ import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
 
 /**
- * `recordOwnerDecision` as a write of the state (ADR-0018, #134): a deposit, a withdrawal or a conversion moves the
+ * `recordOwnerDecision` as a write of the state (ADR-0018, #134): a deposit or a withdrawal moves the
  * cash of the store, so it is committed over the remote's last commit as a compare-and-swap, and done again over the
  * new state if another run committed meanwhile (see `commitState`). Throws, having recorded nothing, when the race is
  * lost every time: the owner says it again. With no remote the files are left in place.

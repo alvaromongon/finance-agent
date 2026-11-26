@@ -42,7 +42,6 @@ const firstUseLinked = (md: string, term: string): boolean => {
 /** The event types each `###` heading of the guide may carry. */
 const HEADING_EVENTS: Record<string, readonly string[]> = {
   "Deposit or withdrawal": ["deposit", "withdrawal"],
-  "Currency conversion": ["fx_conversion"],
   "Stop change": ["adjust_stop"],
 };
 
@@ -81,7 +80,7 @@ describe("portfolio-sync guide", () => {
     };
     assert.match(problem('## Events\n\n```json\n{ "type": "deposit" }\n```\n') ?? "", /no ### heading/);
     assert.match(
-      problem('\n### Currency conversion\n\n## Other\n\n```json\n{ "type": "fx_conversion" }\n```\n') ?? "",
+      problem('\n### Stop change\n\n## Other\n\n```json\n{ "type": "adjust_stop" }\n```\n') ?? "",
       /a ## section sits between/,
     );
     assert.match(
@@ -103,7 +102,8 @@ describe("portfolio-sync guide", () => {
     assert.ok(batches.length >= 1, "no batch example");
     for (const parsed of batches) assert.deepEqual(parsed.issues, []);
     const kinds = new Set(batches.flatMap((b) => b.commands.map((c) => c.command.kind)));
-    for (const kind of ["buy", "set_stop", "sale"]) assert.ok(kinds.has(kind as never), `no ${kind} in a batch`);
+    for (const kind of ["buy", "set_stop", "sale", "convert"])
+      assert.ok(kinds.has(kind as never), `no ${kind} in a batch`);
   });
 
   it("follows the store model: trades go through the inbox, decision:record refuses them, portfolio.md is never edited", async () => {

@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { CURRENCIES, type Currency, type Lot } from "../types.js";
 import type { DecisionOrigin } from "../decisions.js";
 import type { Ticker } from "../ticker.js";
-import type { Money } from "../money.js";
+import { zero, type Money } from "../money.js";
+import { round } from "./round.js";
 import { uniqueDecisionIds } from "./decision-id.js";
 import type { SaleShare } from "./portfolio-lots.js";
 import {
@@ -112,8 +113,22 @@ export interface SaleTrade {
   exits: { share: SaleShare; lot: Lot }[];
 }
 
-/** What a clean batch bought and sold, in order: what `inbox:ingest` writes to the decision log. */
-export type Trade = BuyTrade | SaleTrade;
+/** A conversion of a clean batch: `amount` of `currency` (the silo it came from) left, `costs` included. */
+export interface ConversionTrade {
+  kind: "convert";
+  command: number;
+  line: number;
+  currency: Currency;
+  /** YYYY-MM-DD, when the command gave it: the line takes the day of the run otherwise. */
+  date?: string;
+  amount: Money;
+  costs: Money;
+  /** The other currency per unit of `currency`, before the fee. */
+  fxRate: number;
+}
+
+/** What a clean batch bought, sold and converted, in order: what `inbox:ingest` writes to the decision log. */
+export type Trade = BuyTrade | SaleTrade | ConversionTrade;
 
 /** A rejected batch a clean batch gave up for good: replaced (`replaces:`) or discarded (`discard`). */
 export interface Resolved {
@@ -216,6 +231,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     read: Extract<Command, { kind: "buy" }>;
     relatedId?: string;
   }[] = [];
+  const converted: { command: number; line: number; read: Extract<Command, { kind: "convert" }> }[] = [];
   const sold: {
     command: number;
     line: number;
@@ -240,6 +256,16 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         ...(b.read.costs !== undefined ? { costs: b.read.costs } : {}),
         lot: lastSeen.get(b.key)!,
         ...(b.relatedId !== undefined ? { relatedId: b.relatedId } : {}),
+      })),
+      ...converted.map(({ command, line, read }): Trade => ({
+        kind: "convert",
+        command,
+        line,
+        currency: read.from,
+        ...(read.date !== undefined ? { date: read.date } : {}),
+        amount: read.amount,
+        costs: read.costs ?? zero(read.from),
+        fxRate: read.rate ?? round(read.received! / (read.amount - (read.costs ?? 0)), 6),
       })),
       ...sold.map((s): Trade => ({
         kind: "sale",
@@ -317,26 +343,32 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       const { currencies, kind, ticker } = unread.get(position)!;
       // A discard changes no cash, lots or stop: nothing is unknown because of it.
       if (kind === "discard") continue;
-      const written = currencies.length > 0 ? currencies : CURRENCIES;
+      // A conversion that did not read moved cash between both silos, whatever currencies were readable in it.
+      const written = currencies.length > 0 && kind !== "convert" ? currencies : CURRENCIES;
       const blocker: Blocker = { position, how: "could not be read" };
       // A stop command changes no cash or lots: only the stop of its ticker is unknown.
       if (kind === "set_stop") blockStop(written, ticker, blocker);
       else if (kind === "clear_stop") blockStop(CURRENCIES, ticker, blocker);
       else {
         block(written, blocker);
-        if (kind !== "deposit" && kind !== "withdrawal") blockLots(written, ticker ?? null, blocker);
+        if (kind !== "deposit" && kind !== "withdrawal" && kind !== "convert") {
+          blockLots(written, ticker ?? null, blocker);
+        }
       }
       continue;
     }
     const { command } = read;
     const currency = "currency" in command ? command.currency : undefined;
+    // The silos whose cash a command changes: both for a conversion, its own for the others (`undefined`: none named).
+    const silos: readonly Currency[] | undefined =
+      command.kind === "convert" ? [command.from, command.to] : currency !== undefined ? [currency] : undefined;
     // A clear_stop names no currency: what it clears is the position of its ticker in whichever silo holds it, so
     // only a command that could have changed that ticker's lots, or its stop, makes it unknown.
     const lotsBlock = command.kind === "clear_stop" ? lotsBlockOf(command.ticker) : undefined;
-    const cashBlock = currency !== undefined ? blocked.get(currency) : undefined;
+    const cashBlock = silos?.map((c) => blocked.get(c)).find((b) => b !== undefined);
     const blocker = cashBlock ?? lotsBlock ?? (command.kind === "clear_stop" ? stopBlockOf(command.ticker) : undefined);
     if (blocker !== undefined) {
-      const unknown = unknownOf(command, currency, cashBlock === undefined && lotsBlock === undefined);
+      const unknown = unknownOf(command, silos, cashBlock === undefined && lotsBlock === undefined);
       notChecked.push({
         command: position,
         line: read.line,
@@ -348,6 +380,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       else if (command.kind === "set_stop") {
         blockStop([command.currency], command.ticker, { position, how: "was not checked" });
       }
+      // A conversion that was not checked may have moved the cash of both its silos, not only the one that was blocked.
+      else if (command.kind === "convert") block([command.from, command.to], { position, how: "was not checked" });
       // A buy or a sale that was not checked may have opened or closed the lots of its ticker.
       else if (command.kind === "buy" || command.kind === "sale")
         blockLots([command.currency], command.ticker, blocker);
@@ -368,14 +402,14 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     if ("reason" in result) {
       // A refusal in a silo the portfolio has, that the rejected file before it could explain, is not an error of this one.
       const rejected =
-        (currency === undefined || present(currency)) && command.kind !== "deposit"
+        (silos === undefined || silos.every(present)) && command.kind !== "deposit"
           ? earlier.rejected.find((r) => dependsOn(r.footprint, command))
           : undefined;
       if (rejected !== undefined) {
         notChecked.push({
           command: position,
           line: read.line,
-          reason: `not checked: depends on inbox/${printable(rejected.file)}, which was rejected, so ${unknownOf(command, currency, false)}`,
+          reason: `not checked: depends on inbox/${printable(rejected.file)}, which was rejected, so ${unknownOf(command, silos, false)}`,
         });
       } else issues.push({ command: position, line: read.line, reason: result.reason });
       // What it would have done is unknown from here on. A silo the portfolio does not have has nothing unknown:
@@ -383,6 +417,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       const how = rejected === undefined ? "was refused" : "was not checked";
       if (command.kind === "set_stop") blockStop([command.currency], command.ticker, { position, how });
       else if (command.kind === "clear_stop") blockStop(CURRENCIES, command.ticker, { position, how });
+      else if (command.kind === "convert") block([command.from, command.to], { position, how });
       else if (currency !== undefined) {
         block([currency], { position, how });
         if (command.kind === "buy" || command.kind === "sale") blockLots([currency], command.ticker, { position, how });
@@ -397,7 +432,12 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
           touch(c, command.ticker, read);
         }
       }
-    } else if (command.kind !== "deposit" && command.kind !== "withdrawal" && command.kind !== "discard") {
+    } else if (
+      command.kind !== "deposit" &&
+      command.kind !== "withdrawal" &&
+      command.kind !== "convert" &&
+      command.kind !== "discard"
+    ) {
       touch(command.currency, command.ticker, read);
       if (command.kind === "set_stop") liftStop(command.currency, command.ticker);
     }
@@ -418,6 +458,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         ...(result.proposal !== undefined ? { relatedId: result.proposal } : {}),
       });
     }
+    if (command.kind === "convert") converted.push({ command: position, line: read.line, read: command });
     if (result.exits !== undefined && command.kind === "sale") {
       takeEntryCosts(entryCostsTaken, result.exits, command.currency);
       sold.push({
@@ -519,11 +560,12 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
  * What a command not checked would have changed and is unknown, for the reason of its `not checked`: a stop command
  * changes no cash or lots, only a stop (`stopBlocked`: only the stop of the ticker is what the blocker left unknown).
  */
-function unknownOf(command: Command, currency: Currency | undefined, stopBlocked: boolean): string {
+function unknownOf(command: Command, silos: readonly Currency[] | undefined, stopBlocked: boolean): string {
   if (command.kind === "set_stop" || command.kind === "clear_stop") {
     return stopBlocked ? "the stop it would change is unknown" : "the position it would change is unknown";
   }
-  return `the ${currency} cash and lots it would change are unknown`;
+  if (command.kind === "convert") return `the ${silos?.join(" and ")} cash it would change is unknown`;
+  return `the ${silos?.join(" and ")} cash and lots it would change are unknown`;
 }
 
 /** `a`, `a and b`, `a, b and c`. */
@@ -539,14 +581,22 @@ function footprintOf(parsed: ParsedBatch): Footprint[] {
   }
   return [
     ...parsed.commands.map(({ command }) => ({
-      currencies: "currency" in command ? [command.currency] : CURRENCIES,
+      currencies:
+        command.kind === "convert"
+          ? [command.from, command.to]
+          : "currency" in command
+            ? [command.currency]
+            : CURRENCIES,
       kind: command.kind,
       ticker: "ticker" in command ? command.ticker : undefined,
     })),
     ...parsed.unread.map((u) => ({
-      currencies: u.currencies.length > 0 ? u.currencies : CURRENCIES,
+      currencies: u.currencies.length > 0 && u.kind !== "convert" ? u.currencies : CURRENCIES,
       kind: u.kind ?? null,
-      ticker: u.kind === "deposit" || u.kind === "withdrawal" || u.kind === "discard" ? undefined : (u.ticker ?? null),
+      ticker:
+        u.kind === "deposit" || u.kind === "withdrawal" || u.kind === "convert" || u.kind === "discard"
+          ? undefined
+          : (u.ticker ?? null),
     })),
   ];
 }
@@ -555,6 +605,7 @@ function footprintOf(parsed: ParsedBatch): Footprint[] {
 const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean }> = {
   deposit: { cash: true, lots: false, stop: false },
   withdrawal: { cash: true, lots: false, stop: false },
+  convert: { cash: true, lots: false, stop: false },
   buy: { cash: true, lots: true, stop: false },
   sale: { cash: true, lots: true, stop: false },
   set_stop: { cash: false, lots: false, stop: true },
@@ -570,10 +621,11 @@ const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean
  * A command that did not read (`kind` null) could have changed any of them.
  */
 function dependsOn(footprint: readonly Footprint[], command: Command): boolean {
-  const currencies = "currency" in command ? [command.currency] : CURRENCIES;
+  const currencies =
+    command.kind === "convert" ? [command.from, command.to] : "currency" in command ? [command.currency] : CURRENCIES;
   const ticker = "ticker" in command ? command.ticker : undefined;
   const reads = {
-    cash: command.kind === "withdrawal" || command.kind === "buy",
+    cash: command.kind === "withdrawal" || command.kind === "convert" || command.kind === "buy",
     lots: command.kind === "sale" || command.kind === "set_stop" || command.kind === "clear_stop",
     stop: command.kind === "clear_stop",
   };

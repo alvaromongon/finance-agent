@@ -218,18 +218,17 @@ them. It needs one history request per position with a stop; without ATR the pos
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
 - **Steps (owner narration)**: `decision:record` records what the owner narrates that is not a trade: a stop
-  adjustment (`adjust_stop`), a deposit, a withdrawal or a currency conversion (`fx_conversion`). **A buy and a sale
+  adjustment (`adjust_stop`), a deposit or a withdrawal. **A currency [conversion](glossary.md#conversion) is no longer recorded here (#135)**:
+  `fx_conversion` is refused, with a message that names the `convert` command of the [inbox](#apply-the-inbox), the
+  only way to convert cash between the silos. **A buy and a sale
   are not recorded here any more (#152)**: `entry` and `exit` are refused, with a message that names the `buy` and
   `sale` commands of the [inbox](#apply-the-inbox), which is the only way a trade is recorded, keeping the lots and
   writing the entry and exit lines of the log as telemetry. The engine validates the input (the
   [ticker](glossary.md#ticker) of an adjustment is parsed first: one that does not parse is refused before anything
   is written), then fills what the owner need not know: id, rules version, the silo benchmark and, for an adjustment,
   the system proposal it follows (within 10 days), which sets the origin.
-  - A conversion needs a fee below its amount: with costs equal to or above it nothing would reach the other silo, and
-    it is refused before the market data is asked for, with nothing recorded.
   - With the [store](glossary.md#store) the cash moves too, as the inbox's `deposit` and `withdrawal` move it: a
-    deposit and a withdrawal move it likewise, and a conversion takes `amount` from its silo and gives the other what
-    arrived (`received`, or the amount net of `costs` at `fx_rate`), in one write. Any movement that would take the
+    deposit and a withdrawal move it likewise, in one write. Any movement that would take the
     available cash of a silo below zero is refused, before anything is recorded (the movement is tried first, then the
     log is appended, then the same movement is written). `portfolio.md` is then a generated view and is never edited
     by hand. Without the store, the cash is the owner's cell, as before, and the flow only appends to the log.
@@ -439,11 +438,13 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      stop the batch ends with; and its origin: `sistema` when it follows the latest proposal of the system for that
      ticker within 10 days that no trade cited yet, `propietario` otherwise) and each sale the exits of its lots, with the entry costs earlier exits took (from the history and from
      the batches before), its own proceeds (`units × price`) and its origin (`sistema` after a `sell` proposal of the system
-     within 10 days, `propietario` otherwise).
+     within 10 days, `propietario` otherwise). A `convert` changes the cash of both silos in one step, from the cash the
+     commands before it left (a conversion refused leaves the cash of both silos unknown to the commands after it); it
+     opens no lot and writes its `fx_conversion` line.
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
-     with the hash of its file), and the decision-log lines of their trades (an `entry` per buy and an `exit` per lot
-     sold, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
+     with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
+     sold and an `fx_conversion` per conversion, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
      from the store (the store is written first, the view after it).
   5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
      (command position, line, reason), never over a file already there. A file in `rejected/` is never read as a

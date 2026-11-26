@@ -20,12 +20,12 @@ Every event at the broker is told to the engine through one of two doors, and no
 
 | Event                                      | Door                                                                                           | The engine writes                                                                      |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Buy, sale, a stop set, moved or removed    | a batch in `inbox/` (`buy`, `sale`, `set_stop`, `clear_stop`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the entry and exit lines of the log |
-| Deposit, withdrawal, currency conversion   | `npm run decision:record`, the event as JSON on stdin                                          | the [decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log) (`logs/decisions.jsonl`; never edit it by hand) and the cash of the store |
+| Buy, sale, a stop set, moved or removed, a currency conversion | a batch in `inbox/` (`buy`, `sale`, `set_stop`, `clear_stop`, `convert`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the entry and exit lines of the log |
+| Deposit, withdrawal                        | `npm run decision:record`, the event as JSON on stdin                                          | the [decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log) (`logs/decisions.jsonl`; never edit it by hand) and the cash of the store |
 | A stop adjustment you made after a proposal | `npm run decision:record` for the log line, and a `set_stop` command in a batch for the stop    | the log line only                                                                      |
 
 `decision:record` refuses a buy and a sale: they are told with a `buy` or a `sale` command in a batch, the only way a
-trade is recorded. The `deposit` and `withdrawal` commands of the inbox change the cash and write no log line; a flow
+trade is recorded; it refuses a currency [conversion](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#conversion) too, which is the `convert` command of a batch. The `convert` command writes its `fx_conversion` line; the `deposit` and `withdrawal` commands of the inbox change the cash and write no log line, while a flow
 told to `decision:record` writes its line, which the
 [shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio) needs to
 buy its benchmark with every flow on its own date. Use one door for a flow, never both: the cash would move twice.
@@ -102,6 +102,27 @@ A refused batch is moved to `inbox/rejected/` with its errors beside it and appl
 the heartbeat names it in every digest until you answer it: write a new batch that starts with `replaces: <file>`, or
 give it up with a `discard` command (`file: <file>`). The file stays in `rejected/` as the audit trail.
 
+A currency conversion is a `convert` command: `amount` is what you converted, with its currency, which is the silo the
+money **leaves**. Say what arrived (`received`, in the other currency) or the rate you got (`rate`: the other currency
+per unit of the first, before the fee), not both. `costs` is the fee, in the currency of `amount`, and is already inside
+it. The command takes the amount from the source silo and gives the other what arrived, both or neither; it is
+refused if the costs are not below the amount or if the source silo lacks the cash after the commands before it, so
+put it before the buys that spend the converted cash.
+
+```yaml
+schema_version: 1
+commands:
+  - command: convert
+    amount: 1000 EUR
+    received: 1160 USD
+    costs: 5 EUR
+  - command: buy
+    ticker: KO
+    date: 2026-10-12
+    units: 18
+    price: 62 USD
+```
+
 ## Events for `decision:record`
 
 All examples run as `echo '<json>' | npm run decision:record`, or with the JSON in a file piped in.
@@ -118,18 +139,6 @@ Money you moved between your bank and the broker. The command moves the cash of 
 
 ```json
 { "type": "withdrawal", "currency": "USD", "amount": 200 }
-```
-
-### Currency conversion
-
-`currency` is the silo the money **leaves**; `amount` is what you converted in that currency.
-Give the rate you got (`fx_rate`: target currency per unit of source, before the fee) or what
-arrived (`received`, in the target currency). Without `costs`, the fee defaults to
-`BROKER_FX_CONVERSION_PCT`. The command takes the amount from the source silo and gives the other what arrived; it is
-refused, with nothing recorded, if the costs are not below the amount.
-
-```json
-{ "type": "fx_conversion", "currency": "EUR", "amount": 1000, "received": 1160, "costs": 5 }
 ```
 
 ### Stop change

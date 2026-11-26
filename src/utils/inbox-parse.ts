@@ -55,11 +55,12 @@ export interface ParsedBatch {
   issues: InboxIssue[];
 }
 
-const COMMAND_KINDS = ["deposit", "withdrawal", "buy", "sale", "set_stop", "clear_stop", "discard"] as const;
+const COMMAND_KINDS = ["deposit", "withdrawal", "convert", "buy", "sale", "set_stop", "clear_stop", "discard"] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 const FIELDS: Record<CommandKind, readonly string[]> = {
   deposit: ["command", "amount"],
   withdrawal: ["command", "amount"],
+  convert: ["command", "amount", "received", "rate", "costs", "date"],
   buy: ["command", "ticker", "date", "units", "price", "costs"],
   sale: ["command", "ticker", "date", "units", "price", "costs", "lot", "stop_executed"],
   set_stop: ["command", "ticker", "date", "price"],
@@ -250,6 +251,42 @@ function readCommand(raw: unknown): Command | Unread {
     const read = positive(amount("amount", true, true), "amount");
     if (problems.length > 0 || read === undefined) return unread();
     return { kind, currency: read.currency, amount: money(read.value, read.currency) };
+  }
+
+  if (kind === "convert") {
+    const out = positive(amount("amount", true, true), "amount");
+    const arrived = positive(amount("received", false, true), "received");
+    const rateText = text("rate", false);
+    let rate: number | undefined;
+    if (rateText !== undefined) {
+      const n = decimal(rateText, '"rate"');
+      if (typeof n === "string") problems.push(n);
+      else if (n <= 0) problems.push(`"rate" must be greater than zero; got: ${quoted(rateText)}`);
+      else rate = n;
+    }
+    if (fields.received === undefined && fields.rate === undefined) {
+      problems.push(
+        'a conversion needs what arrived ("received", in the other currency) or the "rate": one of the two',
+      );
+    } else if (fields.received !== undefined && fields.rate !== undefined) {
+      problems.push('give "received" or "rate", not both: one of them is worked out from the other');
+    }
+    const costs = positive(amount("costs", false, true), "costs");
+    const when = date(false);
+    sameCurrency({ amount: out, costs });
+    if (problems.length > 0 || out === undefined) return unread();
+    // With a rate the target is the other silo: the engine has two.
+    const to = arrived?.currency ?? CURRENCIES.find((c) => c !== out.currency)!;
+    return {
+      kind,
+      from: out.currency,
+      to,
+      amount: money(out.value, out.currency),
+      ...(arrived ? { received: money(arrived.value, arrived.currency) } : {}),
+      ...(rate !== undefined ? { rate } : {}),
+      ...(costs ? { costs: money(costs.value, out.currency) } : {}),
+      ...(when ? { date: when } : {}),
+    };
   }
 
   if (kind === "discard") {

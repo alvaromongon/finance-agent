@@ -12,7 +12,6 @@ import {
   decisionFromRecommendation,
   findRelatedProposal,
   originOf,
-  resolveFxConversion,
   validateDecision,
   twoMonthRuleWarning,
   validateOwnerInput,
@@ -544,10 +543,20 @@ describe("validateOwnerInput", () => {
         () => validateOwnerInput({ type, ticker: "CAT", currency: "USD", price: 30, units: 2 }),
         (err: Error) =>
           err.message.includes(`a ${command} is told to the engine with a ${command} command in inbox/`) &&
-          err.message.includes("[adjust_stop, deposit, withdrawal, fx_conversion]") &&
+          err.message.includes("[adjust_stop, deposit, withdrawal]") &&
           !err.message.includes("type must be one of [entry"),
       );
     }
+  });
+
+  it("refuses a currency conversion, naming the inbox command that replaces it (#135)", () => {
+    assert.throws(
+      () => validateOwnerInput({ type: "fx_conversion", currency: "EUR", amount: 100, fx_rate: 1.1 }),
+      (err: Error) =>
+        err.message.includes("a currency conversion is told to the engine with a convert command in inbox/") &&
+        err.message.includes("[adjust_stop, deposit, withdrawal]") &&
+        !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
+    );
   });
 
   it("refuses the fields of a trade: units and pnl", () => {
@@ -567,34 +576,10 @@ describe("validateOwnerInput", () => {
       (err: Error) => err.message.includes("ticker is required") && err.message.includes("stop is required"),
     );
     assert.throws(
-      () => validateOwnerInput({ type: "fx_conversion", currency: "EUR", amount: 100 }),
-      /fx_rate or received/,
-    );
-    assert.throws(
       () => validateOwnerInput({ type: "deposit", currency: "EUR", amount: 50, ticker: "X" }),
       /ticker does not apply/,
     );
     assert.throws(() => validateOwnerInput({ type: "buy_proposal", currency: "EUR" }), /type must be one of/);
-  });
-});
-
-describe("resolveFxConversion", () => {
-  it("with the received amount, infers the rate on the amount net of the fee", () => {
-    // €100 − €0.50 fee = €99.50 → $115.42: rate 1.16.
-    assert.deepEqual(resolveFxConversion({ amount: 100, received: 115.42, currency: "EUR" }, 0.5), {
-      costs: 0.5,
-      fx_rate: 1.16,
-    });
-  });
-
-  it("respects the fee and the rate the owner gives", () => {
-    assert.deepEqual(
-      resolveFxConversion({ amount: 100, fx_rate: 1.17, costs: money(0.8, "EUR"), currency: "EUR" }, 0.5),
-      {
-        costs: 0.8,
-        fx_rate: 1.17,
-      },
-    );
   });
 });
 
@@ -692,26 +677,7 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
 
 describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
   it("costs given with sub-cent decimals are rounded to the cent", () => {
-    const input = validateOwnerInput({
-      type: "fx_conversion",
-      currency: "EUR",
-      amount: 100,
-      fx_rate: 1.1,
-      costs: 1.234,
-    });
+    const input = validateOwnerInput({ type: "withdrawal", currency: "EUR", amount: 100, costs: 1.234 });
     assert.equal(input.costs, 1.23);
-  });
-
-  it("an fx_conversion computes its fx_rate from the cost in cents (main used 1.234)", () => {
-    const input = validateOwnerInput({
-      type: "fx_conversion",
-      currency: "EUR",
-      amount: 100,
-      received: 118,
-      costs: 1.234,
-    });
-    const { costs, fx_rate } = resolveFxConversion(input, 0);
-    assert.equal(costs, 1.23);
-    assert.equal(fx_rate, 1.194695); // 118 / 98.77; with 1.234 it was 1.194743
   });
 });

@@ -105,6 +105,26 @@ export interface Sale<C extends Currency = Currency> {
 }
 
 /**
+ * Cash moved from one silo to the other at a rate the owner got (#135): `amount` leaves `from` and what arrived (`received`,
+ * or `(amount - costs) x rate`: exactly one of the two is given) reaches `to`, in one step. `costs` are the fee, in `from`,
+ * already inside `amount`. The two silos are always different: a conversion into the same currency is refused.
+ */
+export interface Conversion<F extends Currency = Currency, T extends Currency = Currency> {
+  kind: "convert";
+  from: F;
+  to: T;
+  /** Taken out of `from`, costs included. */
+  amount: Money<F>;
+  /** What arrived in `to`. */
+  received?: Money<T>;
+  /** `to` per unit of `from`, before the fee. */
+  rate?: number;
+  costs?: Money<F>;
+  /** YYYY-MM-DD, when given. */
+  date?: string;
+}
+
+/**
  * Gives up a rejected batch for good (#152): it stays in `inbox/rejected/` as the audit trail and is not named in the
  * digest any more. It changes no cash, lot or stop, so it has no currency.
  */
@@ -115,7 +135,7 @@ export interface Discard {
 }
 
 export type Command<C extends Currency = Currency> =
-  Deposit<C> | Withdrawal<C> | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Discard;
+  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Discard;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -309,6 +329,50 @@ export function withdrawal<C extends Currency>(state: InboxState, command: Withd
       movedCash(silo, subtractCounted(zero(command.currency), command.amount, "the withdrawal"), "the withdrawal"),
     ),
   };
+}
+
+/**
+ * Moves cash from the `from` silo to the `to` silo: both change or neither (a refusal returns no state). Every silo is
+ * looked up by its own currency (#145) and the two must differ.
+ */
+export function convert(state: InboxState, command: Conversion): HandlerResult {
+  const { from, to, amount } = command;
+  if (from === to) {
+    return refused(
+      `a conversion needs two currencies: it takes ${from} out of the ${from} silo and gives ${to} back to it`,
+    );
+  }
+  const source = siloOf(state, from);
+  if (isRefusal(source)) return source;
+  const target = siloOf(state, to);
+  if (isRefusal(target)) return target;
+  if (!(amount > 0)) return refused(`the conversion must take out an amount greater than zero of ${from}`);
+  const costs = command.costs ?? zero(from);
+  if (!(costs < amount)) {
+    return refused(
+      `the costs of ${show(costs, from)} are not below the amount of ${show(amount, from)} converted: nothing would reach the ${to} silo`,
+    );
+  }
+  if (amount > source.cash) {
+    return refused(`the conversion of ${show(amount, from)} exceeds the available cash of ${show(source.cash, from)}`);
+  }
+  if ((command.received === undefined) === (command.rate === undefined)) {
+    return refused('a conversion says what arrived with "received" or with "rate", one of the two');
+  }
+  let received: Money;
+  if (command.received !== undefined) received = command.received;
+  else {
+    if (!(command.rate! > 0)) return refused("the rate of a conversion must be greater than zero");
+    received = countedInCents((amount - costs) * command.rate!, "the amount the conversion delivers", to);
+  }
+  if (!(received > 0)) {
+    return refused(
+      `the conversion of ${show(amount, from)} delivers nothing: ${show(received, to)} would reach the ${to} silo`,
+    );
+  }
+  const taken = movedCash(source, subtractCounted(zero(from), amount, "the conversion"), "the conversion");
+  const given = movedCash(target, received as Money<typeof to>, "the conversion");
+  return { state: withSilo(withSilo(state, taken), given) };
 }
 
 /** The rule an entry id must follow before it reaches a path or a cell: what `newDecisionId` writes, and the example ids. */
@@ -714,6 +778,8 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return deposit(state, command);
       case "withdrawal":
         return withdrawal(state, command);
+      case "convert":
+        return convert(state, command);
       case "buy":
         return buy(state, command, context);
       case "sale":
