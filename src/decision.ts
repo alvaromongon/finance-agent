@@ -7,9 +7,7 @@
 //    not blocked, sends the alert.
 //    Shared by index.ts ("api" backend) and pending.ts ("handoff" backend), so
 //    both produce exactly the same for the same Recommendation.
-// 2. `recordOwnerDecision` (`npm run decision:record`): the owner's stop adjustments, deposits, withdrawals and
-//    currency conversions, so nobody edits the JSONL by hand. Trades go only through the inbox (ADR-0018, #152).
-import { config } from "./config.js";
+// 2. `recordOwnerDecision` (`npm run decision:record`): the owner's stop adjustments, deposits and withdrawals, so nobody edits the JSONL by hand. Trades go only through the inbox (ADR-0018, #152).
 import {
   appendDecisions,
   readAccountEnv,
@@ -27,7 +25,6 @@ import {
   decisionFromRecommendation,
   findRelatedProposal,
   originOf,
-  resolveFxConversion,
   twoMonthRuleWarning,
   validateOwnerInput,
   type Decision,
@@ -36,7 +33,6 @@ import {
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { portfolioWhere } from "./utils/portfolio-where.js";
 import { changeCash } from "./portfolio-store.js";
-import { formatMoney } from "./money.js";
 import type { Currency, Recommendation, Signal } from "./types.js";
 import { tickerFileStem } from "./ticker.js";
 
@@ -121,13 +117,12 @@ export async function recordDecision(
 export type OwnerDecisionProvider = PriceSource;
 
 /**
- * Records what the owner narrates that is not a trade: a stop adjustment, a deposit, a withdrawal or a currency
- * conversion. A buy and a sale are told to the engine only through the inbox (`inbox/`, ADR-0018), which keeps the
+ * Records what the owner narrates that is not a trade: a stop adjustment, a deposit or a withdrawal. A buy and a sale are told to the engine only through the inbox (`inbox/`, ADR-0018), which keeps the
  * lots and writes the entry and exit lines of the log as telemetry: `validateOwnerInput` refuses them here. The
  * engine fills in what the owner need not know: id, rules version, silo benchmark and the system proposal an
  * adjustment comes from (which decides the origin, ADR-0009 §8).
  *
- * With the engine's store a deposit, a withdrawal or a conversion also moves the cash of its silo(s), as the inbox's
+ * With the engine's store a deposit or a withdrawal also moves the cash of its silo, as the inbox's
  * deposit and withdrawal commands do: all the checks run before the log is written, and the write that follows is
  * the one the checks tried. Returns the decisions recorded (one).
  */
@@ -141,14 +136,6 @@ export async function recordOwnerDecision(
   // reading it once keeps a corrupt line to one warning.
   const history = await readDecisionHistory();
   const date = input.date ?? today;
-  // A conversion that delivers nothing is refused before anything goes to the network, with nothing recorded.
-  const conversion =
-    input.type === "fx_conversion" ? resolveFxConversion(input, config.broker.fxConversionPct) : undefined;
-  if (conversion !== undefined && !(conversion.costs < input.amount!)) {
-    throw new Error(
-      `the costs of ${formatMoney(conversion.costs)} ${input.currency} are not below the amount of ${formatMoney(input.amount!)} ${input.currency} converted: nothing would reach the other silo (nothing was recorded)`,
-    );
-  }
   const [rulesVersion, benchmark] = await Promise.all([
     readRulesVersion(),
     benchmarkOnDate(provider, input.currency, date, today),
@@ -169,7 +156,7 @@ export async function recordOwnerDecision(
   const originFrom = (related: Decision | undefined): DecisionOrigin => input.origin ?? originOf(related);
 
   let decisions: Decision[];
-  /** A deposit, a withdrawal or a conversion: the cash the store moves while it exists. */
+  /** A deposit or a withdrawal: the cash the store moves while it exists. */
   let cashFlow: (readonly [Currency, number])[] | undefined;
   switch (input.type) {
     case "adjust_stop": {
@@ -184,28 +171,6 @@ export async function recordOwnerDecision(
           price: input.price,
           stop: input.stop,
           related_id: proposal?.id,
-        }),
-      ];
-      break;
-    }
-    case "fx_conversion": {
-      const { costs, fx_rate } = conversion!;
-      // What arrived in the other silo: the owner's figure, or the amount net of the fee at the rate (the same two
-      // facts the log line is made of).
-      const arrived = input.received ?? (input.amount! - costs) * fx_rate;
-      cashFlow = [
-        [input.currency, -input.amount!],
-        [input.currency === "EUR" ? "USD" : "EUR", arrived],
-      ];
-      decisions = [
-        buildDecision({
-          ...common,
-          type: "fx_conversion",
-          ticker: null,
-          origin: "propietario",
-          amount: input.amount,
-          costs,
-          fx_rate,
         }),
       ];
       break;

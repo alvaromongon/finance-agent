@@ -96,6 +96,12 @@ trail, never retried. It awaits an answer, named in every digest of the [heartbe
 replaces it (`replaces: <file>` at its top) or discards it (a `discard` [command](#command) with `file: <file>`). A
 batch that depends on it fails its own validation.
 
+### Conversion
+
+Cash moved from one [silo](#silo) to the other: the `convert` [command](#command) takes an amount out of one currency
+and gives the other what arrived, at a rate the owner got, in one step (both silos change or neither). It is the only
+way to convert, and it writes no line of the decision log.
+
 ### Stop
 
 The price at which a position is closed to cap its loss. A position has one stop, set or moved by the

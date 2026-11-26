@@ -199,6 +199,96 @@ describe("inbox:check", () => {
     );
   });
 
+  describe("a conversion between the silos (#135)", () => {
+    const CONVERT = (amount: number, over = "") =>
+      `command: convert\namount: ${amount} EUR\nreceived: ${amount * 1.2} USD${over}`;
+    const lineOf = (lines: string[], n: number) => lines.find((l) => l.includes(`command ${n},`));
+
+    it("is valid in a batch with a deposit and a buy that spends the converted cash", async () => {
+      // 500 USD cannot pay 10 x 100 USD; 1000 EUR + 100 deposited, 1100 converted at 1.2 gives 1320 USD more.
+      const dear = "command: buy\nticker: TCK\ndate: 2026-09-15\nunits: 10\nprice: 100 USD";
+      await drop("a.yaml", batch("command: deposit\namount: 100 EUR", CONVERT(1100), dear));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+      await drop("a.yaml", batch(dear));
+      assert.equal((await checkInbox()).exitCode, 1, "without the conversion the buy is refused");
+    });
+
+    it("is refused with its position when the source silo lacks the cash the commands before it left", async () => {
+      await drop("a.yaml", batch("command: withdrawal\namount: 900 EUR", CONVERT(200)));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 1);
+      assert.match(
+        lines[0],
+        /^inbox\/a\.yaml: command 2, line 5: the conversion of 200\.00 EUR exceeds the available cash of 100\.00 EUR$/,
+      );
+    });
+
+    it("is refused for the same currency on both sides and for costs above the amount", async () => {
+      await drop("a.yaml", batch("command: convert\namount: 100 EUR\nreceived: 100 EUR"));
+      assert.match(
+        (await checkInbox()).lines[0],
+        /^inbox\/a\.yaml: command 1, line 3: a conversion needs two currencies/,
+      );
+      await drop("a.yaml", batch("command: convert\namount: 10 EUR\nrate: 1.1\ncosts: 11 EUR"));
+      assert.match(
+        (await checkInbox()).lines[0],
+        /^inbox\/a\.yaml: command 1, line 3: the costs of 11\.00 EUR are not below the amount of 10\.00 EUR/,
+      );
+    });
+
+    it("a refused conversion leaves the cash of both silos unknown, so the commands after it are not checked", async () => {
+      await drop(
+        "a.yaml",
+        batch(CONVERT(5000), "command: withdrawal\namount: 99999 USD", "command: withdrawal\namount: 99999 EUR"),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /the conversion of 5000\.00 EUR exceeds the available cash/);
+      assert.match(lineOf(lines, 2)!, /not checked: command 1 was refused, so the USD cash and lots it would change/);
+      assert.match(lineOf(lines, 3)!, /not checked: command 1 was refused, so the EUR cash and lots it would change/);
+    });
+
+    it("one that does not read blocks both silos, whichever currency it was written in", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: convert\namount: 100 EUR",
+          "command: withdrawal\namount: 99999 USD",
+          "command: withdrawal\namount: 99999 EUR",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 2)!, /not checked: command 1 could not be read/);
+      assert.match(lineOf(lines, 3)!, /not checked: command 1 could not be read/);
+    });
+
+    it("one blocked by a refusal in a single silo is not checked, and blocks the other silo too", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: withdrawal\namount: 99999 EUR", CONVERT(10), "command: withdrawal\namount: 99999 USD"),
+      );
+      const { lines } = await checkInbox();
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 was refused, so the EUR and USD cash it would change is unknown/,
+      );
+      assert.match(lineOf(lines, 3)!, /not checked: command 2 was not checked/);
+    });
+
+    it("what a rejected file before it would have changed explains a refusal, so the command is not checked", async () => {
+      await drop("a.yaml", batch("command: withdrawal\namount: 900 EUR\nbogus: 1"));
+      await drop("b.yaml", batch(CONVERT(1500)));
+      const { lines } = await checkInbox();
+      assert.match(
+        lineOf(
+          lines.filter((l) => l.startsWith("inbox/b")),
+          1,
+        )!,
+        /not checked: depends on inbox\/a\.yaml/,
+      );
+    });
+  });
+
   it("reports every error of the batch, not only the first: command, line and reason", async () => {
     await drop(
       "a.yaml",

@@ -24,6 +24,7 @@ import type {
   Buy,
   EntryContext,
   ClearStop,
+  Conversion,
   Command,
   OpenedLot,
   OpenedLots,
@@ -107,6 +108,77 @@ const saleOf = (over: Partial<Sale<"EUR">> = {}): Sale<"EUR"> => ({
 });
 
 describe("inbox handlers", () => {
+  describe("convert (#135)", () => {
+    const conversion = (over: Partial<Conversion> = {}): Conversion => ({
+      kind: "convert",
+      from: "EUR",
+      to: "USD",
+      amount: eur(100),
+      received: usd(116),
+      ...over,
+    });
+
+    it("moves cash out of one silo and into the other in one step", () => {
+      const state = ok(stateOf({ eurCash: 1000, usdCash: 500 }), conversion());
+      assert.equal(state.EUR.cash, 900);
+      assert.equal(state.USD.cash, 616);
+    });
+
+    it("works out what arrives from the rate and the costs: (amount - costs) x rate, to the cent", () => {
+      const state = ok(stateOf(), conversion({ received: undefined, rate: 1.17, costs: eur(0.8) }));
+      assert.equal(state.EUR.cash, 900);
+      assert.equal(state.USD.cash, 500 + 116.06); // 99.20 x 1.17 = 116.064
+    });
+
+    it("moves USD into EUR as well, and moves the total cash the portfolio tells", () => {
+      const state = stateOf();
+      const withTotal = { ...state, USD: { ...state.USD, totalCash: usd(520) } };
+      const after = ok(withTotal, conversion({ from: "USD", to: "EUR", amount: usd(200), received: eur(180) }));
+      assert.equal(after.USD.cash, 300);
+      assert.equal(after.USD.totalCash, 320);
+      assert.equal(after.EUR.cash, 1180);
+    });
+
+    it("refuses the same currency on both sides", () => {
+      assert.match(
+        reason(stateOf(), conversion({ to: "EUR", received: eur(100) })),
+        /a conversion needs two currencies/,
+      );
+    });
+
+    it("refuses an amount that is not positive, and a source silo without enough cash", () => {
+      assert.match(reason(stateOf(), conversion({ amount: eur(0) })), /amount greater than zero/);
+      assert.match(
+        reason(stateOf({ eurCash: 50 }), conversion()),
+        /the conversion of 100\.00 EUR exceeds the available cash of 50\.00 EUR/,
+      );
+    });
+
+    it("refuses costs not below the amount: nothing would arrive", () => {
+      for (const costs of [eur(100), eur(150)]) {
+        assert.match(
+          reason(stateOf(), conversion({ received: undefined, rate: 1.1, costs })),
+          /the costs of \d+\.\d\d EUR are not below the amount of 100\.00 EUR converted: nothing would reach the USD silo/,
+        );
+      }
+    });
+
+    it("refuses what arrives as nothing, a missing or a doubled way of saying it, and a silo the portfolio lacks", () => {
+      assert.match(reason(stateOf(), conversion({ received: undefined, rate: 0.00001 })), /delivers nothing/);
+      assert.match(reason(stateOf(), conversion({ received: undefined })), /"received" or with "rate"/);
+      assert.match(reason(stateOf(), conversion({ rate: 1.1 })), /"received" or with "rate"/);
+      const { USD: _usd, ...eurOnly } = stateOf();
+      assert.match(reason(eurOnly, conversion()), /there is no USD silo in the portfolio/);
+    });
+
+    it("refuses an amount too large to count instead of crashing", () => {
+      assert.match(
+        reason(stateOf({ eurCash: 1e15 }), conversion({ amount: eur(1e15), received: undefined, rate: 1e300 })),
+        /too large to count/,
+      );
+    });
+  });
+
   describe("what the handlers are run with", () => {
     it("`opened` has no default: a caller that leaves it out does not compile (found in #151)", () => {
       const withoutOpened = {

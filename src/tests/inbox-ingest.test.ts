@@ -203,6 +203,41 @@ describe("inbox:ingest", () => {
     });
   });
 
+  describe("a conversion between the silos (#135)", () => {
+    const CONVERT = "command: convert\namount: 1100 EUR\nreceived: 1320 USD\ncosts: 5 EUR";
+    const KO_BUY = "command: buy\nticker: KO\ndate: 2026-09-15\nunits: 10\nprice: 100 USD";
+
+    it("moves the cash of both silos in one write: a deposit, a conversion and a buy that spends the converted cash", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 100 EUR", CONVERT, KO_BUY));
+      const result = await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"));
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const doc = JSON.parse(await storeText());
+      assert.equal(doc.silos.EUR.cash, "0.00 EUR"); // 1000 + 100 - 1100
+      assert.equal(doc.silos.USD.cash, "820.00 USD"); // 500 + 1320 - 10 x 100
+      assert.equal(doc.silos.EUR.synced_at, "2026-11-12T09:00:00.000Z");
+      assert.equal(doc.silos.USD.synced_at, "2026-11-12T09:00:00.000Z");
+      assert.deepEqual(await ls("inbox", "applied"), ["a.yaml"]);
+    });
+
+    it("applies all or nothing: a batch whose last command fails leaves both silos as they were", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 1 EUR"));
+      await inbox.ingestInbox();
+      const stored = await storeText();
+      await drop("b.yaml", batch(CONVERT, "command: withdrawal\namount: 99999 USD"));
+      const result = await inbox.ingestInbox();
+      assert.equal(result.exitCode, 1);
+      assert.equal(await storeText(), stored);
+      assert.deepEqual(await ls("inbox", "rejected"), ["b.yaml", "b.yaml.errors.txt"]);
+    });
+
+    it("writes no log line: a conversion is state, not a trade", async () => {
+      await drop("a.yaml", batch("command: convert\namount: 100 EUR\nrate: 1.17\ncosts: 1 EUR"));
+      assert.equal((await inbox.ingestInbox()).exitCode, 0);
+      assert.deepEqual(await log(), []);
+      assert.equal(JSON.parse(await storeText()).silos.USD.cash, "615.83 USD"); // 99 x 1.17 = 115.83
+    });
+  });
+
   describe("a refused batch", () => {
     it("changes nothing: a batch that fails on its last command leaves the store byte-identical", async () => {
       await drop("a-clean.yaml", batch("command: deposit\namount: 1 EUR"));

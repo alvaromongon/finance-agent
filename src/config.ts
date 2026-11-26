@@ -237,7 +237,6 @@ export const config = {
      * The 0.8% weekend and holiday fee cannot be inferred from a date without a
      * time: in that case the owner gives `costs` (ADR-0009 §7).
      */
-    fxConversionPct: optionalNumber("BROKER_FX_CONVERSION_PCT", "0.5"),
   },
   // Accumulating ETF per silo: shadow portfolio, regime and relative
   // strength (ADR-0009). The owner's choice, not a rule: it comes from the

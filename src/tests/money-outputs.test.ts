@@ -71,16 +71,10 @@ const fakeProvider = {
 
 // A buy and a sale are not told to `decision:record` any more (#152): the inbox writes their numbers (the sharing of a
 // sale over its lots is tested in portfolio-lots.test.ts and inbox-ingest.test.ts). What this pins is what
-// `decision:record` still writes: a deposit and a currency conversion.
+// `decision:record` still writes: a deposit.
 const EXPECTED: unknown = {
-  out: [
-    [["deposit", 123.45, null, null, null, null, null, null]],
-    [["fx_conversion", 100, 0.8, null, null, null, null, null]],
-  ],
-  logNumbers: [
-    ["deposit", 123.45, null, null, null, null, null, null],
-    ["fx_conversion", 100, 0.8, null, null, null, null, null],
-  ],
+  out: [[["deposit", 123.45, null, null, null, null, null, null]]],
+  logNumbers: [["deposit", 123.45, null, null, null, null, null, null]],
   cash: ["| Available cash | 1000.00 |", "| Available cash | 1000.00 |"],
 };
 
@@ -110,10 +104,9 @@ describe("money numbers written by decision:record (pinned before #79)", () => {
     await rm(vaultDir, { recursive: true, force: true });
   });
 
-  it("a deposit and a conversion", async () => {
+  it("a deposit", async () => {
     const out: unknown[] = [];
     out.push(nums(await run({ type: "deposit", currency: "EUR", amount: 123.45 })));
-    out.push(nums(await run({ type: "fx_conversion", currency: "EUR", amount: 100, fx_rate: 1.17, costs: 0.8 })));
     const log = (await readFile(join(vaultDir, "logs", "decisions.jsonl"), "utf8"))
       .trim()
       .split("\n")
