@@ -225,7 +225,7 @@ are possible.
 | `npm run outbox:send`                   | Sends the queued emails (relay)                       |
 | `npm run smoke-test`                    | Connectivity check                                    |
 
-`decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit` or `withdrawal`; a buy, a sale and a currency conversion are no longer recorded there but with the `buy`, `sale` and `convert` commands of a batch in `inbox/`. The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
+`decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit` or `withdrawal`; a buy, a sale and a currency [conversion](docs/glossary.md#conversion) are no longer recorded there but with the `buy`, `sale` and `convert` commands of a batch in `inbox/`. The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
 gives the JSON for each and the order that keeps the P&L right. What to delete, move and archive
 in `logs/`, and how `DECISIONS_ARCHIVE_DIR` reads old quarters back: [Log retention](docs/log-retention.md).
 

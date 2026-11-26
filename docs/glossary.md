@@ -100,7 +100,7 @@ batch that depends on it fails its own validation.
 
 Cash moved from one [silo](#silo) to the other: the `convert` [command](#command) takes an amount out of one currency
 and gives the other what arrived, at a rate the owner got, in one step (both silos change or neither). It is the only
-way to convert, and it writes no line of the decision log.
+way to convert, and it writes an `fx_conversion` line of the decision log, which the [shadow portfolio](#shadow-portfolio) replays.
 
 ### Stop
 

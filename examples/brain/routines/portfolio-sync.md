@@ -25,7 +25,7 @@ Every event at the broker is told to the engine through one of two doors, and no
 | A stop adjustment you made after a proposal | `npm run decision:record` for the log line, and a `set_stop` command in a batch for the stop    | the log line only                                                                      |
 
 `decision:record` refuses a buy and a sale: they are told with a `buy` or a `sale` command in a batch, the only way a
-trade is recorded; it refuses a currency conversion too, which is the `convert` command of a batch. The `deposit`, `withdrawal` and `convert` commands of the inbox change the cash and write no log line; a flow
+trade is recorded; it refuses a currency [conversion](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#conversion) too, which is the `convert` command of a batch. The `convert` command writes its `fx_conversion` line; the `deposit` and `withdrawal` commands of the inbox change the cash and write no log line, while a flow
 told to `decision:record` writes its line, which the
 [shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio) needs to
 buy its benchmark with every flow on its own date. Use one door for a flow, never both: the cash would move twice.

@@ -218,7 +218,7 @@ them. It needs one history request per position with a stop; without ATR the pos
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
      if delivery fails).
 - **Steps (owner narration)**: `decision:record` records what the owner narrates that is not a trade: a stop
-  adjustment (`adjust_stop`), a deposit or a withdrawal. **A currency conversion is no longer recorded here (#135)**:
+  adjustment (`adjust_stop`), a deposit or a withdrawal. **A currency [conversion](glossary.md#conversion) is no longer recorded here (#135)**:
   `fx_conversion` is refused, with a message that names the `convert` command of the [inbox](#apply-the-inbox), the
   only way to convert cash between the silos. **A buy and a sale
   are not recorded here any more (#152)**: `entry` and `exit` are refused, with a message that names the `buy` and
@@ -440,11 +440,11 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      the batches before), its own proceeds (`units × price`) and its origin (`sistema` after a `sell` proposal of the system
      within 10 days, `propietario` otherwise). A `convert` changes the cash of both silos in one step, from the cash the
      commands before it left (a conversion refused leaves the cash of both silos unknown to the commands after it); it
-     opens no lot and writes no line of the log.
+     opens no lot and writes its `fx_conversion` line.
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
-     with the hash of its file), and the decision-log lines of their trades (an `entry` per buy and an `exit` per lot
-     sold, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
+     with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
+     sold and an `fx_conversion` per conversion, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
      from the store (the store is written first, the view after it).
   5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
      (command position, line, reason), never over a file already there. A file in `rejected/` is never read as a

@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { CURRENCIES, type Currency, type Lot } from "../types.js";
 import type { DecisionOrigin } from "../decisions.js";
 import type { Ticker } from "../ticker.js";
-import type { Money } from "../money.js";
+import { zero, type Money } from "../money.js";
+import { round } from "./round.js";
 import { uniqueDecisionIds } from "./decision-id.js";
 import type { SaleShare } from "./portfolio-lots.js";
 import {
@@ -112,8 +113,22 @@ export interface SaleTrade {
   exits: { share: SaleShare; lot: Lot }[];
 }
 
-/** What a clean batch bought and sold, in order: what `inbox:ingest` writes to the decision log. */
-export type Trade = BuyTrade | SaleTrade;
+/** A conversion of a clean batch: `amount` of `currency` (the silo it came from) left, `costs` included. */
+export interface ConversionTrade {
+  kind: "convert";
+  command: number;
+  line: number;
+  currency: Currency;
+  /** YYYY-MM-DD, when the command gave it: the line takes the day of the run otherwise. */
+  date?: string;
+  amount: Money;
+  costs: Money;
+  /** The other currency per unit of `currency`, before the fee. */
+  fxRate: number;
+}
+
+/** What a clean batch bought, sold and converted, in order: what `inbox:ingest` writes to the decision log. */
+export type Trade = BuyTrade | SaleTrade | ConversionTrade;
 
 /** A rejected batch a clean batch gave up for good: replaced (`replaces:`) or discarded (`discard`). */
 export interface Resolved {
@@ -216,6 +231,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     read: Extract<Command, { kind: "buy" }>;
     relatedId?: string;
   }[] = [];
+  const converted: { command: number; line: number; read: Extract<Command, { kind: "convert" }> }[] = [];
   const sold: {
     command: number;
     line: number;
@@ -240,6 +256,16 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         ...(b.read.costs !== undefined ? { costs: b.read.costs } : {}),
         lot: lastSeen.get(b.key)!,
         ...(b.relatedId !== undefined ? { relatedId: b.relatedId } : {}),
+      })),
+      ...converted.map(({ command, line, read }): Trade => ({
+        kind: "convert",
+        command,
+        line,
+        currency: read.from,
+        ...(read.date !== undefined ? { date: read.date } : {}),
+        amount: read.amount,
+        costs: read.costs ?? zero(read.from),
+        fxRate: read.rate ?? round(read.received! / (read.amount - (read.costs ?? 0)), 6),
       })),
       ...sold.map((s): Trade => ({
         kind: "sale",
@@ -432,6 +458,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         ...(result.proposal !== undefined ? { relatedId: result.proposal } : {}),
       });
     }
+    if (command.kind === "convert") converted.push({ command: position, line: read.line, read: command });
     if (result.exits !== undefined && command.kind === "sale") {
       takeEntryCosts(entryCostsTaken, result.exits, command.currency);
       sold.push({

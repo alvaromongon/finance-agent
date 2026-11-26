@@ -232,11 +232,6 @@ export const config = {
     fractionalShares: optionalBoolean("BROKER_FRACTIONAL_SHARES", true),
     /** Minimum order amount with fractional shares, in the silo currency. */
     minOrderValue: optionalNumber("BROKER_MIN_ORDER_VALUE", "10"),
-    /**
-     * Currency exchange between accounts: the default `decision:record` fee.
-     * The 0.8% weekend and holiday fee cannot be inferred from a date without a
-     * time: in that case the owner gives `costs` (ADR-0009 §7).
-     */
   },
   // Accumulating ETF per silo: shadow portfolio, regime and relative
   // strength (ADR-0009). The owner's choice, not a rule: it comes from the

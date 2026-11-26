@@ -1,5 +1,5 @@
 // The decision-log lines of the trades a clean batch applied (#132): one `entry` per buy and one `exit` per lot a sale
-// touched, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
+// touched and one `fx_conversion` per conversion, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
 // recorded; the lines are telemetry: the state is what the batch changed. A trade that follows a proposal of the
 // system carries its origin (`sistema`), so it stays in the system's expectancy (ADR-0009 §8). Pure; the ids of the exits come from the one
 // source of decision ids (`uniqueDecisionIds`).
@@ -13,6 +13,8 @@ export interface DecisionContext {
   rulesVersion: string;
   /** Every id taken: the history's and the lots'. The ids of the exits are added to it. */
   takenIds: Set<string>;
+  /** The day of the run, YYYY-MM-DD: the date of a conversion that gave none. */
+  today: string;
 }
 
 /**
@@ -24,6 +26,23 @@ export interface DecisionContext {
 export function decisionsOf(trades: readonly Trade[], text: string, context: DecisionContext): Decision[] {
   const nextId = uniqueDecisionIds(context.takenIds, createHash("sha256").update(text).digest("hex"));
   return trades.flatMap((trade): Decision[] => {
+    // A conversion moves cash between the silos (ADR-0009 §1): the line is what the shadow portfolio replays.
+    if (trade.kind === "convert") {
+      return [
+        buildDecision({
+          date: trade.date ?? context.today,
+          ticker: null,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: "fx_conversion",
+          amount: trade.amount,
+          costs: trade.costs,
+          fx_rate: trade.fxRate,
+        }),
+      ];
+    }
     const common = {
       date: trade.date,
       ticker: trade.ticker,

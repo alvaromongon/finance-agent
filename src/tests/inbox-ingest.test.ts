@@ -230,11 +230,55 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await ls("inbox", "rejected"), ["b.yaml", "b.yaml.errors.txt"]);
     });
 
-    it("writes no log line: a conversion is state, not a trade", async () => {
-      await drop("a.yaml", batch("command: convert\namount: 100 EUR\nrate: 1.17\ncosts: 1 EUR"));
-      assert.equal((await inbox.ingestInbox()).exitCode, 0);
+    it("writes one fx_conversion line per conversion, so the shadow portfolio sees it (ADR-0009 §1)", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: convert\namount: 100 EUR\nrate: 1.17\ncosts: 1 EUR\ndate: 2026-11-10",
+          "command: convert\namount: 200 EUR\nreceived: 234 USD",
+        ),
+      );
+      assert.equal((await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"))).exitCode, 0);
+      assert.equal(JSON.parse(await storeText()).silos.USD.cash, "849.83 USD"); // 500 + 99 x 1.17 + 234
+      const lines = (await log()).map((d) => ({
+        type: d.type,
+        date: d.date,
+        ticker: d.ticker,
+        currency: d.currency,
+        amount: d.amount,
+        costs: d.costs,
+        fx_rate: d.fx_rate,
+        source: d.source,
+      }));
+      assert.deepEqual(lines, [
+        {
+          type: "fx_conversion",
+          date: "2026-11-10",
+          ticker: null,
+          currency: "EUR",
+          amount: 100,
+          costs: 1,
+          fx_rate: 1.17,
+          source: "portfolio-sync",
+        },
+        // No date: the day of the run. The rate is what arrived over what was converted, before the fee (here no fee).
+        {
+          type: "fx_conversion",
+          date: "2026-11-12",
+          ticker: null,
+          currency: "EUR",
+          amount: 200,
+          costs: 0,
+          fx_rate: 1.17,
+          source: "portfolio-sync",
+        },
+      ]);
+    });
+
+    it("writes no line for a batch that is refused", async () => {
+      await drop("a.yaml", batch(CONVERT, "command: withdrawal\namount: 99999 USD"));
+      assert.equal((await inbox.ingestInbox()).exitCode, 1);
       assert.deepEqual(await log(), []);
-      assert.equal(JSON.parse(await storeText()).silos.USD.cash, "615.83 USD"); // 99 x 1.17 = 115.83
     });
   });
 

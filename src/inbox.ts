@@ -276,7 +276,9 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
   if (clean.length > 0) {
     const taken = new Set(history.map((d) => d.id));
     for (const silo of Object.values(run.state)) for (const lot of silo.lots) taken.add(lot.entryId);
-    const lines = clean.flatMap((c) => decisionsOf(c.trades, c.text!, { rulesVersion, takenIds: taken }));
+    const lines = clean.flatMap((c) =>
+      decisionsOf(c.trades, c.text!, { rulesVersion, takenIds: taken, today: now.toISOString().slice(0, 10) }),
+    );
     committed = {
       ...store,
       silos: Object.fromEntries(
