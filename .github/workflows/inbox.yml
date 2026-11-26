@@ -82,8 +82,9 @@ jobs:
           STATE_COMMIT: git
           STATE_COMMIT_BRANCH: ${{ github.ref_name }}
           STATE_COMMIT_ATTEMPTS: ${{ inputs.attempts }}
-          # The credential for the `git fetch` and `git push` of that commit, and for no other process: the engine takes it out
-          # of its environment when it builds the remote (src/state-commit.ts), and GitHub masks it in the log.
+          # The credential for the `git fetch` and `git push` of that commit: the engine takes it out of its own environment
+          # when it builds the remote (src/state-commit.ts), so of the processes the engine spawns, only those two get it.
+          # GitHub masks it in the log.
           STATE_COMMIT_TOKEN: ${{ github.token }}
           STATE_COMMIT_SERVER_URL: ${{ github.server_url }}
         run: npx tsx src/inbox.ts ingest

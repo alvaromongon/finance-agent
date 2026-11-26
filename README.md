@@ -166,8 +166,8 @@ refreshing prices, and `decision:record`. Any trigger is valid as long as the wr
 - **`inbox:ingest` commits the state as a [compare-and-swap](docs/glossary.md#compare-and-swap)** (`STATE_COMMIT=git`,
   which `inbox.yml` sets), retrying at most `STATE_COMMIT_ATTEMPTS` times (3); a run that keeps losing leaves its
   batches in `inbox/` for the next run and its output says so. `inbox.yml` is therefore the one workflow of the engine
-  that commits itself and needs `contents: write`; its credential reaches only the engine's `git fetch` and
-  `git push` of that commit, and no other process of the run.
+  that commits itself and needs `contents: write`; its credential (`STATE_COMMIT_TOKEN`) is read once and
+  removed from the engine's environment, so of the processes the engine spawns, only `git fetch` and `git push` get it.
 - **`decision:record` does the same only with `STATE_COMMIT=git`, and no workflow of the engine or of the examples runs
   it**: you run it by hand or from the portfolio-sync routine, where it leaves its files in the working copy for you to
   commit (`git push` refuses a commit made over a stale head, so a write is never overwritten).
