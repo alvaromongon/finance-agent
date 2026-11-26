@@ -102,6 +102,13 @@ Cash moved from one [silo](#silo) to the other: the `convert` [command](#command
 and gives the other what arrived, at a rate the owner got, in one step (both silos change or neither). It is the only
 way to convert, and it writes an `fx_conversion` line of the decision log, which the [shadow portfolio](#shadow-portfolio) replays.
 
+### Corporate action
+
+An event of a security that changes the units and prices of a [lot](#lot) without any trade by the owner. Today only a
+split (or reverse split) is one: the `split` [command](#command) multiplies the units of every open lot of a ticker by
+the ratio and divides its entry price and stop by it, so what was invested, the entry costs and [R](#r) do not change,
+and it writes a `split` line of the decision log. A spin-off or a merger is not a command yet.
+
 ### Stop
 
 The price at which a position is closed to cap its loss. A position has one stop, set or moved by the

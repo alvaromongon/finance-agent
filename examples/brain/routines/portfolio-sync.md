@@ -20,7 +20,7 @@ Every event at the broker is told to the engine through one of two doors, and no
 
 | Event                                      | Door                                                                                           | The engine writes                                                                      |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Buy, sale, a stop set, moved or removed, a currency conversion | a batch in `inbox/` (`buy`, `sale`, `set_stop`, `clear_stop`, `convert`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the entry and exit lines of the log |
+| Buy, sale, a stop set, moved or removed, a currency conversion, a split | a batch in `inbox/` (`buy`, `sale`, `set_stop`, `clear_stop`, `convert`, `split`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the entry and exit lines of the log |
 | Deposit, withdrawal                        | `npm run decision:record`, the event as JSON on stdin                                          | the [decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log) (`logs/decisions.jsonl`; never edit it by hand) and the cash of the store |
 | A stop adjustment you made after a proposal | `npm run decision:record` for the log line, and a `set_stop` command in a batch for the stop    | the log line only                                                                      |
 
@@ -31,8 +31,9 @@ told to `decision:record` writes its line, which the
 buy its benchmark with every flow on its own date. Use one door for a flow, never both: the cash would move twice.
 
 So you never edit position rows. What you do is **reconcile**: after the events, compare each position's `Volume` with
-your broker. If they differ (a split, a partial fill, a trade you never recorded), tell the engine the missing trade in
-a batch, so that the `Units` of a ticker's lots add up to the broker's figure.
+your broker. If they differ (a split, a partial fill, a trade you never recorded), tell the engine in a batch (a
+`split` command for a split, the missing trade otherwise), so that the `Units` of a ticker's lots add up to the
+broker's figure.
 
 The engine rebuilds each [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo)'s
 value backwards from today's portfolio through the logged events, to compare you with the shadow portfolio.
@@ -108,6 +109,28 @@ per unit of the first, before the fee), not both. `costs` is the fee, in the cur
 it. The command takes the amount from the source silo and gives the other what arrived, both or neither; it is
 refused if the costs are not below the amount or if the source silo lacks the cash after the commands before it, so
 put it before the buys that spend the converted cash.
+
+A split or a reverse split of a ticker you hold is a `split` command: `ratio` is `<new> for <old>`, the units after the
+split for each unit before it (`4 for 1`; `1 for 10` for a reverse split), and `date` is the day it took effect. It
+scales every open lot of the ticker, and its position, in every silo that holds it: units multiplied, entry price and
+stop divided, so what you invested and your R do not change. Send it once, after the last trade you made before the
+split and before any sale after it (a sale after the split is told in the new units, at the new price). It is refused
+if a lot of the ticker was bought after `date`, and if a reverse split would leave a fraction of a unit: sell the
+fraction first, which is how the cash in lieu is settled.
+
+```yaml
+schema_version: 1
+commands:
+  - command: split
+    ticker: NVDA
+    date: 2026-06-10
+    ratio: 10 for 1
+  - command: sale
+    ticker: NVDA
+    date: 2026-06-12
+    units: 20
+    price: 120 USD
+```
 
 ```yaml
 schema_version: 1

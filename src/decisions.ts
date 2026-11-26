@@ -57,6 +57,7 @@ export const DECISION_TYPES = [
   "deposit",
   "withdrawal",
   "fx_conversion",
+  "split",
 ] as const;
 
 export type DecisionOrigin = (typeof DECISION_ORIGINS)[number];
@@ -69,7 +70,7 @@ export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx
 /**
  * What the owner narrates and records with `decision:record`. A buy and a sale (the `entry` and `exit` decisions) are
  * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry. A currency
- * conversion is the `convert` command of the inbox too (#135).
+ * conversion is the `convert` command of the inbox too (#135), and a split is the `split` command (#137).
  */
 export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
@@ -95,6 +96,11 @@ export interface Decision {
   amount?: number;
   /** `fx_conversion`: target currency per unit of source, before fee. */
   fx_rate?: number;
+  /**
+   * `split`: the units after the split per unit before it (4 for a 4 for 1 split, 0.1 for a 1 for 10 reverse split).
+   * The line carries the ticker, the silo (`currency`) whose lots it scaled and the date it took effect (#137).
+   */
+  split_ratio?: number;
   /** Costs in the silo currency (FX fee, transaction tax). */
   costs?: Money;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
@@ -191,6 +197,7 @@ const KNOWN_FIELDS = new Set<string>([
   "regime",
   "amount",
   "fx_rate",
+  "split_ratio",
   "costs",
   "pnl",
   "stop_initial",
@@ -239,6 +246,7 @@ const REQUIRED_NUMBERS: Partial<Record<DecisionType, readonly (keyof Decision)[]
   deposit: ["amount"],
   withdrawal: ["amount"],
   fx_conversion: ["amount", "fx_rate", "costs"],
+  split: ["split_ratio"],
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -355,6 +363,7 @@ export function validateDecision(raw: unknown): Decision {
     "price",
     "amount",
     "fx_rate",
+    "split_ratio",
     "stop_initial",
     "stop",
     "target",
@@ -382,6 +391,7 @@ export function validateDecision(raw: unknown): Decision {
     }
   }
   if (raw.units != null && type !== "entry" && type !== "exit") errors.push("units only goes in entry or exit");
+  if (raw.split_ratio != null && type !== "split") errors.push("split_ratio only goes in split");
   if (raw.pnl != null) {
     if (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl))
       errors.push(`pnl must be a number; got: ${JSON.stringify(raw.pnl)}`);
@@ -700,7 +710,7 @@ export interface OwnerDecisionInput {
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
-  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion";
+  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion" | "split";
 
   if (type === "entry" || type === "exit") {
     errors.push(
@@ -709,6 +719,10 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   } else if (type === "fx_conversion") {
     errors.push(
       `a currency conversion is told to the engine with a convert command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (type === "split") {
+    errors.push(
+      `a split is told to the engine with a split command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
     );
   } else if (!OWNER_TYPES.includes(type)) {
     errors.push(`type must be one of [${OWNER_TYPES.join(", ")}]; got: ${JSON.stringify(raw.type)}`);

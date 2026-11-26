@@ -1,5 +1,5 @@
 // The decision-log lines of the trades a clean batch applied (#132): one `entry` per buy and one `exit` per lot a sale
-// touched and one `fx_conversion` per conversion, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
+// touched, one `fx_conversion` per conversion and one `split` per silo a split scaled, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
 // recorded; the lines are telemetry: the state is what the batch changed. A trade that follows a proposal of the
 // system carries its origin (`sistema`), so it stays in the system's expectancy (ADR-0009 §8). Pure; the ids of the exits come from the one
 // source of decision ids (`uniqueDecisionIds`).
@@ -40,6 +40,21 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
           amount: trade.amount,
           costs: trade.costs,
           fx_rate: trade.fxRate,
+        }),
+      ];
+    }
+    // A split scaled the lots of its ticker in one silo (#137): the line says it, with the ratio and the date it took effect.
+    if (trade.kind === "split") {
+      return [
+        buildDecision({
+          date: trade.date,
+          ticker: trade.ticker,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: "split",
+          split_ratio: trade.ratio,
         }),
       ];
     }

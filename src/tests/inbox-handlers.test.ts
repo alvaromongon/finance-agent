@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildDecision, type Decision } from "../decisions.js";
 import { money } from "../money.js";
-import type { WatchlistEntry } from "../types.js";
+import type { Lot, WatchlistEntry } from "../types.js";
 import { parseTicker as tk, tickerIdPart, type Ticker } from "../ticker.js";
 import {
   applyCommand,
@@ -30,6 +30,7 @@ import type {
   OpenedLots,
   Sale,
   SetStop,
+  Split,
 } from "../utils/inbox-handlers.js";
 import { crossedState, entryContext, lot, stateOf } from "./fixtures/inbox.js";
 
@@ -107,7 +108,161 @@ const saleOf = (over: Partial<Sale<"EUR">> = {}): Sale<"EUR"> => ({
   ...over,
 });
 
+const splitOf = (over: Partial<Split> = {}): Split => ({
+  kind: "split",
+  ticker: tk("SAP.DE"),
+  date: "2026-07-01",
+  ratio: { new: 4, old: 1 },
+  ...over,
+});
+
 describe("inbox handlers", () => {
+  describe("split (#137)", () => {
+    const held = (units: number, over: Omit<Partial<Lot<"EUR">>, "ticker" | "units"> = {}) =>
+      lot("EUR", { ticker: "SAP.DE", units, entryPrice: 100, initialStop: 90, ...over });
+
+    it("multiplies the units of every open lot, divides its entry price and stop, and leaves the amounts alone", () => {
+      const costs = eur(5);
+      const before = stateOf({}, { EUR: [held(10, { entryCosts: costs })] });
+      const after = ok(before, splitOf());
+      const [l] = after.EUR.lots;
+      assert.deepEqual(
+        [l.units, l.entryUnits, l.entryPrice, l.initialStop, l.entryCosts, l.date, l.entryId],
+        [40, 40, 25, 22.5, costs, "2026-06-15", "lot-sap.de"],
+      );
+      // What was invested and R in cents do not change: units x price, units x (price - stop).
+      const [old] = before.EUR.lots;
+      assert.equal(l.units * l.entryPrice, old.units * old.entryPrice);
+      assert.equal(l.units * (l.entryPrice - l.initialStop!), old.units * (old.entryPrice - old.initialStop!));
+      assert.equal(after.EUR.cash, before.EUR.cash);
+      assert.equal(after.USD, before.USD, "a silo that holds nothing of the ticker is the very same object");
+    });
+
+    it("moves the position with its lots: volume, average price, current price and the stop; the P/L stays", () => {
+      const before = stateOf({}, { EUR: [held(10)] });
+      const [p] = before.EUR.positions;
+      const withPrice = { ...before, EUR: { ...before.EUR, positions: [{ ...p, currentPrice: 120, pl: eur(200) }] } };
+      const [after] = ok(withPrice, splitOf()).EUR.positions;
+      assert.deepEqual(
+        [after.volume, after.avgPrice, after.currentPrice, after.stopLoss, after.pl],
+        [40, 25, 30, 22.5, eur(200)],
+      );
+    });
+
+    it("keeps a position with no stop without one", () => {
+      const state = stateOf({}, { EUR: [held(10, { initialStop: null })] });
+      const after = ok(state, splitOf());
+      assert.equal(after.EUR.positions[0].stopLoss, null);
+      assert.equal(after.EUR.lots[0].initialStop, null);
+    });
+
+    it("scales a reverse split: 1 for 10 gives a tenth of the units at ten times the price", () => {
+      const after = ok(
+        stateOf({}, { EUR: [held(100, { entryPrice: 10, initialStop: 9 })] }),
+        splitOf({ ratio: { new: 1, old: 10 } }),
+      );
+      const [l] = after.EUR.lots;
+      assert.deepEqual([l.units, l.entryUnits, l.entryPrice, l.initialStop], [10, 10, 100, 90]);
+      assert.deepEqual([after.EUR.positions[0].volume, after.EUR.positions[0].avgPrice], [10, 100]);
+    });
+
+    it("scales a lot that was partly sold in the same proportion, and every lot of the ticker in the order it had", () => {
+      const state = stateOf(
+        {},
+        {
+          EUR: [
+            held(6, { entryId: "old", entryUnits: 10, date: "2026-05-01" }),
+            lot("EUR", { ticker: "OTHER", units: 3, entryId: "other" }),
+            held(4, { entryId: "new", date: "2026-06-20", entryPrice: 120, initialStop: null }),
+          ],
+        },
+      );
+      const after = ok(state, splitOf({ ratio: { new: 3, old: 2 } }));
+      assert.deepEqual(
+        after.EUR.lots.map((l) => [l.entryId, l.units, l.entryUnits, l.entryPrice]),
+        [
+          ["old", 9, 15, (100 * 2) / 3],
+          ["other", 3, 3, 100],
+          ["new", 6, 6, 80],
+        ],
+      );
+      const sap = after.EUR.positions.find((p) => p.ticker === tk("SAP.DE"))!;
+      assert.equal(sap.volume, 15);
+    });
+
+    it("splits the ticker in each silo that holds it", () => {
+      const state = stateOf({}, { EUR: [held(10)], USD: [lot("USD", { ticker: "SAP.DE", units: 4, entryPrice: 50 })] });
+      const result = applyCommand(state, splitOf(), ctx({}, state));
+      assert.ok("state" in result);
+      assert.deepEqual([result.state.EUR!.lots[0].units, result.state.USD!.lots[0].units], [40, 16]);
+      assert.deepEqual(result.split, { silos: ["EUR", "USD"], lots: ["EUR/lot-sap.de", "USD/lot-sap.de"] });
+    });
+
+    it("is refused for a ticker with no open lot, naming it", () => {
+      assert.match(reason(stateOf(), splitOf()), /cannot split SAP\.DE: there is no open lot of it in the portfolio/);
+      assert.match(
+        reason(stateOf({}, { EUR: [lot("EUR", { ticker: "OTHER", units: 3 })] }), splitOf()),
+        /cannot split SAP\.DE: there is no open lot of it/,
+      );
+    });
+
+    it("is refused for a ratio of 1, zero or negative, whoever built the command", () => {
+      const state = stateOf({}, { EUR: [held(10)] });
+      assert.match(reason(state, splitOf({ ratio: { new: 2, old: 2 } })), /a ratio of 1 changes nothing/);
+      assert.match(reason(state, splitOf({ ratio: { new: 0, old: 1 } })), /split ratio must be greater than zero/);
+      assert.match(reason(state, splitOf({ ratio: { new: 4, old: -1 } })), /split ratio must be greater than zero/);
+      assert.match(
+        reason(state, splitOf({ ratio: { new: Number.NaN, old: 1 } })),
+        /split ratio must be greater than zero/,
+      );
+    });
+
+    it("is refused when units that are whole would stop being whole: the owner settles the fraction with a sale", () => {
+      const state = stateOf({}, { EUR: [held(15, { entryId: "L1" })] });
+      const text = reason(state, splitOf({ ratio: { new: 1, old: 10 } }));
+      assert.match(text, /cannot split SAP\.DE 1 for 10: lot "L1" would be left with 1\.5 units/);
+      assert.match(text, /sell the fraction first/);
+      assert.equal(ok(state, splitOf({ ratio: { new: 1, old: 5 } })).EUR.lots[0].units, 3);
+    });
+
+    it("lets a lot that already holds a fraction keep one", () => {
+      const state = stateOf({}, { EUR: [held(2.5)] });
+      assert.equal(ok(state, splitOf({ ratio: { new: 3, old: 2 } })).EUR.lots[0].units, 3.75);
+    });
+
+    it("refuses the whole split when one silo cannot take it: neither silo changes", () => {
+      const state = stateOf({}, { EUR: [held(10)], USD: [lot("USD", { ticker: "SAP.DE", units: 15, entryId: "U1" })] });
+      assert.match(reason(state, splitOf({ ratio: { new: 1, old: 10 } })), /lot "U1"/);
+    });
+
+    it("is refused when its date is before the oldest lot was bought, or before any lot of the ticker was", () => {
+      const state = stateOf({}, { EUR: [held(10, { date: "2026-06-15" })] });
+      assert.match(
+        reason(state, splitOf({ date: "2026-06-14" })),
+        /cannot split SAP\.DE: its date 2026-06-14 is before the day the oldest open lot was bought \(2026-06-15\)/,
+      );
+      const later = stateOf(
+        {},
+        { EUR: [held(10, { entryId: "a", date: "2026-05-01" }), held(5, { entryId: "b", date: "2026-07-05" })] },
+      );
+      assert.match(
+        reason(later, splitOf({ date: "2026-07-01" })),
+        /cannot split SAP\.DE: lot "b" was bought on 2026-07-05, after the split's date 2026-07-01: it is already at the prices after the split/,
+      );
+    });
+
+    it("accepts a lot bought on the day of the split", () => {
+      const state = stateOf({}, { EUR: [held(10, { date: "2026-07-01" })] });
+      assert.equal(ok(state, splitOf({ date: "2026-07-01" })).EUR.lots[0].units, 40);
+    });
+
+    it("is refused for a silo it cannot read, and ignores a silo the portfolio lacks", () => {
+      const { USD: _usd, ...eurOnly } = stateOf({}, { EUR: [held(10)] });
+      assert.equal(ok(eurOnly as InboxState, splitOf()).EUR.lots[0].units, 40);
+      assert.match(reason(eurOnly, splitOf({ ticker: tk("KO") })), /cannot split KO/);
+    });
+  });
+
   describe("convert (#135)", () => {
     const conversion = (over: Partial<Conversion> = {}): Conversion => ({
       kind: "convert",

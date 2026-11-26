@@ -440,11 +440,18 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      the batches before), its own proceeds (`units × price`) and its origin (`sistema` after a `sell` proposal of the system
      within 10 days, `propietario` otherwise). A `convert` changes the cash of both silos in one step, from the cash the
      commands before it left (a conversion refused leaves the cash of both silos unknown to the commands after it); it
-     opens no lot and writes its `fx_conversion` line.
+     opens no lot and writes its `fx_conversion` line. A `split` (a [corporate action](glossary.md#corporate-action))
+     scales every open lot of its ticker in every silo that holds it (units × new ÷ old, entry price and initial
+     stop ÷ new ÷ old) and the position with them, changes no cash and keeps the order of the lots, so a sale after it
+     sells the adjusted lots first in, first out; a split that would leave a whole number of units fractional, that is
+     dated before a lot of the ticker was bought, or that finds no lot, is refused, and one refused or unread leaves
+     the lots and the stop of its ticker unknown to the commands after it. It writes a `split` line per silo; the
+     entry line of a lot the batch itself opened stays as it was bought, and the lot is a split of it, which the lots
+     check and the evaluation already accept (R does not change).
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
      with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
-     sold and an `fx_conversion` per conversion, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
+     sold, an `fx_conversion` per conversion and a `split` per silo a split scaled, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
      from the store (the store is written first, the view after it).
   5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
      (command position, line, reason), never over a file already there. A file in `rejected/` is never read as a

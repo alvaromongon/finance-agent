@@ -124,6 +124,26 @@ export interface Conversion<F extends Currency = Currency, T extends Currency = 
   date?: string;
 }
 
+/** A split ratio: `new` units after the split for each `old` units before it (4 for 1; 1 for 10 is a reverse split). */
+export interface SplitRatio {
+  new: number;
+  old: number;
+}
+
+/**
+ * A split (or reverse split) of a ticker (#137): the units of every open lot of it are multiplied by `ratio.new / ratio.old`
+ * and its entry price and stop divided by it, in every silo that holds it. It changes no cash, so it has no amount and
+ * no currency (as a `clear_stop`, the silo is the one that holds the ticker). A corporate action other than a split is
+ * a different command (the glossary's *Corporate action*).
+ */
+export interface Split {
+  kind: "split";
+  ticker: Ticker;
+  /** YYYY-MM-DD: the day the split took effect. */
+  date: string;
+  ratio: SplitRatio;
+}
+
 /**
  * Gives up a rejected batch for good (#152): it stays in `inbox/rejected/` as the audit trail and is not named in the
  * digest any more. It changes no cash, lot or stop, so it has no currency.
@@ -135,7 +155,7 @@ export interface Discard {
 }
 
 export type Command<C extends Currency = Currency> =
-  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Discard;
+  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Split | Discard;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -146,8 +166,8 @@ export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
  * (`opened`, see `openedKey`, and `lot`, the lot itself): the batch records those, so a `set_stop` knows which
  * lots are the batch's own and `inbox:ingest` has the lot to write down. A sale says the exit of each lot it
- * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again. A discard
- * says which rejected batch it gave up (`discarded`).
+ * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again. A split says
+ * which silos it changed and which lots it scaled (`split`). A discard says which rejected batch it gave up (`discarded`).
  */
 export type HandlerResult =
   | {
@@ -160,6 +180,8 @@ export type HandlerResult =
       /** A sale: `sistema` when it follows a sell proposal of the system, `propietario` otherwise (ADR-0009 §8). */
       origin?: DecisionOrigin;
       discarded?: string;
+      /** A split: the silos it changed and the lots it scaled (`openedKey`), so the batch can follow the lots it opened. */
+      split?: { silos: readonly Currency[]; lots: readonly string[] };
     }
   | { reason: string };
 
@@ -715,6 +737,104 @@ export function sale<C extends Currency>(
   };
 }
 
+/** True for a whole number of units, within the units tolerance. */
+const isWhole = (units: number): boolean => Math.abs(units - Math.round(units)) <= UNITS_TOLERANCE;
+
+/**
+ * `lot` after a split of `new` units for `old`: the units open and bought are multiplied by it, the entry price and the
+ * initial stop divided, so what was invested (units x price) and R in cents (units x (price - stop)) are the same. The
+ * entry costs are money paid and do not change. Multiplies first and divides last, so a ratio that divides the units
+ * evenly gives them exactly (30 units, 1 for 10: 3, not 3.0000000000000004).
+ */
+export function splitLot<C extends Currency>(lot: Lot<C>, ratio: SplitRatio): Lot<C> {
+  return {
+    ...lot,
+    units: (lot.units * ratio.new) / ratio.old,
+    entryUnits: (lot.entryUnits * ratio.new) / ratio.old,
+    entryPrice: (lot.entryPrice * ratio.old) / ratio.new,
+    initialStop: lot.initialStop === null ? null : (lot.initialStop * ratio.old) / ratio.new,
+  };
+}
+
+/**
+ * Applies a split to every silo that holds the ticker, all or none: a refusal in one silo returns no state. A lot is
+ * scaled whole (open and bought units); a position follows its lots (volume, average price, current price and stop),
+ * its P/L is an amount and stays. Only units that are whole and would stop being so are refused (a reverse split):
+ * the owner settles the cash in lieu of the fraction with a sale (#137).
+ */
+export function split(state: InboxState, command: Split): HandlerResult {
+  const { ticker, date, ratio } = command;
+  // The parser refuses these too, but the handler is also run by whoever builds a command without it (#132).
+  if (!(ratio.new > 0 && ratio.old > 0 && Number.isFinite(ratio.new) && Number.isFinite(ratio.old))) {
+    return refused(`the split ratio must be greater than zero; got: ${ratio.new} for ${ratio.old}`);
+  }
+  if (ratio.new === ratio.old) {
+    return refused(`a ratio of 1 changes nothing: ${ratio.new} for ${ratio.old} is not a split`);
+  }
+  // A silo the portfolio does not have holds nothing. One that fails to read may hold the ticker, so its error is
+  // what the command reports when no silo that reads has the ticker (as `clear_stop` does).
+  const holding: PortfolioSnapshot[] = [];
+  let unreadable: { reason: string } | undefined;
+  for (const currency of CURRENCIES) {
+    if (state[currency] === undefined) continue;
+    const silo = siloOf(state, currency);
+    if (isRefusal(silo)) unreadable ??= silo;
+    else if (silo.lots.some((l) => l.ticker === ticker && l.units > 0)) holding.push(silo);
+  }
+  if (holding.length === 0) {
+    return unreadable ?? refused(`cannot split ${printable(ticker)}: there is no open lot of it in the portfolio`);
+  }
+  const lots = holding.flatMap((silo) => silo.lots.filter((l) => l.ticker === ticker));
+  const oldest = lots.reduce((min, l) => (l.date < min ? l.date : min), lots[0].date);
+  if (date < oldest) {
+    return refused(
+      `cannot split ${printable(ticker)}: its date ${date} is before the day the oldest open lot was bought (${oldest})`,
+    );
+  }
+  const after = lots.find((l) => l.date > date);
+  if (after !== undefined) {
+    return refused(
+      `cannot split ${printable(ticker)}: lot ${quoted(after.entryId)} was bought on ${after.date}, after the split's date ${date}: it is already at the prices after the split`,
+    );
+  }
+  for (const l of lots) {
+    const scaled = splitLot(l, ratio).units;
+    if (isWhole(l.units) && !isWhole(scaled)) {
+      return refused(
+        `cannot split ${printable(ticker)} ${ratio.new} for ${ratio.old}: lot ${quoted(l.entryId)} would be left with ${scaled} units, not a whole number: sell the fraction first (the cash in lieu is settled with a sale)`,
+      );
+    }
+  }
+  let next = state;
+  for (const silo of holding) {
+    const position = (p: Position): Position =>
+      p.ticker !== ticker
+        ? p
+        : {
+            ...p,
+            volume: (p.volume * ratio.new) / ratio.old,
+            avgPrice: (p.avgPrice * ratio.old) / ratio.new,
+            currentPrice: (p.currentPrice * ratio.old) / ratio.new,
+            // A position with no stop (`stopOf`) keeps whatever it holds in its cell.
+            stopLoss: stopOf(p) === null ? p.stopLoss : (p.stopLoss! * ratio.old) / ratio.new,
+          };
+    next = withSilo(next, {
+      ...silo,
+      lots: silo.lots.map((l) => (l.ticker === ticker ? splitLot(l, ratio) : l)),
+      positions: silo.positions.map(position),
+    });
+  }
+  return {
+    state: next,
+    split: {
+      silos: holding.map((silo) => silo.currency),
+      lots: holding.flatMap((silo) =>
+        silo.lots.filter((l) => l.ticker === ticker).map((l) => openedKey(silo.currency, l.entryId)),
+      ),
+    },
+  };
+}
+
 export function discard(
   command: Discard,
   { awaiting }: Pick<BatchContext, "awaiting">,
@@ -788,6 +908,8 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return setStop(state, command, context);
       case "clear_stop":
         return clearStop(state, command, context);
+      case "split":
+        return split(state, command);
       case "discard":
         return discard(command, context, state);
     }

@@ -35,7 +35,8 @@ export interface ParsedCommand {
  * not checked against the cash and lots of `currencies`: the ones it was written in, or both silos when none of
  * its amounts read (N8: a later command must not report a cash or lot error that only this one explains). A
  * `set_stop` or `clear_stop` changes no cash or lots: only the stop of its `ticker` (any, when it did not
- * read) is unknown.
+ * read) is unknown. A `split` changes no cash either, and has no currency: the lots and the stop of its `ticker`
+ * are unknown.
  */
 export interface UnreadCommand {
   position: number;
@@ -55,7 +56,17 @@ export interface ParsedBatch {
   issues: InboxIssue[];
 }
 
-const COMMAND_KINDS = ["deposit", "withdrawal", "convert", "buy", "sale", "set_stop", "clear_stop", "discard"] as const;
+const COMMAND_KINDS = [
+  "deposit",
+  "withdrawal",
+  "convert",
+  "buy",
+  "sale",
+  "set_stop",
+  "clear_stop",
+  "split",
+  "discard",
+] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 const FIELDS: Record<CommandKind, readonly string[]> = {
   deposit: ["command", "amount"],
@@ -65,6 +76,7 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   sale: ["command", "ticker", "date", "units", "price", "costs", "lot", "stop_executed"],
   set_stop: ["command", "ticker", "date", "price"],
   clear_stop: ["command", "ticker", "date"],
+  split: ["command", "ticker", "date", "ratio"],
   discard: ["command", "file"],
 };
 
@@ -295,6 +307,32 @@ function readCommand(raw: unknown): Command | Unread {
     if (typeof named === "object") problems.push(named.problem);
     if (problems.length > 0 || named === undefined || typeof named === "object") return unread();
     return { kind, file: named };
+  }
+
+  if (kind === "split") {
+    const t = ticker();
+    const when = date();
+    const ratioText = text("ratio", true);
+    let ratio: { new: number; old: number } | undefined;
+    if (ratioText !== undefined) {
+      const parts = ratioText.split(/\s+/);
+      if (parts.length !== 3 || parts[1] !== "for") {
+        problems.push(
+          `"ratio" must be written as <new> for <old>, such as 4 for 1 or 1 for 10 (units after the split for each unit before it); got: ${quoted(ratioText)}`,
+        );
+      } else {
+        const [newUnits, , oldUnits] = parts;
+        const n = decimal(newUnits, '"ratio"');
+        const o = decimal(oldUnits, '"ratio"');
+        if (typeof n === "string") problems.push(n);
+        else if (typeof o === "string") problems.push(o);
+        else if (n <= 0 || o <= 0)
+          problems.push(`"ratio" must be greater than zero on both sides; got: ${quoted(ratioText)}`);
+        else ratio = { new: n, old: o };
+      }
+    }
+    if (problems.length > 0 || !t || !when || !ratio) return unread();
+    return { kind, ticker: t, date: when, ratio };
   }
 
   if (kind === "set_stop" || kind === "clear_stop") {
