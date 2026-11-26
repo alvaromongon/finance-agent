@@ -430,7 +430,7 @@ export async function seedStore(syncedAt: Date): Promise<void> {
       ? {
           ...silo,
           syncedAt: syncedAt.toISOString(),
-          reconciled: { date: syncedAt.toISOString().slice(0, 10), differences: [] },
+          reconciled: { date: syncedAt.toISOString().slice(0, 10), differences: [] }, // no `recordedOn`: nothing to confirm
         }
       : undefined;
   await writeStore({

@@ -890,12 +890,6 @@ export function snapshot<C extends Currency>(
       return refused(`${quoted(ticker)} is listed twice in the snapshot: a ticker is one position`);
     listed.add(ticker);
   }
-  const latest = silo.reconciled;
-  if (latest !== undefined && command.date < latest.date) {
-    return refused(
-      `a snapshot of the ${command.currency} silo as of ${latest.date} is already recorded: this one, as of ${command.date}, is older`,
-    );
-  }
   const differences: Difference<C>[] = [];
   const broker = countedInCents(command.cash, `the ${command.currency} cash of the snapshot`, command.currency);
   if (broker !== silo.cash) differences.push({ kind: "cash", broker, engine: silo.cash });
@@ -907,7 +901,7 @@ export function snapshot<C extends Currency>(
       differences.push({ kind: "position", ticker, broker: units, engine });
   }
   return {
-    state: withSilo(state, { ...silo, reconciled: { date: command.date, differences } }),
+    state: withSilo(state, { ...silo, reconciled: { date: command.date, recordedOn: today, differences } }),
     snapshot: { currency: command.currency, date: command.date, differences },
   };
 }

@@ -123,6 +123,7 @@ const encodeSilo = (silo: PortfolioSnapshot) => ({
     ? {
         reconciled: {
           date: silo.reconciled.date,
+          ...(silo.reconciled.recordedOn !== undefined ? { recorded_on: silo.reconciled.recordedOn } : {}),
           differences: silo.reconciled.differences.map((d) => encodeDifference(d, silo.currency)),
         },
       }
@@ -276,7 +277,10 @@ export function decodeStore(text: string, where: string): PortfolioStore {
           engine: decimal(entry.engine, `${at}.engine`),
         };
       });
-      return { date, differences };
+      const recordedOn = o.recorded_on === undefined ? undefined : string(o.recorded_on, `${path}.recorded_on`);
+      if (recordedOn !== undefined && !isCalendarDate(recordedOn))
+        fail(`${path}.recorded_on`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(recordedOn)}`);
+      return { date, ...(recordedOn !== undefined ? { recordedOn } : {}), differences };
     };
     return {
       currency,

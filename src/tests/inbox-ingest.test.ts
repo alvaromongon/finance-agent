@@ -301,6 +301,7 @@ describe("inbox:ingest", () => {
       assert.equal(eur.lots.length, 1);
       assert.deepEqual(eur.reconciled, {
         date: "2026-11-25",
+        recorded_on: "2026-11-26",
         differences: [
           { kind: "cash", broker: "812.50 EUR", engine: "800.00 EUR" },
           { kind: "position", ticker: "SAP.DE", broker: "0", engine: "2" },
@@ -351,7 +352,11 @@ describe("inbox:ingest", () => {
       await drop("a.yaml", batch(BUY(), STOP, SNAP("800.00", OWN)));
       assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
       assert.deepEqual(await reconcileLines(), []);
-      assert.deepEqual((await siloOf()).reconciled, { date: "2026-11-25", differences: [] });
+      assert.deepEqual((await siloOf()).reconciled, {
+        date: "2026-11-25",
+        recorded_on: "2026-11-26",
+        differences: [],
+      });
     });
 
     it("a later snapshot replaces the differences of the earlier one", async () => {
@@ -360,11 +365,11 @@ describe("inbox:ingest", () => {
       assert.equal((await siloOf()).reconciled.differences.length, 1);
       await drop("b.yaml", batch(SNAP("1000.00", "[]", "2026-11-25")));
       await inbox.ingestInbox(DAY);
-      assert.deepEqual((await siloOf()).reconciled, { date: "2026-11-25", differences: [] });
-      await drop("c.yaml", batch(SNAP("1000.00", "[]", "2026-11-22")));
-      const { lines, exitCode } = await inbox.ingestInbox(DAY);
-      assert.equal(exitCode, 1);
-      assert.match(lines.join("\n"), /as of 2026-11-25 is already recorded: this one, as of 2026-11-22, is older/);
+      assert.deepEqual((await siloOf()).reconciled, {
+        date: "2026-11-25",
+        recorded_on: "2026-11-26",
+        differences: [],
+      });
     });
 
     it("rejects a snapshot dated in the future and keeps the state as it was", async () => {

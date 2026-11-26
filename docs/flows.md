@@ -53,12 +53,9 @@ parentheses so a code comment that cites it can be found here.
      rejected files is read, never a batch run, and a folder that cannot be read is said in the log and stops nothing: a
      rejected batch never switches off a stop alert.
      2''. Judge how stale the silo is and what its latest [snapshot](glossary.md#snapshot) found (#138), once the state is
-     the [store](glossary.md#store): a silo is [stale](glossary.md#stale) when it has no snapshot, never fresh by default, or
-     when the latest is older than `PORTFOLIO_STALE_DAYS` (7), measured from the day the snapshot is as of, whatever else
-     changed the silo since (a silo with no trades and a recent snapshot is fresh; one with trades and no snapshot is stale).
-     A console warning names it, and the digest has a section for it. The differences of the latest snapshot are in the
+     the [store](glossary.md#store): a silo is [stale](glossary.md#stale) by its latest snapshot alone. A console warning names it, and the digest has a section for it. The differences of the latest snapshot are in the
      digest in every run (not deduplicated) until a later snapshot shows none; a snapshot with no difference says so, once,
-     the day it is recorded. While the state is still `portfolio.md` there is no snapshot and its `last_manual_sync`
+     the day it is recorded (`recorded_on` of the silo's snapshot in the store). While the state is still `portfolio.md` there is no snapshot and its `last_manual_sync`
      keeps its own warning until #143 removes that way.
   3. Fetch prices ([market data](#market-data-freshness)) and write them into the portfolio
      (current price and P/L; with the [store](glossary.md#store), into it, regenerating `portfolio.md`; the rest of
@@ -465,8 +462,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      of each ticker either side holds (to the units tolerance). It changes no cash, position, lot or stop: it records on
      the silo the date and each difference (what each side holds, and the size, the broker's less the engine's), because the
      broker is the owner's fact but applying it silently would hide a trade missed or entered wrongly, which the owner
-     corrects with a command. It is refused for a silo the portfolio lacks, a date in the future, a ticker listed twice and a
-     date older than the silo's latest snapshot. It writes a `reconcile` line per difference (none when there is none).
+     corrects with a command. It is refused for a silo the portfolio lacks, a date in the future, a ticker listed twice. It writes a `reconcile` line per difference (none when there is none).
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
      with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot

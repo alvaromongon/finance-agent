@@ -139,7 +139,7 @@ describe("inbox handlers", () => {
       const { reconciled, ...silo } = out.state.EUR!;
       const { reconciled: _before, ...was } = held.EUR;
       assert.deepEqual(silo, was);
-      assert.deepEqual(reconciled, { date: "2026-11-20", differences: [] });
+      assert.deepEqual(reconciled, { date: "2026-11-20", recordedOn: "2026-11-26", differences: [] });
       assert.deepEqual(out.state.USD, held.USD);
       assert.deepEqual(out.snapshot, { currency: "EUR", date: "2026-11-20", differences: [] });
     });
@@ -222,14 +222,9 @@ describe("inbox handlers", () => {
       );
     });
 
-    it("is refused when an older snapshot of the silo was already recorded, and a later or equal one replaces it", () => {
+    it("records the day it was recorded, and a later snapshot replaces the earlier one", () => {
       const first = ok(held, snapshotOf({ date: "2026-11-20" }));
-      assert.match(
-        reason(first, snapshotOf({ date: "2026-11-19" })),
-        /a snapshot of the EUR silo as of 2026-11-20 is already recorded: this one, as of 2026-11-19, is older/,
-      );
-      const same = ok(first, snapshotOf({ date: "2026-11-20", cash: 5 }));
-      assert.equal(same.EUR.reconciled?.differences.length, 2);
+      assert.equal(first.EUR.reconciled?.recordedOn, "2026-11-26");
       const later = ok(first, snapshotOf({ date: "2026-11-24" }));
       assert.equal(later.EUR.reconciled?.date, "2026-11-24");
     });

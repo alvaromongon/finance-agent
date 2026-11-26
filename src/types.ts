@@ -116,6 +116,8 @@ export type Difference<C extends Currency = Currency> =
 export interface Reconciliation<C extends Currency = Currency> {
   /** YYYY-MM-DD: the day the broker's figures are as of. */
   date: string;
+  /** YYYY-MM-DD: the day the snapshot was recorded; absent in a store seeded for the demo. */
+  recordedOn?: string;
   differences: Difference<C>[];
 }
 

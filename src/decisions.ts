@@ -750,7 +750,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     );
   } else if (type === "reconcile") {
     errors.push(
-      `a reconciliation is told to the engine with a snapshot command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+      `a reconciliation is told to the engine with a snapshot command in inbox/ (docs/input-format.md › \`inbox/\`), not to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
     );
   } else if (!OWNER_TYPES.includes(type)) {
     errors.push(`type must be one of [${OWNER_TYPES.join(", ")}]; got: ${JSON.stringify(raw.type)}`);

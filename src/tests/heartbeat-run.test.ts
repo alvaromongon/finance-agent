@@ -363,11 +363,17 @@ describe("runHeartbeat", () => {
       });
 
       it("a snapshot with no difference recorded today says so once", async () => {
-        await storeWith({ date: day(0), differences: [] }, new Date().toISOString());
+        await storeWith({ date: day(0), recordedOn: day(0), differences: [] });
         await heartbeat();
         await heartbeat();
         const emails = (await outbox()).filter((e) => e.subject.includes("instantánea sin diferencias"));
         assert.equal(emails.length, 1);
+      });
+
+      it("a snapshot with no difference recorded earlier is not confirmed again when a later batch moved syncedAt", async () => {
+        await storeWith({ date: day(5), recordedOn: day(5), differences: [] }, new Date().toISOString());
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /instantánea sin diferencias/);
       });
 
       it("while the state is still the old portfolio.md, nothing is judged stale in the digest", async () => {

@@ -47,6 +47,7 @@ const store = (): PortfolioStore => {
         ...USD,
         reconciled: {
           date: "2026-11-20",
+          recordedOn: "2026-11-21",
           differences: [
             { kind: "cash", broker: money(910.5, "USD"), engine: money(900.5, "USD") },
             { kind: "position", ticker: tk("KO"), broker: 0.00000002, engine: 0.00000001 },
@@ -177,8 +178,13 @@ describe("the store text", () => {
     const clean = mutate((d) => (d.silos.USD.reconciled.differences = []));
     assert.deepEqual(decodeStore(clean, "state/portfolio.json").silos.USD!.reconciled, {
       date: "2026-11-20",
+      recordedOn: "2026-11-21",
       differences: [],
     });
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.recorded_on = "yesterday")),
+      /silos\.USD\.reconciled\.recorded_on: must be a calendar date as YYYY-MM-DD/,
+    );
     refuses(
       mutate((d) => (d.silos.USD.reconciled.date = "yesterday")),
       /silos\.USD\.reconciled\.date: must be a calendar date as YYYY-MM-DD/,
