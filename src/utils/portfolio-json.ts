@@ -8,7 +8,15 @@
 // - `withPrices`: the edit the price refresh makes to a silo of the store.
 import { canCountInCents, money, type Money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
-import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
+import {
+  CURRENCIES,
+  type Currency,
+  type Difference,
+  type Lot,
+  type PortfolioSnapshot,
+  type Position,
+  type Reconciliation,
+} from "../types.js";
 import { DECISION_ORIGINS, type DecisionOrigin } from "../decisions.js";
 import { numberFormat } from "./portfolio-writer.js";
 
@@ -104,8 +112,22 @@ const encodePosition = (p: Position, currency: Currency) => ({
   stop_loss: decimalOrNull(p.stopLoss),
 });
 
+const encodeDifference = (d: Difference, currency: Currency) =>
+  d.kind === "cash"
+    ? { kind: "cash", broker: amountText(d.broker, currency), engine: amountText(d.engine, currency) }
+    : { kind: "position", ticker: d.ticker, broker: plainDecimal(d.broker), engine: plainDecimal(d.engine) };
+
 const encodeSilo = (silo: PortfolioSnapshot) => ({
   synced_at: silo.syncedAt,
+  ...(silo.reconciled !== undefined
+    ? {
+        reconciled: {
+          date: silo.reconciled.date,
+          ...(silo.reconciled.recordedOn !== undefined ? { recorded_on: silo.reconciled.recordedOn } : {}),
+          differences: silo.reconciled.differences.map((d) => encodeDifference(d, silo.currency)),
+        },
+      }
+    : {}),
   cash: amountText(silo.cash, silo.currency),
   ...(silo.totalCash !== undefined ? { total_cash: amountText(silo.totalCash, silo.currency) } : {}),
   positions: silo.positions.map((p) => encodePosition(p, silo.currency)),
@@ -138,6 +160,14 @@ export function encodeStore(store: PortfolioStore): string {
 }
 
 // ─── Decoding ─────────────────────────────────────────────────────────────────
+
+/** A real calendar date, YYYY-MM-DD. */
+function isCalendarDate(text: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const [y, m, d] = text.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
 
 type Json = Record<string, unknown>;
 
@@ -222,6 +252,36 @@ export function decodeStore(text: string, where: string): PortfolioStore {
         ),
       };
     });
+    // A silo never reconciled has no `reconciled`: it is stale until a snapshot says otherwise (#138).
+    const reconciled = (value: unknown): Reconciliation<C> => {
+      const path = `${at}.reconciled`;
+      const o = object(value, path);
+      const date = string(o.date, `${path}.date`);
+      if (!isCalendarDate(date))
+        fail(`${path}.date`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(date)}`);
+      const differences = array(o.differences, `${path}.differences`).map((d, i): Difference<C> => {
+        const at = `${path}.differences[${i}]`;
+        const entry = object(d, at);
+        if (entry.kind === "cash") {
+          return {
+            kind: "cash",
+            broker: amount(entry.broker, `${at}.broker`, currency),
+            engine: amount(entry.engine, `${at}.engine`, currency),
+          };
+        }
+        if (entry.kind !== "position") return fail(`${at}.kind`, 'must be "cash" or "position"');
+        return {
+          kind: "position",
+          ticker: ticker(entry.ticker, `${at}.ticker`),
+          broker: decimal(entry.broker, `${at}.broker`),
+          engine: decimal(entry.engine, `${at}.engine`),
+        };
+      });
+      const recordedOn = o.recorded_on === undefined ? undefined : string(o.recorded_on, `${path}.recorded_on`);
+      if (recordedOn !== undefined && !isCalendarDate(recordedOn))
+        fail(`${path}.recorded_on`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(recordedOn)}`);
+      return { date, ...(recordedOn !== undefined ? { recordedOn } : {}), differences };
+    };
     return {
       currency,
       cash: amount(s.cash, `${at}.cash`, currency),
@@ -229,6 +289,7 @@ export function decodeStore(text: string, where: string): PortfolioStore {
       positions,
       lots,
       syncedAt: string(s.synced_at, `${at}.synced_at`),
+      ...(s.reconciled !== undefined ? { reconciled: reconciled(s.reconciled) } : {}),
     };
   };
   const rawSilos = object(doc.silos, "silos");

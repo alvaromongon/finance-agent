@@ -93,6 +93,9 @@ export const en = {
       unreadableCells: "cell that cannot be counted",
       noStop: "position without a stop",
       rejectedBatches: "rejected batch",
+      stale: "stale portfolio",
+      differences: "difference with the broker",
+      reconciled: "snapshot without differences",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -154,6 +157,43 @@ export const en = {
       `Replace each with a new batch that starts with \`replaces: <file>\`, or give it up with a \`discard\` command`,
       `(\`file: <file>\`) in \`inbox/\` (see \`docs/input-format.md\`). The file stays in \`inbox/rejected/\` as the audit`,
       `trail. The notice stays in every digest until you do.`,
+    ],
+    staleIntro: (currency: string) => [
+      `## ${currency} silo: stale`,
+      ``,
+      `The engine integrates with no broker: it can be sure of its state of a silo only up to the last time you compared`,
+      `it with your broker with a \`snapshot\`. A silo with no snapshot is stale, never fresh by default.`,
+      ``,
+    ],
+    staleNone: (currency: string) => `The ${currency} silo has no snapshot of the broker yet.`,
+    staleSince: (currency: string, date: string, days: string) =>
+      `The latest snapshot of the ${currency} silo is as of **${date}**, ${days} days ago.`,
+    staleOutro: [
+      ``,
+      `Send a \`snapshot\` command in \`inbox/\` with the cash and the positions your broker shows (guide:`,
+      `\`routines/portfolio-sync.md\`; format in \`docs/input-format.md\`). The notice stays until you do.`,
+    ],
+    differencesIntro: (currency: string, date: string) => [
+      `## ${currency} silo: differences with the broker`,
+      ``,
+      `The latest snapshot of the ${currency} silo, as of **${date}**, shows these differences between your broker and the`,
+      `state of the engine (the size is what the broker holds less what the engine does):`,
+      ``,
+    ],
+    differenceCash: (broker: string, engine: string, size: string, currency: string) =>
+      `- Cash: the broker has ${broker} ${currency}, the engine ${engine} ${currency} (${size} ${currency})`,
+    differencePosition: (ticker: string, broker: string, engine: string, size: string) =>
+      `- ${ticker}: the broker has ${broker} units, the engine ${engine} (${size})`,
+    differencesOutro: [
+      ``,
+      `The engine did not change its state: the broker is your fact, but applying it silently would hide a trade you`,
+      `missed or entered wrongly. Find it and tell the engine with a command in \`inbox/\`; the notice stays in every`,
+      `digest until a later snapshot shows no difference.`,
+    ],
+    reconciledLines: (currency: string, date: string) => [
+      `## ${currency} silo: snapshot without differences`,
+      ``,
+      `The snapshot of the ${currency} silo as of **${date}** matches the engine's state: the cash and every position.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,

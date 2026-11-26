@@ -299,6 +299,89 @@ describe("runHeartbeat", () => {
       assert.deepEqual(await readdir(join(vaultDir, "inbox", "rejected")), ["bad.yaml"]);
     });
 
+    describe("the silo and the broker (#138)", () => {
+      const day = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+      /** The store made from portfolio.md, its USD silo carrying `reconciled` (none: no snapshot was ever recorded). */
+      const storeWith = async (reconciled?: PortfolioSnapshot<"USD">["reconciled"], syncedAt?: string) => {
+        const { storeFromPortfolioFile, saveStore } = await import("../portfolio-store.js");
+        const seeded = await storeFromPortfolioFile();
+        const usd = seeded.silos.USD!;
+        const { reconciled: _none, ...rest } = usd;
+        await saveStore({
+          ...seeded,
+          silos: { USD: { ...rest, ...(syncedAt ? { syncedAt } : {}), ...(reconciled ? { reconciled } : {}) } },
+        });
+      };
+
+      it("names a silo with no snapshot stale, once a day, and keeps watching the stops", async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        await storeWith();
+        await heartbeat();
+        const [first] = await outbox();
+        assert.match(first.subject, /stop cruzado: CAT/);
+        assert.match(first.subject, /cartera desactualizada/);
+        assert.match(first.body, /no tiene ninguna instantánea del bróker/);
+        await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+        await heartbeat();
+        const [second] = await outbox();
+        assert.doesNotMatch(second.subject, /cartera desactualizada/, "told once a day");
+      });
+
+      it("does not name a silo stale while its snapshot is recent, even if nothing else changed it for months", async () => {
+        await storeWith({ date: day(2), differences: [] }, "2026-01-01T00:00:00.000Z");
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /desactualizada/);
+      });
+
+      it("names a silo whose latest snapshot is older than the limit, with its date", async () => {
+        await storeWith({ date: day(30), differences: [] });
+        await heartbeat();
+        const [email] = await outbox();
+        assert.match(email.subject, /cartera desactualizada/);
+        assert.ok(email.body.includes(`**${day(30)}**`), email.body);
+      });
+
+      it("lists the differences of the latest snapshot in every digest, until a later one shows none", async () => {
+        const { money } = await import("../money.js");
+        const differences = [{ kind: "cash" as const, broker: money(1010.5, "USD"), engine: money(1000, "USD") }];
+        await storeWith({ date: day(2), differences }, "2026-01-01T00:00:00.000Z");
+        await heartbeat();
+        await heartbeat();
+        let emails = await outbox();
+        const withDifferences = emails.filter((e) => e.subject.includes("diferencia con el bróker"));
+        assert.equal(withDifferences.length, 2, "it is not deduplicated");
+        assert.match(
+          withDifferences[0].body,
+          /Efectivo: el bróker tiene 1\.010,50 USD, el motor 1\.000,00 USD \(\+10,50 USD\)/,
+        );
+
+        await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+        await storeWith({ date: day(1), differences: [] }, "2026-01-01T00:00:00.000Z");
+        await heartbeat();
+        emails = await outbox();
+        for (const email of emails) assert.doesNotMatch(email.subject, /diferencia|instantánea/);
+      });
+
+      it("a snapshot with no difference recorded today says so once", async () => {
+        await storeWith({ date: day(0), recordedOn: day(0), differences: [] });
+        await heartbeat();
+        await heartbeat();
+        const emails = (await outbox()).filter((e) => e.subject.includes("instantánea sin diferencias"));
+        assert.equal(emails.length, 1);
+      });
+
+      it("a snapshot with no difference recorded earlier is not confirmed again when a later batch moved syncedAt", async () => {
+        await storeWith({ date: day(5), recordedOn: day(5), differences: [] }, new Date().toISOString());
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /instantánea sin diferencias/);
+      });
+
+      it("while the state is still the old portfolio.md, nothing is judged stale in the digest", async () => {
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /desactualizada/);
+      });
+    });
+
     it("a rejected batch is named even when there is nothing else to watch", async () => {
       await setPortfolio("", []);
       await mkdir(join(vaultDir, "inbox", "rejected"), { recursive: true });

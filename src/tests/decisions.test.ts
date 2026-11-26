@@ -168,6 +168,62 @@ describe("validateDecision", () => {
     assert.throws(() => buildDecision(base({ split_ratio: 2 })), /split_ratio only goes in split/);
   });
 
+  it("a reconcile (#138) records one difference of a snapshot: what each side holds and its size, of a ticker or of the cash", () => {
+    const units = buildDecision(
+      base({
+        type: "reconcile",
+        origin: "propietario",
+        source: "portfolio-sync",
+        broker: 8,
+        engine: 10,
+        difference: -2,
+      }),
+    );
+    assert.equal(units.difference, -2);
+    assert.deepEqual(validateDecision(JSON.parse(JSON.stringify(units))), units);
+    const cash = buildDecision(
+      base({
+        type: "reconcile",
+        ticker: null,
+        origin: "propietario",
+        source: "portfolio-sync",
+        broker: 510.5,
+        engine: 500,
+        difference: 10.5,
+      }),
+    );
+    assert.equal(cash.ticker, null);
+    assert.deepEqual(validateDecision(JSON.parse(JSON.stringify(cash))), cash);
+    // The engine or the broker may hold nothing: zero is a number of a reconcile.
+    assert.equal(buildDecision(base({ type: "reconcile", broker: 0, engine: 3, difference: -3 })).broker, 0);
+  });
+
+  it("a reconcile needs its three numbers, and they go nowhere else", () => {
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: 1, engine: 2 })),
+      /difference is required in reconcile/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", engine: 2, difference: 1 })),
+      /broker is required in reconcile/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: 1, difference: 1 })),
+      /engine is required in reconcile/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: -1, engine: 2, difference: -3 })),
+      /broker must be a number >= 0/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: 1, engine: 2, difference: Number.NaN })),
+      /difference must be a number/,
+    );
+    assert.throws(() => buildDecision(base({ broker: 1 })), /broker only goes in reconcile/);
+    assert.throws(() => buildDecision(base({ engine: 1 })), /engine only goes in reconcile/);
+    assert.throws(() => buildDecision(base({ difference: 1 })), /difference only goes in reconcile/);
+  });
+
   it("regime: only favorable, neutral or adverso", () => {
     assert.equal(buildDecision(base({ regime: "neutral" })).regime, "neutral");
     assert.throws(
@@ -575,6 +631,15 @@ describe("validateOwnerInput", () => {
         err.message.includes("a currency conversion is told to the engine with a convert command in inbox/") &&
         err.message.includes("[adjust_stop, deposit, withdrawal]") &&
         !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
+    );
+  });
+
+  it("refuses a reconcile, naming the inbox command that replaces it (#138)", () => {
+    assert.throws(
+      () => validateOwnerInput({ type: "reconcile", currency: "EUR" }),
+      (err: Error) =>
+        err.message.includes("a reconciliation is told to the engine with a snapshot command in inbox/") &&
+        err.message.includes("[adjust_stop, deposit, withdrawal]"),
     );
   });
 

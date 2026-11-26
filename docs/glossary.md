@@ -109,6 +109,22 @@ split (or reverse split) is one: the `split` [command](#command) multiplies the 
 the ratio and divides its entry price and stop by it, so what was invested, the entry costs and [R](#r) do not change,
 and it writes a `split` line of the decision log. A spin-off or a merger is not a command yet.
 
+### Snapshot
+
+What the broker shows of one [silo](#silo) on a date: its cash and the units of each position, told to the engine with the
+`snapshot` [command](#command) (#138). The engine compares it with its own state and reports and records each difference
+(a `reconcile` line of the [decision log](#decision-log) per difference) without changing the state: the broker is the
+owner's fact, but applying it silently would hide a trade missed or entered wrongly, so the owner corrects the state with
+a command. The date of the latest snapshot of a silo is what its staleness is measured from, and its differences are named
+in every digest of the [heartbeat](#heartbeat) until a later snapshot shows none.
+
+### Stale
+
+A [silo](#silo) is stale when it has no [snapshot](#snapshot) of the broker, or its latest one is older than
+`PORTFOLIO_STALE_DAYS` (7 days). Never fresh by default: the engine integrates with no broker, so a state nobody compared
+with it may be wrong. What else changed the silo since (a trade, a deposit) does not make it fresh, and a silo with no
+trades and a recent snapshot is not stale. The [heartbeat](#heartbeat) names a stale silo in its digest.
+
 ### Stop
 
 The price at which a position is closed to cap its loss. A position has one stop, set or moved by the

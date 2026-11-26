@@ -2,8 +2,9 @@
 
 How you keep the engine's portfolio in step with your broker and tell the engine what you did. The engine
 integrates with no broker: it cannot know that an order filled or a stop was hit, so it warns
-("portfolio.md has not been updated for N days") when the last sync is older than
-`PORTFOLIO_STALE_DAYS`. This guide is what that warning points to. You can follow it by hand, or
+(an account "has no snapshot of the broker", or its latest snapshot is N days old) when the last time you compared it with
+your broker is older than `PORTFOLIO_STALE_DAYS`, and the heartbeat digest names it. This guide is what that
+warning points to. You can follow it by hand, or
 hand it to a Claude Code session as its instructions. The file format is
 [`docs/input-format.md`](https://github.com/alvaromongon/finance-agent/blob/main/docs/input-format.md#portfoliomd).
 
@@ -12,7 +13,9 @@ hand it to a Claude Code session as its instructions. The file format is
 The first `npm run inbox:ingest` makes the engine's own store (`state/portfolio.json`) from `portfolio.md`, which must
 read whole (a row that does not read is refused, not dropped). From then on **`portfolio.md` is a view the engine
 generates, overwritten at every change: never edit it**, not its cash, not `last_manual_sync`, not a stop, not
-`Lots`. Everything below changes the store. The sync time is the store's, set by `inbox:ingest`.
+`Lots`. Everything below changes the store. An account is **stale** until you send a `snapshot` of it, and again when its
+latest one is older than `PORTFOLIO_STALE_DAYS`: trades and deposits do not make it fresh, only comparing it with your
+broker does.
 
 ## The rule: two doors
 
@@ -23,6 +26,7 @@ Every event at the broker is told to the engine through one of two doors, and no
 | Buy, sale, a stop set, moved or removed, a currency conversion, a split | a batch in `inbox/` (`buy`, `sale`, `set_stop`, `clear_stop`, `convert`, `split`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the entry and exit lines of the log |
 | Deposit, withdrawal                        | `npm run decision:record`, the event as JSON on stdin                                          | the [decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log) (`logs/decisions.jsonl`; never edit it by hand) and the cash of the store |
 | A stop adjustment you made after a proposal | `npm run decision:record` for the log line, and a `set_stop` command in a batch for the stop    | the log line only                                                                      |
+| What your broker shows today (cash and positions of an account) | a `snapshot` command in a batch                                                  | no state: the differences with the engine's, and the date that makes the account fresh     |
 
 `decision:record` refuses a buy and a sale: they are told with a `buy` or a `sale` command in a batch, the only way a
 trade is recorded; it refuses a currency [conversion](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#conversion) too, which is the `convert` command of a batch. The `convert` command writes its `fx_conversion` line; the `deposit` and `withdrawal` commands of the inbox change the cash and write no log line, while a flow
@@ -30,10 +34,12 @@ told to `decision:record` writes its line, which the
 [shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio) needs to
 buy its benchmark with every flow on its own date. Use one door for a flow, never both: the cash would move twice.
 
-So you never edit position rows. What you do is **reconcile**: after the events, compare each position's `Volume` with
-your broker. If they differ (a split, a partial fill, a trade you never recorded), tell the engine in a batch (a
-`split` command for a split, the missing trade otherwise), so that the `Units` of a ticker's lots add up to the
-broker's figure.
+So you never edit position rows. What you do is **reconcile**: after the events, send a `snapshot` of each account with the
+cash and the units of each position your broker shows. The engine compares it with its own state and tells each
+difference (a split, a partial fill, a trade you never recorded) without changing anything: it is in the output of
+`inbox:check` and `inbox:ingest`, in the decision log (a `reconcile` line each) and in every digest until a later
+snapshot shows none. Then tell the engine what it missed in a batch (a `split` command for a split, the missing trade
+otherwise), so that the `Units` of a ticker's lots add up to the broker's figure, and send a new snapshot.
 
 The engine rebuilds each [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo)'s
 value backwards from today's portfolio through the logged events, to compare you with the shadow portfolio.
@@ -63,8 +69,9 @@ log and `state/` together.
 3. **A stop change:** a `set_stop` in the batch, after the buy it protects.
 4. **Check, then apply:** `npm run inbox:check` says what `npm run inbox:ingest` would do, with the same code and
    nothing written. Ingest applies each batch whole or not at all.
-5. **Reconcile** each position's `Volume` and the cash against the broker (see above). If the cash differs, tell the
-   engine the difference with a `deposit` or a `withdrawal` command.
+5. **Reconcile** with a `snapshot` of each silo, last in the batch (it is compared with the state the commands before it
+   leave), and read the differences it reports. If the cash differs, find the trade, deposit or withdrawal you did not
+   tell it, and tell it with a command.
 
 ## Buys, sales and stops: the inbox
 
@@ -130,6 +137,30 @@ commands:
     date: 2026-06-12
     units: 20
     price: 120 USD
+```
+
+Reconciling with the broker is a `snapshot` command: `date` is the day your broker's figures are as of (not in the
+future), `cash` is its available cash with the currency, which names the silo, and `positions` lists every position it
+holds as a ticker and its units (`positions: []` when it holds none). Send one per silo, last in the batch, so it is
+compared with the state the trades before it leave. The engine reports each difference in the cash and in the units of a
+ticker, and records them; it never applies the broker's figures for you, because that would hide a trade you missed or
+entered wrongly. A later snapshot of the silo replaces the differences of the earlier one, and one dated before the
+silo's latest is refused.
+
+```yaml
+schema_version: 1
+commands:
+  - command: sale
+    ticker: SAP.DE
+    date: 2026-10-12
+    units: 2
+    price: 195 EUR
+  - command: snapshot
+    date: 2026-10-12
+    cash: 1389.00 EUR
+    positions:
+      - ticker: SAP.DE
+        units: 1
 ```
 
 ```yaml

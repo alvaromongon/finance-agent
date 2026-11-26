@@ -90,6 +90,9 @@ export const es: Messages = {
       unreadableCells: "celda que no se puede contar",
       noStop: "posición sin stop",
       rejectedBatches: "lote rechazado",
+      stale: "cartera desactualizada",
+      differences: "diferencia con el bróker",
+      reconciled: "instantánea sin diferencias",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -151,6 +154,43 @@ export const es: Messages = {
       `Sustituye cada uno con un lote nuevo que empiece por \`replaces: <archivo>\`, o renuncia a él con un comando`,
       `\`discard\` (\`file: <archivo>\`) en \`inbox/\` (ver \`docs/input-format.md\`). El archivo queda en \`inbox/rejected/\``,
       `como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
+    ],
+    staleIntro: (currency) => [
+      `## Silo ${currency}: desactualizado`,
+      ``,
+      `El motor no se integra con ningún bróker: solo puede fiarse de su estado de un silo hasta la última vez que lo`,
+      `comparaste con tu bróker con una \`snapshot\`. Un silo sin instantánea está desactualizado, nunca al día por defecto.`,
+      ``,
+    ],
+    staleNone: (currency) => `El silo ${currency} no tiene ninguna instantánea del bróker todavía.`,
+    staleSince: (currency, date, days) =>
+      `La última instantánea del silo ${currency} es del **${date}**, de hace ${days} días.`,
+    staleOutro: [
+      ``,
+      `Envía un comando \`snapshot\` en \`inbox/\` con el efectivo y las posiciones que muestra tu bróker (guía:`,
+      `\`routines/portfolio-sync.md\`; formato en \`docs/input-format.md\`). El aviso sigue hasta que lo hagas.`,
+    ],
+    differencesIntro: (currency, date) => [
+      `## Silo ${currency}: diferencias con el bróker`,
+      ``,
+      `La última instantánea del silo ${currency} del **${date}** muestra estas diferencias entre tu bróker y el estado`,
+      `del motor (el tamaño es lo que tiene el bróker menos lo que tiene el motor):`,
+      ``,
+    ],
+    differenceCash: (broker, engine, size, currency) =>
+      `- Efectivo: el bróker tiene ${broker} ${currency}, el motor ${engine} ${currency} (${size} ${currency})`,
+    differencePosition: (ticker, broker, engine, size) =>
+      `- ${ticker}: el bróker tiene ${broker} unidades, el motor ${engine} (${size})`,
+    differencesOutro: [
+      ``,
+      `El motor no cambió su estado: el bróker es tu hecho, pero aplicarlo en silencio ocultaría una operación que se`,
+      `te pasó o anotaste mal. Búscala y díselo al motor con un comando en \`inbox/\`; el aviso sigue en cada resumen`,
+      `hasta que una instantánea posterior no muestre diferencias.`,
+    ],
+    reconciledLines: (currency, date) => [
+      `## Silo ${currency}: instantánea sin diferencias`,
+      ``,
+      `La instantánea del silo ${currency} del **${date}** coincide con el estado del motor: el efectivo y cada posición.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,

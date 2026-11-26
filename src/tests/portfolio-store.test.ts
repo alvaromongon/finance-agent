@@ -10,6 +10,7 @@ import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseTicker as tk } from "../ticker.js";
+import type { PortfolioSnapshot } from "../types.js";
 import { brokenUsdLots, lotsSection, mdTable, type HeldLot } from "./fixtures/lots.js";
 
 const POSITIONS_HEADER = ["Ticker", "Volume", "Avg price", "Current price", "P/L", "Stop loss"];
@@ -311,10 +312,61 @@ describe("the portfolio state port", () => {
       await assert.rejects(() => store.readPortfolio("USD"), /state\/portfolio\.json: silos\.USD\.cash/);
     });
 
-    it("warns when the state has not changed for a long time, with the time of the store", async () => {
-      await store.seedStore(new Date("2020-01-01T00:00:00Z"));
-      await store.readPortfolio("USD");
-      assert.match(warnings.join("\n"), /portfolio\.md has not been updated for \d+ days/);
+    describe("how stale a silo is (#138): the age of its latest snapshot, and a silo with none is stale", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the test edits a document of a shape it makes
+      const edit = async (change: (doc: any) => void): Promise<void> => {
+        const doc = JSON.parse(await stored());
+        change(doc);
+        await writeFile(storeFile(), JSON.stringify(doc), "utf8");
+      };
+      const staleWarnings = () => warnings.filter((w) => w.includes("snapshot"));
+
+      it("names a silo with trades and no snapshot stale, and says so once per silo", async () => {
+        await seed();
+        await edit((d) => {
+          delete d.silos.USD.reconciled;
+          delete d.silos.EUR.reconciled;
+        });
+        const usd = await store.readPortfolio("USD");
+        assert.deepEqual(usd.staleness, { asOf: null, ageDays: null, stale: true });
+        assert.equal(usd.portfolio.lots.length, 1, "the silo has trades");
+        assert.match(staleWarnings().join("\n"), /the USD silo has no snapshot of the broker, so it is stale/);
+        warnings.length = 0;
+        const both = await store.readBothPortfolios();
+        assert.deepEqual([both.EUR?.staleness?.stale, both.USD?.staleness?.stale], [true, true]);
+        assert.equal(staleWarnings().length, 2);
+      });
+
+      it("does not name a silo with no trades stale while its snapshot is recent, whatever its last change", async () => {
+        await store.seedStore(new Date());
+        await edit((d) => {
+          d.silos.EUR.synced_at = "2020-01-01T00:00:00.000Z";
+        });
+        const eur = await store.readPortfolio("EUR");
+        assert.equal(eur.portfolio.lots.length, 0, "the silo has no trades");
+        assert.equal(eur.staleness?.stale, false);
+        assert.deepEqual(staleWarnings(), []);
+      });
+
+      it("names a silo stale when its latest snapshot is older than the limit, with its date", async () => {
+        await store.seedStore(new Date("2020-01-01T00:00:00Z"));
+        const read = await store.readPortfolio("USD");
+        assert.equal(read.staleness?.stale, true);
+        assert.equal(read.staleness?.asOf, "2020-01-01");
+        assert.match(
+          staleWarnings().join("\n"),
+          /the USD silo's latest snapshot is from 2020-01-01, \d+ days ago: it is stale/,
+        );
+      });
+
+      it("a store made from portfolio.md without last_manual_sync is stale, not synced now", async () => {
+        await put(portfolioMd([TCK_ROW], [TCK_LOT]).replace(/last_manual_sync:.*\n/, ""));
+        const { storeFromPortfolioFile } = store;
+        const seeded = await storeFromPortfolioFile();
+        assert.equal(seeded.silos.USD?.reconciled, undefined);
+        await store.saveStore(seeded);
+        assert.equal((await store.readPortfolio("USD")).staleness?.stale, true);
+      });
     });
 
     it("refreshes the prices in the store and regenerates the view, and writes nothing when no value changes", async () => {
@@ -332,8 +384,13 @@ describe("the portfolio state port", () => {
 
     it("the view is the state in the tables the old reader reads: written, then read back, the model is the same", async () => {
       await seed();
-      const { portfolio: fromStore } = await store.readPortfolio("USD");
-      const { portfolio: fromStoreEur } = await store.readPortfolio("EUR");
+      // The snapshot of the broker (#138) is the store's alone: the tables of the view do not carry it.
+      const withoutSnapshot = <C extends "EUR" | "USD">(read: { portfolio: PortfolioSnapshot<C> }) => {
+        const { reconciled: _reconciled, ...rest } = read.portfolio;
+        return rest;
+      };
+      const fromStore = withoutSnapshot(await store.readPortfolio("USD"));
+      const fromStoreEur = withoutSnapshot(await store.readPortfolio("EUR"));
       await rm(join(vaultDir, "state"), { recursive: true });
       const viewRead = await store.readPortfolio("USD");
       const viewReadEur = await store.readPortfolio("EUR");

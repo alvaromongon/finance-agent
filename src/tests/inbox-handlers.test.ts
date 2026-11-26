@@ -30,6 +30,7 @@ import type {
   OpenedLots,
   Sale,
   SetStop,
+  Snapshot,
   Split,
 } from "../utils/inbox-handlers.js";
 import { crossedState, entryContext, lot, stateOf } from "./fixtures/inbox.js";
@@ -54,6 +55,7 @@ const ctx = (over: Partial<BatchContext> = {}, state: InboxState = {}): BatchCon
     entryCostsTaken: new Map(),
     awaiting: new Set(),
     entry: entryContext(),
+    today: "2026-11-26",
     ...over,
   };
 };
@@ -116,7 +118,118 @@ const splitOf = (over: Partial<Split> = {}): Split => ({
   ...over,
 });
 
+const snapshotOf = (over: Partial<Snapshot<"EUR">> = {}): Snapshot<"EUR"> => ({
+  kind: "snapshot",
+  currency: "EUR",
+  date: "2026-11-20",
+  cash: 1000,
+  positions: [],
+  ...over,
+});
+
 describe("inbox handlers", () => {
+  describe("snapshot (#138)", () => {
+    const held = stateOf({ eurCash: 1000 }, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 10 })] });
+    const result = (state: InboxState, command: Snapshot): ReturnType<typeof applyCommand> =>
+      applyCommand(state, command, ctx({}, state));
+
+    it("changes no cash, position or lot: only records that the broker was compared, and when", () => {
+      const out = result(held, snapshotOf({ cash: 1000, positions: [{ ticker: tk("SAP.DE"), units: 10 }] }));
+      assert.ok("state" in out);
+      const { reconciled, ...silo } = out.state.EUR!;
+      const { reconciled: _before, ...was } = held.EUR;
+      assert.deepEqual(silo, was);
+      assert.deepEqual(reconciled, { date: "2026-11-20", recordedOn: "2026-11-26", differences: [] });
+      assert.deepEqual(out.state.USD, held.USD);
+      assert.deepEqual(out.snapshot, { currency: "EUR", date: "2026-11-20", differences: [] });
+    });
+
+    it("reports a difference in the cash with what each side holds", () => {
+      const out = result(held, snapshotOf({ cash: 1010.5, positions: [{ ticker: tk("SAP.DE"), units: 10 }] }));
+      assert.ok("state" in out);
+      assert.deepEqual(out.snapshot?.differences, [{ kind: "cash", broker: eur(1010.5), engine: eur(1000) }]);
+      assert.equal(out.state.EUR!.cash, eur(1000), "the engine's cash is the same");
+    });
+
+    it("reports the units of a ticker the sides disagree on, one the broker lacks and one the engine lacks", () => {
+      const out = result(
+        held,
+        snapshotOf({
+          positions: [
+            { ticker: tk("SAP.DE"), units: 8 },
+            { ticker: tk("KO"), units: 3 },
+          ],
+        }),
+      );
+      assert.ok("state" in out);
+      assert.deepEqual(out.snapshot?.differences, [
+        { kind: "position", ticker: "SAP.DE", broker: 8, engine: 10 },
+        { kind: "position", ticker: "KO", broker: 3, engine: 0 },
+      ]);
+      const missing = result(held, snapshotOf({ positions: [] }));
+      assert.ok("state" in missing);
+      assert.deepEqual(missing.snapshot?.differences, [{ kind: "position", ticker: "SAP.DE", broker: 0, engine: 10 }]);
+    });
+
+    it("does not count float noise below the units tolerance, nor less than a cent of cash", () => {
+      const out = result(
+        held,
+        snapshotOf({ cash: 1000.001, positions: [{ ticker: tk("SAP.DE"), units: 10 + 1e-10 }] }),
+      );
+      assert.ok("state" in out);
+      assert.deepEqual(out.snapshot?.differences, []);
+    });
+
+    it("compares with the state after the commands before it: a buy in the same batch counts", () => {
+      const bought = ok(held, buyOf({ units: 2, price: 100 }));
+      const out = result(bought, snapshotOf({ cash: 800, positions: [{ ticker: tk("SAP.DE"), units: 12 }] }));
+      assert.ok("state" in out);
+      assert.deepEqual(out.snapshot?.differences, []);
+    });
+
+    it("is refused for a silo the portfolio lacks, and for a silo that is not the one named", () => {
+      const { USD: _usd, ...eurOnly } = held;
+      assert.match(
+        reason(eurOnly, snapshotOf({ currency: "USD" } as unknown as Partial<Snapshot<"EUR">>)),
+        /there is no USD silo/,
+      );
+      assert.match(
+        reason(crossedState(held), snapshotOf({ currency: "USD" } as unknown as Partial<Snapshot<"EUR">>)),
+        /there is no USD silo/,
+      );
+    });
+
+    it("is refused for a date in the future, whoever built the command; today is accepted", () => {
+      assert.match(
+        reason(held, snapshotOf({ date: "2026-11-27" })),
+        /the snapshot's date 2026-11-27 is in the future \(today is 2026-11-26\)/,
+      );
+      assert.ok("state" in result(held, snapshotOf({ date: "2026-11-26" })));
+    });
+
+    it("is refused for a ticker listed twice, whoever built the command", () => {
+      assert.match(
+        reason(
+          held,
+          snapshotOf({
+            positions: [
+              { ticker: tk("KO"), units: 1 },
+              { ticker: tk("KO"), units: 2 },
+            ],
+          }),
+        ),
+        /"KO" is listed twice/,
+      );
+    });
+
+    it("records the day it was recorded, and a later snapshot replaces the earlier one", () => {
+      const first = ok(held, snapshotOf({ date: "2026-11-20" }));
+      assert.equal(first.EUR.reconciled?.recordedOn, "2026-11-26");
+      const later = ok(first, snapshotOf({ date: "2026-11-24" }));
+      assert.equal(later.EUR.reconciled?.date, "2026-11-24");
+    });
+  });
+
   describe("split (#137)", () => {
     const held = (units: number, over: Omit<Partial<Lot<"EUR">>, "ticker" | "units"> = {}) =>
       lot("EUR", { ticker: "SAP.DE", units, entryPrice: 100, initialStop: 90, ...over });

@@ -58,6 +58,7 @@ export const DECISION_TYPES = [
   "withdrawal",
   "fx_conversion",
   "split",
+  "reconcile",
 ] as const;
 
 export type DecisionOrigin = (typeof DECISION_ORIGINS)[number];
@@ -70,7 +71,7 @@ export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx
 /**
  * What the owner narrates and records with `decision:record`. A buy and a sale (the `entry` and `exit` decisions) are
  * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry. A currency
- * conversion is the `convert` command of the inbox too (#135), and a split is the `split` command (#137).
+ * conversion is the `convert` command of the inbox too (#135), a split is the `split` command (#137) and a reconciliation with the broker is the `snapshot` command (#138).
  */
 export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
@@ -101,6 +102,14 @@ export interface Decision {
    * The line carries the ticker, the silo (`currency`) whose lots it scaled and the date it took effect (#137).
    */
   split_ratio?: number;
+  /**
+   * `reconcile`: one difference a snapshot of the broker showed (#138). `broker` and `engine` are what each side held on
+   * the line's date (the cash in the silo currency when the ticker is null, the units of the ticker otherwise) and
+   * `difference` is `broker - engine`, positive when the broker held more. The state was not changed by it.
+   */
+  broker?: number;
+  engine?: number;
+  difference?: number;
   /** Costs in the silo currency (FX fee, transaction tax). */
   costs?: Money;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
@@ -198,6 +207,9 @@ const KNOWN_FIELDS = new Set<string>([
   "amount",
   "fx_rate",
   "split_ratio",
+  "broker",
+  "engine",
+  "difference",
   "costs",
   "pnl",
   "stop_initial",
@@ -247,6 +259,7 @@ const REQUIRED_NUMBERS: Partial<Record<DecisionType, readonly (keyof Decision)[]
   withdrawal: ["amount"],
   fx_conversion: ["amount", "fx_rate", "costs"],
   split: ["split_ratio"],
+  reconcile: ["broker", "engine", "difference"],
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -354,6 +367,8 @@ export function validateDecision(raw: unknown): Decision {
   const type = raw.type as DecisionType;
   if (FLOW_TYPES.includes(type)) {
     if (raw.ticker != null) errors.push(`ticker must be null in ${type}`);
+  } else if (type === "reconcile" && raw.ticker == null) {
+    // The difference of a snapshot in the cash of the silo has no ticker.
   } else {
     const checked = checkTicker(raw.ticker);
     if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
@@ -392,6 +407,15 @@ export function validateDecision(raw: unknown): Decision {
   }
   if (raw.units != null && type !== "entry" && type !== "exit") errors.push("units only goes in entry or exit");
   if (raw.split_ratio != null && type !== "split") errors.push("split_ratio only goes in split");
+  // What a snapshot found is a number of any size: the units or cash a side holds may be zero, the difference negative.
+  for (const field of ["broker", "engine", "difference"] as const) {
+    const v = raw[field];
+    if (v == null) continue;
+    if (type !== "reconcile") errors.push(`${field} only goes in reconcile`);
+    else if (typeof v !== "number" || !Number.isFinite(v) || (field !== "difference" && v < 0)) {
+      errors.push(`${field} must be a number${field === "difference" ? "" : " >= 0"}; got: ${JSON.stringify(v)}`);
+    }
+  }
   if (raw.pnl != null) {
     if (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl))
       errors.push(`pnl must be a number; got: ${JSON.stringify(raw.pnl)}`);
@@ -710,7 +734,7 @@ export interface OwnerDecisionInput {
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
-  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion" | "split";
+  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion" | "split" | "reconcile";
 
   if (type === "entry" || type === "exit") {
     errors.push(
@@ -723,6 +747,10 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   } else if (type === "split") {
     errors.push(
       `a split is told to the engine with a split command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (type === "reconcile") {
+    errors.push(
+      `a reconciliation is told to the engine with a snapshot command in inbox/ (docs/input-format.md › \`inbox/\`), not to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
     );
   } else if (!OWNER_TYPES.includes(type)) {
     errors.push(`type must be one of [${OWNER_TYPES.join(", ")}]; got: ${JSON.stringify(raw.type)}`);

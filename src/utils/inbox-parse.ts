@@ -10,7 +10,7 @@ import yaml from "js-yaml";
 import { CURRENCIES, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
-import type { Command } from "./inbox-handlers.js";
+import type { BrokerPosition, Command } from "./inbox-handlers.js";
 import { quoted } from "./printable.js";
 
 /** The `schema_version` of the inbox format this engine reads. */
@@ -65,6 +65,7 @@ const COMMAND_KINDS = [
   "set_stop",
   "clear_stop",
   "split",
+  "snapshot",
   "discard",
 ] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
@@ -77,6 +78,7 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   set_stop: ["command", "ticker", "date", "price"],
   clear_stop: ["command", "ticker", "date"],
   split: ["command", "ticker", "date", "ratio"],
+  snapshot: ["command", "date", "cash", "positions"],
   discard: ["command", "file"],
 };
 
@@ -148,6 +150,75 @@ interface Unread {
   currencies: Currency[];
   commandKind?: CommandKind;
   ticker?: Ticker;
+}
+
+/**
+ * The positions of a `snapshot`: a list of mappings with a ticker and the units held (plain decimals greater than
+ * zero), each ticker once. Every problem found goes to `problems` with the place of the item; `undefined` if any.
+ */
+function brokerPositions(raw: unknown, problems: string[]): BrokerPosition[] | undefined {
+  if (raw === undefined) {
+    problems.push('missing field "positions" (write positions: [] when the broker holds none)');
+    return undefined;
+  }
+  if (raw === null || (typeof raw === "string" && raw.trim() === "")) {
+    problems.push('field "positions" is empty: write positions: [] when the broker holds none');
+    return undefined;
+  }
+  if (!Array.isArray(raw)) {
+    problems.push('field "positions" must be a list of positions, each with a ticker and its units');
+    return undefined;
+  }
+  const found: BrokerPosition[] = [];
+  const before = problems.length;
+  raw.forEach((item: unknown, index) => {
+    const at = `position ${index + 1}`;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      problems.push(`${at}: must be a mapping of ticker and units`);
+      return;
+    }
+    const entry = item as Record<string, unknown>;
+    let bad = false;
+    const problem = (reason: string): void => {
+      problems.push(`${at}: ${reason}`);
+      bad = true;
+    };
+    for (const name of Object.keys(entry)) {
+      if (name !== "ticker" && name !== "units") problem(`unknown field ${quoted(name)} for a position`);
+    }
+    const field = (name: string): string | undefined => {
+      const value = entry[name];
+      if (value === undefined) problem(`missing field "${name}"`);
+      else if (typeof value !== "string" || value.trim() === "") problem(`field "${name}" must be a value`);
+      else return value.trim();
+      return undefined;
+    };
+    const tickerText = field("ticker");
+    const unitsText = field("units");
+    let t: Ticker | undefined;
+    if (tickerText !== undefined) {
+      const checked = checkTicker(tickerText);
+      if ("problem" in checked) problem(checked.problem);
+      else t = checked.ticker;
+    }
+    let units: number | undefined;
+    if (unitsText !== undefined) {
+      const n = decimal(unitsText, '"units"');
+      if (typeof n === "string") problem(n);
+      else if (n <= 0)
+        problem(
+          `"units" must be greater than zero (leave out a ticker the broker does not hold); got: ${quoted(unitsText)}`,
+        );
+      else units = n;
+    }
+    if (bad || t === undefined || units === undefined) return;
+    if (found.some((p) => p.ticker === t)) {
+      problem(`${quoted(t)} is listed twice: a ticker is one position`);
+      return;
+    }
+    found.push({ ticker: t, units });
+  });
+  return problems.length > before ? undefined : found;
 }
 
 /** One command's mapping read into a command, or every problem found in it. */
@@ -307,6 +378,15 @@ function readCommand(raw: unknown): Command | Unread {
     if (typeof named === "object") problems.push(named.problem);
     if (problems.length > 0 || named === undefined || typeof named === "object") return unread();
     return { kind, file: named };
+  }
+
+  if (kind === "snapshot") {
+    const when = date();
+    // Zero cash is a broker with none: only a split or a sign is not a number.
+    const cash = amount("cash", true, true);
+    const positions = brokerPositions(fields.positions, problems);
+    if (problems.length > 0 || !when || !cash || !positions) return unread();
+    return { kind, currency: cash.currency, date: when, cash: cash.value, positions };
   }
 
   if (kind === "split") {

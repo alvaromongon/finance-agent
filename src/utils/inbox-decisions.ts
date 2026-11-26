@@ -1,5 +1,6 @@
 // The decision-log lines of the trades a clean batch applied (#132): one `entry` per buy and one `exit` per lot a sale
-// touched, one `fx_conversion` per conversion and one `split` per silo a split scaled, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
+// touched, one `fx_conversion` per conversion, one `split` per silo a split scaled and one `reconcile` per difference
+// a snapshot of the broker found, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
 // recorded; the lines are telemetry: the state is what the batch changed. A trade that follows a proposal of the
 // system carries its origin (`sistema`), so it stays in the system's expectancy (ADR-0009 §8). Pure; the ids of the exits come from the one
 // source of decision ids (`uniqueDecisionIds`).
@@ -8,6 +9,7 @@ import { buildDecision, type Decision } from "../decisions.js";
 import { exactAmount } from "../money.js";
 import type { Trade } from "./inbox-check.js";
 import { uniqueDecisionIds } from "./decision-id.js";
+import { round } from "./round.js";
 
 export interface DecisionContext {
   rulesVersion: string;
@@ -57,6 +59,24 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
           split_ratio: trade.ratio,
         }),
       ];
+    }
+    // A snapshot changed nothing: each difference it found is a line, of the ticker or (no ticker) of the cash (#138).
+    if (trade.kind === "snapshot") {
+      return trade.differences.map((d) =>
+        buildDecision({
+          id: nextId(trade.date, d.kind === "cash" ? trade.currency : d.ticker, "reconcile"),
+          date: trade.date,
+          ticker: d.kind === "cash" ? null : d.ticker,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: "reconcile",
+          broker: d.broker,
+          engine: d.engine,
+          difference: round(d.broker - d.engine, d.kind === "cash" ? 2 : 8),
+        }),
+      );
     }
     const common = {
       date: trade.date,
