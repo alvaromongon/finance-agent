@@ -64,6 +64,8 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     unreadableCells: [],
     noStop: [],
     rejectedBatches: [],
+    staleness: null,
+    snapshot: null,
     tightStops: [],
     armed: [],
     escalated: [],
@@ -106,8 +108,18 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem, skippedRows, unreadableCells } = await readPortfolio(currency);
+  const { portfolio, lotsProblem, skippedRows, unreadableCells, staleness } = await readPortfolio(currency);
   digest.syncedAt = portfolio.syncedAt;
+  // How stale the silo is and what its latest snapshot of the broker found (#138). A silo is synced the day the engine
+  // last changed it, which is the day a snapshot was recorded when the last change was one.
+  digest.staleness = staleness;
+  digest.snapshot = portfolio.reconciled
+    ? {
+        date: portfolio.reconciled.date,
+        differences: portfolio.reconciled.differences,
+        recordedToday: portfolio.syncedAt.slice(0, 10) === today,
+      }
+    : null;
   // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
   // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
   const tickerWarning = (message: string): void => {

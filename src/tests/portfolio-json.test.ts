@@ -41,7 +41,19 @@ const store = (): PortfolioStore => {
     },
   );
   return {
-    silos: { EUR: { ...EUR, totalCash: money(1300, "EUR") }, USD },
+    silos: {
+      EUR: { ...EUR, totalCash: money(1300, "EUR") },
+      USD: {
+        ...USD,
+        reconciled: {
+          date: "2026-11-20",
+          differences: [
+            { kind: "cash", broker: money(910.5, "USD"), engine: money(900.5, "USD") },
+            { kind: "position", ticker: tk("KO"), broker: 0.00000002, engine: 0.00000001 },
+          ],
+        },
+      },
+    },
     accountEnv: "demo",
     unmoved: [{ file: "2026-11-12.yaml", sha256: "ab".repeat(32), at: "2026-11-12T10:00:00.000Z" }],
     pendingDecisions: ['{"id":"x","amount":1e-8}'],
@@ -84,6 +96,8 @@ describe("the store text", () => {
     assert.match(text, /"cash": "1200\.00 EUR"/);
     assert.match(text, /"entry_costs": "1\.50 USD"/);
     assert.match(text, /"units": "0\.00000001"/);
+    assert.match(text, /"broker": "910\.50 USD"/);
+    assert.match(text, /"broker": "0\.00000002"/);
     assert.deepEqual(decodeStore(text, "state/portfolio.json"), store());
   });
 
@@ -153,6 +167,33 @@ describe("the store text", () => {
     refuses(
       mutate((d) => (d.resolved_rejections = "none")),
       /resolved_rejections: must be a list/,
+    );
+  });
+
+  it("reads a silo with no snapshot as one that was never reconciled (#138), and refuses a snapshot it cannot read", () => {
+    const none = decodeStore(encodeStore(store()), "state/portfolio.json").silos.EUR!;
+    assert.equal(none.reconciled, undefined);
+    assert.doesNotMatch(JSON.stringify(JSON.parse(encodeStore(store())).silos.EUR), /reconciled/);
+    const clean = mutate((d) => (d.silos.USD.reconciled.differences = []));
+    assert.deepEqual(decodeStore(clean, "state/portfolio.json").silos.USD!.reconciled, {
+      date: "2026-11-20",
+      differences: [],
+    });
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.date = "yesterday")),
+      /silos\.USD\.reconciled\.date: must be a calendar date as YYYY-MM-DD/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.differences[0].broker = "910.50 EUR")),
+      /silos\.USD\.reconciled\.differences\[0\]\.broker: is in EUR, not in the silo's USD/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.differences[1].broker = "1e-8")),
+      /silos\.USD\.reconciled\.differences\[1\]\.broker: must be a plain decimal number/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.differences[0].kind = "lots")),
+      /silos\.USD\.reconciled\.differences\[0\]\.kind: must be "cash" or "position"/,
     );
   });
 

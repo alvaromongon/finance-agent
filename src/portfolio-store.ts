@@ -24,6 +24,7 @@ import type { Currency, Lot, PortfolioSnapshot } from "./types.js";
 import { applyPrices } from "./utils/portfolio-writer.js";
 import { decodeStore, encodeStore, renderView, withPrices, type PortfolioStore } from "./utils/portfolio-json.js";
 import { volumeMismatches } from "./utils/lots-check.js";
+import { stalenessOf, type Staleness } from "./utils/staleness.js";
 import { addCounted, countedInCents, formatMoney } from "./money.js";
 import {
   assertPortfolioSections,
@@ -53,6 +54,12 @@ export interface PortfolioRead<C extends Currency = Currency> {
   skippedRows: string[];
   /** The `Positions` P/L and `Cash` cells too large to count in cents, read as 0 or absent (#86), one message each. */
   unreadableCells: string[];
+  /**
+   * How stale the silo is (#138): the age of its latest `snapshot` of the broker, and a silo with none is stale. `null`
+   * while the state is still the old `portfolio.md` (no store yet): it has no snapshot to measure, and keeps its own
+   * `last_manual_sync` warning until #143 removes that way.
+   */
+  staleness: Staleness | null;
 }
 
 const projectDir = () => config.paths.vaultProjectDir;
@@ -85,8 +92,9 @@ function readFromStore<C extends Currency>(store: PortfolioStore, currency: C, w
       `${STORE_WHERE}: there is no ${currency} silo in the portfolio (see docs/input-format.md)`,
     );
   }
-  if (warn) warnIfStale(portfolio.syncedAt);
-  return { portfolio, lotsProblem: null, skippedRows: [], unreadableCells: [] };
+  const staleness = stalenessOf(portfolio.reconciled?.date, new Date(), config.marketData.portfolioStaleDays);
+  if (warn) warnIfSnapshotStale(currency, staleness);
+  return { portfolio, lotsProblem: null, skippedRows: [], unreadableCells: [], staleness };
 }
 
 /** What the flows that skip a row they cannot read do with the reason (ADR-0016). */
@@ -113,13 +121,8 @@ export async function readPortfolio<C extends Currency>(currency: C): Promise<Po
 export async function readBothPortfolios(): Promise<{ EUR?: PortfolioRead<"EUR">; USD?: PortfolioRead<"USD"> }> {
   const store = await readStore();
   if (store !== null) {
-    let warn = true;
-    const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined => {
-      if (store.silos[currency] === undefined) return undefined;
-      const read = readFromStore(store, currency, warn);
-      warn = false;
-      return read;
-    };
+    const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined =>
+      store.silos[currency] === undefined ? undefined : readFromStore(store, currency, true);
     const eur = silo("EUR");
     const usd = silo("USD");
     if (eur === undefined && usd === undefined) {
@@ -164,6 +167,16 @@ function warnIfStale(lastSync: string | null | undefined): void {
   } else {
     console.warn("[vault-io] portfolio.md has no last_manual_sync field. Update it by hand.");
   }
+}
+
+/** Warns that a silo of the store is stale (#138): it has no snapshot of the broker, or its latest one is too old. */
+function warnIfSnapshotStale(currency: Currency, staleness: Staleness): void {
+  if (!staleness.stale) return;
+  const how =
+    staleness.asOf === null
+      ? `the ${currency} silo has no snapshot of the broker, so it is stale`
+      : `the ${currency} silo's latest snapshot is from ${staleness.asOf.slice(0, 10)}, ${Math.floor(staleness.ageDays!)} days ago: it is stale`;
+  console.warn(`[vault-io] WARNING: ${how}. Send a snapshot command (see routines/portfolio-sync.md).`);
 }
 
 /**
@@ -217,6 +230,7 @@ function parsePortfolioText<C extends Currency>(raw: string, currency: C, warnSt
     lotsProblem,
     skippedRows,
     unreadableCells,
+    staleness: null,
   };
 }
 
@@ -404,14 +418,21 @@ export async function saveStore(store: PortfolioStore): Promise<void> {
 }
 
 /**
- * Makes the store from the old `portfolio.md` now, with every silo synced at `syncedAt` (the demo, which runs on a
- * copy of the example brain that must not warn of a stale portfolio). A store that exists is left as it is.
+ * Makes the store from the old `portfolio.md` now, with every silo synced and reconciled with the broker as of
+ * `syncedAt` (the demo, which runs on a copy of the example brain that must not warn of a stale portfolio: it is made
+ * as if the owner had sent a snapshot with no difference that day). A store that exists is left as it is.
  */
 export async function seedStore(syncedAt: Date): Promise<void> {
   if ((await readStore()) !== null) return;
   const store = await storeFromPortfolioFile();
   const stamp = (silo: PortfolioSnapshot | undefined) =>
-    silo ? { ...silo, syncedAt: syncedAt.toISOString() } : undefined;
+    silo
+      ? {
+          ...silo,
+          syncedAt: syncedAt.toISOString(),
+          reconciled: { date: syncedAt.toISOString().slice(0, 10), differences: [] },
+        }
+      : undefined;
   await writeStore({
     ...store,
     silos: {

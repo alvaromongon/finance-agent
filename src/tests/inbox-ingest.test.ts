@@ -282,6 +282,101 @@ describe("inbox:ingest", () => {
     });
   });
 
+  describe("a snapshot of the broker (#138)", () => {
+    const DAY = new Date("2026-11-26T10:00:00Z");
+    // The store is seeded with 1000.00 EUR and 500.00 USD and no position; the batch buys 2 SAP.DE for 200 EUR.
+    const SNAP = (cash: string, positions: string, date = "2026-11-25", currency = "EUR") =>
+      `command: snapshot\ndate: ${date}\ncash: ${cash} ${currency}\npositions: ${positions}`;
+    const OWN = "\n  - ticker: SAP.DE\n    units: 2";
+    const siloOf = async (currency: "EUR" | "USD" = "EUR") => JSON.parse(await storeText()).silos[currency];
+    const reconcileLines = async () => (await log()).filter((d) => d.type === "reconcile");
+
+    it("changes no cash, position or lot: it records the difference and the day, and the state is what the batch left", async () => {
+      await drop("a.yaml", batch(BUY(), STOP, SNAP("812.50", "[]")));
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const eur = await siloOf();
+      assert.equal(eur.cash, "800.00 EUR", "the engine keeps its own cash: 1000 - 200");
+      assert.equal(eur.positions.length, 1);
+      assert.equal(eur.lots.length, 1);
+      assert.deepEqual(eur.reconciled, {
+        date: "2026-11-25",
+        differences: [
+          { kind: "cash", broker: "812.50 EUR", engine: "800.00 EUR" },
+          { kind: "position", ticker: "SAP.DE", broker: "0", engine: "2" },
+        ],
+      });
+      assert.equal((await siloOf("USD")).reconciled, undefined, "the other silo was not compared");
+      assert.deepEqual(await ls("inbox", "applied"), ["a.yaml"]);
+    });
+
+    it("says each difference in its output, as a warning that does not stop the batch", async () => {
+      await drop("a.yaml", batch(SNAP("1010.50", "[]")));
+      const { lines, exitCode } = await inbox.ingestInbox(DAY);
+      assert.equal(exitCode, 0);
+      assert.ok(
+        lines.includes(
+          "inbox/a.yaml: command 1, line 3: warning: the EUR snapshot as of 2026-11-25 differs from the state in the cash: the broker has 1010.50 EUR, the engine 1000.00 EUR (+10.50 EUR)",
+        ),
+        lines.join("\n"),
+      );
+    });
+
+    it("writes one reconcile line per difference: the ticker or no ticker for the cash, what each side holds, its size, the snapshot date", async () => {
+      await drop("a.yaml", batch(BUY(), STOP, SNAP("812.50", `\n  - ticker: KO\n    units: 3`, "2026-11-24")));
+      assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
+      const lines = await reconcileLines();
+      assert.deepEqual(
+        lines.map((d) => [
+          d.ticker ?? null,
+          d.currency,
+          d.date,
+          d.broker,
+          d.engine,
+          d.difference,
+          d.origin,
+          d.source,
+          d.rules_version,
+        ]),
+        [
+          [null, "EUR", "2026-11-24", 812.5, 800, 12.5, "propietario", "portfolio-sync", "1.4"],
+          ["KO", "EUR", "2026-11-24", 3, 0, 3, "propietario", "portfolio-sync", "1.4"],
+          ["SAP.DE", "EUR", "2026-11-24", 0, 2, -2, "propietario", "portfolio-sync", "1.4"],
+        ],
+      );
+      assert.equal(new Set(lines.map((d) => d.id)).size, 3, "each line has its own id");
+    });
+
+    it("a snapshot that agrees with the state writes no line and records an empty list of differences", async () => {
+      await drop("a.yaml", batch(BUY(), STOP, SNAP("800.00", OWN)));
+      assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
+      assert.deepEqual(await reconcileLines(), []);
+      assert.deepEqual((await siloOf()).reconciled, { date: "2026-11-25", differences: [] });
+    });
+
+    it("a later snapshot replaces the differences of the earlier one", async () => {
+      await drop("a.yaml", batch(SNAP("1.00", "[]", "2026-11-20")));
+      await inbox.ingestInbox(DAY);
+      assert.equal((await siloOf()).reconciled.differences.length, 1);
+      await drop("b.yaml", batch(SNAP("1000.00", "[]", "2026-11-25")));
+      await inbox.ingestInbox(DAY);
+      assert.deepEqual((await siloOf()).reconciled, { date: "2026-11-25", differences: [] });
+      await drop("c.yaml", batch(SNAP("1000.00", "[]", "2026-11-22")));
+      const { lines, exitCode } = await inbox.ingestInbox(DAY);
+      assert.equal(exitCode, 1);
+      assert.match(lines.join("\n"), /as of 2026-11-25 is already recorded: this one, as of 2026-11-22, is older/);
+    });
+
+    it("rejects a snapshot dated in the future and keeps the state as it was", async () => {
+      await drop("a.yaml", batch(SNAP("1000.00", "[]", "2026-11-27")));
+      const { lines, exitCode } = await inbox.ingestInbox(DAY);
+      assert.equal(exitCode, 1);
+      assert.match(lines.join("\n"), /the snapshot's date 2026-11-27 is in the future \(today is 2026-11-26\)/);
+      assert.deepEqual(await ls("inbox", "rejected"), ["a.yaml", "a.yaml.errors.txt"]);
+      assert.deepEqual(await ls("state"), [], "nothing was applied, so no store was made");
+    });
+  });
+
   describe("a split (#137)", () => {
     const SPLIT = (ratio: string, over = "") =>
       `command: split\nticker: SAP.DE\ndate: 2026-10-01\nratio: ${ratio}${over ? `\n${over}` : ""}`;
@@ -1312,6 +1407,7 @@ describe("inbox:ingest", () => {
           entryCostsTaken: new Map(),
           awaiting: new Set(),
           entry: entryContext(),
+          today: "2026-11-26",
         },
       );
       assert.ok("reason" in result);

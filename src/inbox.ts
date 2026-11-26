@@ -128,6 +128,7 @@ async function plan(
   all: InboxFile[],
   store: PortfolioStore,
   mustKnowRules: boolean,
+  now: Date,
   atrSource?: PriceSource,
 ): Promise<Plan> {
   const [history, rulesVersion, { batches: rejected, problems: rejectedProblems }] = await Promise.all([
@@ -148,6 +149,7 @@ async function plan(
     takenIds: new Set(history.map((d) => d.id)),
     entryCostsTaken: entryCostsTaken(history),
     entry: await entryContext(toRun, store, history, mustKnowRules, atrSource),
+    today: now.toISOString().slice(0, 10),
   });
   return {
     waiting: all.filter(isWaiting).map((file) => file.name),
@@ -182,7 +184,7 @@ const awaitingLine = (awaiting: readonly string[]): string[] =>
  * network call: the ATR the stop distance of a buy is judged with is for `ingest` (which writes the flag), and a flag
  * changes no verdict.
  */
-export async function checkInbox(): Promise<InboxOutcome> {
+export async function checkInbox(now: Date = new Date()): Promise<InboxOutcome> {
   const all = await readInbox();
   if (all.length === 0) {
     // An empty inbox can still have a rejected batch waiting: it is named, as with any other run.
@@ -196,7 +198,7 @@ export async function checkInbox(): Promise<InboxOutcome> {
       exitCode: 0,
     };
   }
-  const planned = await plan(all, (await readStoreIfAny()) ?? (await storeFromPortfolioFile()), false);
+  const planned = await plan(all, (await readStoreIfAny()) ?? (await storeFromPortfolioFile()), false, now);
   const { checks } = planned.run;
   const problems = renderIssues(checks);
   // Warnings never change the exit code: a position without a stop is for the owner to know, not a rejected batch.
@@ -263,7 +265,7 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
     store,
     rejected: inRejected,
     rejectedProblems,
-  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true, atrSource);
+  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true, now, atrSource);
   const clean = run.checks.filter((c) => c.clean);
   const rejected = run.checks.filter((c) => !c.clean && c.text !== undefined);
   const unreadable = run.checks.filter((c) => !c.clean && c.text === undefined);

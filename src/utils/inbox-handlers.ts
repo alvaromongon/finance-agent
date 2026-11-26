@@ -8,6 +8,7 @@
 import {
   CURRENCIES,
   type Currency,
+  type Difference,
   type Lot,
   type PortfolioSnapshot,
   type Position,
@@ -144,6 +145,29 @@ export interface Split {
   ratio: SplitRatio;
 }
 
+/** A position as the broker lists it in a snapshot: a ticker and the units held. */
+export interface BrokerPosition {
+  ticker: Ticker;
+  units: number;
+}
+
+/**
+ * What the broker shows of one silo on a date (#138): its cash and the units of each position it holds. It is the
+ * owner's way to say "this is what the broker has": the handler compares it with the engine's state, tells each
+ * difference and changes no cash, lot or stop; the owner corrects a difference with a command. It records the day it is
+ * as of, which is what the silo's staleness is measured from.
+ */
+export interface Snapshot<C extends Currency = Currency> {
+  kind: "snapshot";
+  currency: C;
+  /** YYYY-MM-DD: the day the broker's figures are as of; not in the future. */
+  date: string;
+  /** The broker's available cash. */
+  cash: number;
+  /** Every position the broker holds; a ticker that is not listed is one the broker does not hold. */
+  positions: readonly BrokerPosition[];
+}
+
 /**
  * Gives up a rejected batch for good (#152): it stays in `inbox/rejected/` as the audit trail and is not named in the
  * digest any more. It changes no cash, lot or stop, so it has no currency.
@@ -155,7 +179,7 @@ export interface Discard {
 }
 
 export type Command<C extends Currency = Currency> =
-  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Split | Discard;
+  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Split | Snapshot<C> | Discard;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -182,6 +206,8 @@ export type HandlerResult =
       discarded?: string;
       /** A split: the silos it changed and the lots it scaled (`openedKey`), so the batch can follow the lots it opened. */
       split?: { silos: readonly Currency[]; lots: readonly string[] };
+      /** A snapshot: the silo, the day it is as of and each difference found (none when the broker and the engine agree). */
+      snapshot?: { currency: Currency; date: string; differences: readonly Difference[] };
     }
   | { reason: string };
 
@@ -229,6 +255,8 @@ export interface BatchContext {
   entry: EntryContext;
   /** Where a `set_stop` or `clear_stop` writes who changed the stop. */
   record?: StopRecord;
+  /** The day of the run, YYYY-MM-DD: a snapshot is not of a day that has not come (the one clock the handlers read). */
+  today: string;
 }
 
 /** Identifies a lot across silos: entry ids are only unique within one. */
@@ -835,6 +863,55 @@ export function split(state: InboxState, command: Split): HandlerResult {
   };
 }
 
+/** The units the silo holds of `ticker`, the sum of its positions. */
+const heldUnits = (silo: PortfolioSnapshot, ticker: Ticker): number =>
+  silo.positions.filter((p) => p.ticker === ticker).reduce((sum, p) => sum + p.volume, 0);
+
+/**
+ * Compares what the broker shows of a silo with the engine's state (#138) and records the day and the differences on
+ * the silo. It changes no cash, position or lot: the broker is the owner's fact, but applying it silently would hide a
+ * missed or wrongly entered trade, so the owner corrects a difference with a command. The differences are the cash
+ * (to the cent) and each ticker either side holds whose units differ by more than the units tolerance.
+ */
+export function snapshot<C extends Currency>(
+  state: InboxState,
+  command: Snapshot<C>,
+  { today }: Pick<BatchContext, "today">,
+): HandlerResult {
+  const silo = siloOf(state, command.currency);
+  if (isRefusal(silo)) return silo;
+  if (command.date > today) {
+    return refused(`the snapshot's date ${command.date} is in the future (today is ${today})`);
+  }
+  // The parser refuses a repeated ticker too, but the handler is also run by whoever builds a command without it (#132).
+  const listed = new Set<Ticker>();
+  for (const { ticker } of command.positions) {
+    if (listed.has(ticker))
+      return refused(`${quoted(ticker)} is listed twice in the snapshot: a ticker is one position`);
+    listed.add(ticker);
+  }
+  const latest = silo.reconciled;
+  if (latest !== undefined && command.date < latest.date) {
+    return refused(
+      `a snapshot of the ${command.currency} silo as of ${latest.date} is already recorded: this one, as of ${command.date}, is older`,
+    );
+  }
+  const differences: Difference<C>[] = [];
+  const broker = countedInCents(command.cash, `the ${command.currency} cash of the snapshot`, command.currency);
+  if (broker !== silo.cash) differences.push({ kind: "cash", broker, engine: silo.cash });
+  const tickers = [...listed, ...silo.positions.map((p) => p.ticker).filter((t) => !listed.has(t))];
+  for (const ticker of new Set(tickers)) {
+    const units = command.positions.find((p) => p.ticker === ticker)?.units ?? 0;
+    const engine = heldUnits(silo, ticker);
+    if (Math.abs(units - engine) > UNITS_TOLERANCE)
+      differences.push({ kind: "position", ticker, broker: units, engine });
+  }
+  return {
+    state: withSilo(state, { ...silo, reconciled: { date: command.date, differences } }),
+    snapshot: { currency: command.currency, date: command.date, differences },
+  };
+}
+
 export function discard(
   command: Discard,
   { awaiting }: Pick<BatchContext, "awaiting">,
@@ -910,6 +987,8 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return clearStop(state, command, context);
       case "split":
         return split(state, command);
+      case "snapshot":
+        return snapshot(state, command, context);
       case "discard":
         return discard(command, context, state);
     }

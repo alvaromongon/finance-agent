@@ -101,6 +101,25 @@ export interface SkippedLotRow {
 }
 
 /**
+ * One difference between the broker's snapshot of a silo and the engine's state (#138): the cash, or the units of
+ * a ticker. `broker` and `engine` are what each side holds (a ticker one side does not hold has 0 units); the size
+ * of the difference is `broker - engine`, positive when the broker holds more.
+ */
+export type Difference<C extends Currency = Currency> =
+  | { kind: "cash"; broker: Money<C>; engine: Money<C> }
+  | { kind: "position"; ticker: Ticker; broker: number; engine: number };
+
+/**
+ * What the latest `snapshot` of a silo found (#138): the day it is as of and each difference it showed, none when the
+ * engine and the broker agree. The state itself is never changed by it. The age of `date` is how stale the silo is.
+ */
+export interface Reconciliation<C extends Currency = Currency> {
+  /** YYYY-MM-DD: the day the broker's figures are as of. */
+  date: string;
+  differences: Difference<C>[];
+}
+
+/**
  * Portfolio snapshot of one silo, the model every flow reads (`readPortfolio`): every amount in it is
  * `Money<C>`, in the silo's currency, so a silo's amount cannot be added to or compared with another's.
  */
@@ -120,6 +139,8 @@ export interface PortfolioSnapshot<C extends Currency = Currency> {
   /** The rows of `Lots` the reader skipped because they do not read as a lot; absent if none. */
   skippedLotRows?: SkippedLotRow[];
   syncedAt: string; // ISO timestamp
+  /** The latest `snapshot` command of the silo (#138); absent while none was ever recorded: the silo is stale. */
+  reconciled?: Reconciliation<C>;
 }
 
 /**

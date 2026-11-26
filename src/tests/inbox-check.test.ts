@@ -412,6 +412,99 @@ describe("inbox:check", () => {
     });
   });
 
+  describe("a snapshot of the broker (#138)", () => {
+    // The fixture holds EUR cash 1000 and USD cash 500 with 5 SAP.DE in the USD silo.
+    const SNAP = (cash = "500 USD", positions = "positions:\n  - ticker: SAP.DE\n    units: 5", date = "2026-11-20") =>
+      `command: snapshot\ndate: ${date}\ncash: ${cash}\n${positions}`;
+    const lineOf = (lines: string[], n: number) => lines.find((l) => l.includes(`command ${n},`));
+
+    it("is clean when the broker and the engine agree, and a difference is a warning, never an error", async () => {
+      await drop("a.yaml", batch(SNAP()));
+      assert.deepEqual(await checkInbox(), { lines: ["Inbox is clean: 1 batch(es) would apply."], exitCode: 0 });
+      await drop("a.yaml", batch(SNAP("510.50 USD", "positions: []")));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+      assert.deepEqual(lines.slice(1, 3), [
+        "inbox/a.yaml: command 1, line 3: warning: the USD snapshot as of 2026-11-20 differs from the state in the cash: the broker has 510.50 USD, the engine 500.00 USD (+10.50 USD)",
+        "inbox/a.yaml: command 1, line 3: warning: the USD snapshot as of 2026-11-20 differs from the state in SAP.DE: the broker has 0 units, the engine 5 (-5)",
+      ]);
+    });
+
+    it("compares with the state after the commands before it", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 10 USD", SNAP("510 USD")));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0);
+      assert.deepEqual(lines, ["Inbox is clean: 1 batch(es) would apply."]);
+    });
+
+    it("changes nothing: the files of the vault are the same after the check", async () => {
+      await drop("a.yaml", batch(SNAP("1 USD", "positions: []")));
+      const before = await snapshot();
+      await checkInbox();
+      assert.deepEqual(await snapshot(), before);
+    });
+
+    it("is refused for a silo the portfolio lacks, a date in the future and a ticker listed twice", async () => {
+      await writeFile(join(vaultDir, "portfolio.md"), portfolioMd().split("## USD — Cash")[0], "utf8");
+      await drop("a.yaml", batch(SNAP("1 USD", "positions: []")));
+      assert.match((await checkInbox()).lines[0], /command 1, line 3: there is no USD silo in the portfolio$/);
+      await drop("a.yaml", batch(SNAP("1 EUR", "positions: []", "2099-01-01")));
+      assert.match((await checkInbox()).lines[0], /command 1, line 3: the snapshot's date 2099-01-01 is in the future/);
+      await drop(
+        "a.yaml",
+        batch(SNAP("1 EUR", "positions:\n  - ticker: KO\n    units: 1\n  - ticker: KO\n    units: 2")),
+      );
+      assert.match((await checkInbox()).lines[0], /command 1, line 3: position 2: "KO" is listed twice/);
+    });
+
+    it("is not checked after a refused command that would have changed the cash or the lots of its silo", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: withdrawal\namount: 99999 USD", SNAP(), "command: withdrawal\namount: 99999 EUR"),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /exceeds the available cash/);
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 was refused, so the USD cash and positions it would compare are unknown/,
+      );
+      assert.match(lineOf(lines, 3)!, /exceeds the available cash/, "the other silo is checked");
+    });
+
+    it("is not checked after a split that was refused, which left the units of a ticker unknown", async () => {
+      await drop("a.yaml", batch("command: split\nticker: SAP.DE\ndate: 2026-07-01\nratio: 3 for 3", SNAP()));
+      assert.match(
+        lineOf((await checkInbox()).lines, 2)!,
+        /not checked: command 1 was refused, so the USD cash and positions/,
+      );
+    });
+
+    it("what a rejected file before it would have changed explains it, a rejected set_stop does not", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD\nbogus: 1"));
+      await drop("b.yaml", batch(SNAP("505 USD")));
+      assert.match(
+        (await checkInbox()).lines.find((l) => l.startsWith("inbox/b"))!,
+        /^inbox\/b\.yaml: command 1, line 3: not checked: depends on inbox\/a\.yaml, which was rejected, so the USD cash and positions it would compare are unknown$/,
+      );
+      await drop("a.yaml", batch("command: set_stop\nticker: SAP.DE\nprice: 1 USD\nbogus: 1"));
+      assert.ok(!(await checkInbox()).lines.some((l) => l.includes("not checked")));
+    });
+
+    it("a snapshot that was refused or did not read leaves nothing unknown for the commands after it", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          SNAP("1 USD", "positions: []", "2099-01-01"),
+          "command: snapshot\ndate: nope\ncash: 1 USD\npositions: []",
+          "command: withdrawal\namount: 99999 USD",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 3)!, /exceeds the available cash/);
+      assert.ok(!lines.some((l) => l.includes("not checked")), lines.join("\n"));
+    });
+  });
+
   it("reports every error of the batch, not only the first: command, line and reason", async () => {
     await drop(
       "a.yaml",

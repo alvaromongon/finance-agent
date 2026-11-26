@@ -102,7 +102,7 @@ describe("portfolio-sync guide", () => {
     assert.ok(batches.length >= 1, "no batch example");
     for (const parsed of batches) assert.deepEqual(parsed.issues, []);
     const kinds = new Set(batches.flatMap((b) => b.commands.map((c) => c.command.kind)));
-    for (const kind of ["buy", "set_stop", "sale", "convert", "split"])
+    for (const kind of ["buy", "set_stop", "sale", "convert", "split", "snapshot"])
       assert.ok(kinds.has(kind as never), `no ${kind} in a batch`);
   });
 
