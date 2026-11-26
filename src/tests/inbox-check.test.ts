@@ -289,6 +289,129 @@ describe("inbox:check", () => {
     });
   });
 
+  describe("a split (#137)", () => {
+    // The fixture holds 5 SAP.DE in the USD silo, bought on 2026-06-15 at 180.
+    const SPLIT = (over = "", ticker = "SAP.DE", ratio = "2 for 1") =>
+      `command: split\nticker: ${ticker}\ndate: 2026-07-01\nratio: ${ratio}${over}`;
+    const lineOf = (lines: string[], n: number) => lines.find((l) => l.includes(`command ${n},`));
+
+    it("is clean for a held ticker, and a sale after it can sell the units the split gave", async () => {
+      // 5 units cannot pay for 8; after 2 for 1 the lot holds 10.
+      const SELL_8 = "command: sale\nticker: SAP.DE\ndate: 2026-07-02\nunits: 8\nprice: 100 USD";
+      await drop("a.yaml", batch(SPLIT(), SELL_8));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+      await drop("a.yaml", batch(SELL_8));
+      assert.equal((await checkInbox()).exitCode, 1, "without the split the sale is refused");
+    });
+
+    it("is refused, with its position, for a ticker with no open lot", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 1 USD", SPLIT("", "KO")));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 1);
+      assert.match(
+        lines[0],
+        /^inbox\/a\.yaml: command 2, line 5: cannot split KO: there is no open lot of it in the portfolio$/,
+      );
+    });
+
+    it("is refused for a ratio of 1, a date before the lot was bought and units that would not stay whole", async () => {
+      await drop("a.yaml", batch(SPLIT("", "SAP.DE", "3 for 3")));
+      assert.match((await checkInbox()).lines[0], /^inbox\/a\.yaml: command 1, line 3: a ratio of 1 changes nothing/);
+      await drop("a.yaml", batch(SPLIT("").replace("2026-07-01", "2026-06-14")));
+      assert.match(
+        (await checkInbox()).lines[0],
+        /command 1, line 3: cannot split SAP\.DE: its date 2026-06-14 is before the day the oldest open lot was bought \(2026-06-15\)/,
+      );
+      await drop("a.yaml", batch(SPLIT("", "SAP.DE", "1 for 2")));
+      assert.match(
+        (await checkInbox()).lines[0],
+        /command 1, line 3: cannot split SAP\.DE 1 for 2: lot ".*" would be left with 2\.5 units, not a whole number/,
+      );
+    });
+
+    it("a refused split leaves the lots and the stop of its ticker unknown, and nothing else", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          SPLIT("", "SAP.DE", "3 for 3"),
+          "command: sale\nticker: SAP.DE\ndate: 2026-07-02\nunits: 99\nprice: 100 USD",
+          "command: set_stop\nticker: SAP.DE\nprice: 90 USD",
+          "command: split\nticker: SAP.DE\ndate: 2026-07-01\nratio: 2 for 1",
+          "command: withdrawal\namount: 99999 USD",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /a ratio of 1 changes nothing/);
+      for (const n of [2, 3]) {
+        assert.match(
+          lineOf(lines, n)!,
+          /not checked: command 1 was refused, so the lots and the stop of SAP\.DE it would change are unknown/,
+        );
+      }
+      assert.match(
+        lineOf(lines, 4)!,
+        /not checked: command 1 was refused, so the lots of the ticker it would change are unknown/,
+      );
+      assert.match(lineOf(lines, 5)!, /the withdrawal of 99999\.00 USD exceeds the available cash/);
+    });
+
+    it("one that does not read leaves the lots of its ticker unknown, so the sale of the units it gives is not checked", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: split\nticker: SAP.DE\ndate: 2026-07-01\nratio: nope",
+          "command: sale\nticker: SAP.DE\ndate: 2026-07-02\nunits: 8\nprice: 100 USD",
+          "command: withdrawal\namount: 99999 USD",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /"ratio" must be written as <new> for <old>/);
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 could not be read, so the lots and the stop of SAP\.DE it would change/,
+      );
+      assert.match(lineOf(lines, 3)!, /the withdrawal of 99999\.00 USD exceeds the available cash/);
+    });
+
+    it("one blocked by a refused buy of its ticker is not checked: what the buy would have opened is unknown", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: buy\nticker: KO\ndate: 2026-06-20\nunits: 99999\nprice: 100 USD", SPLIT("", "KO")),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /the buy of KO costs/);
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 was refused, so the lots of the ticker it would change are unknown/,
+      );
+    });
+
+    it("what a rejected file before it would have bought explains a refusal, so the split is not checked", async () => {
+      await drop("a.yaml", batch("command: buy\nticker: KO\ndate: 2026-06-20\nunits: 1\nprice: 10 USD\nbogus: 1"));
+      await drop("b.yaml", batch(SPLIT("", "KO")));
+      const { lines } = await checkInbox();
+      assert.match(
+        lines.find((l) => l.startsWith("inbox/b"))!,
+        /^inbox\/b\.yaml: command 1, line 3: not checked: depends on inbox\/a\.yaml, which was rejected, so the lots of the ticker it would change are unknown$/,
+      );
+    });
+
+    it("a split of the lots the batch itself opened, and a sale of them, is clean", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: KO\ndate: 2026-06-20\nunits: 2\nprice: 100 USD",
+          "command: set_stop\nticker: KO\nprice: 90 USD",
+          SPLIT("", "KO", "3 for 1"),
+          "command: sale\nticker: KO\ndate: 2026-07-02\nunits: 6\nprice: 40 USD",
+        ),
+      );
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+    });
+  });
+
   it("reports every error of the batch, not only the first: command, line and reason", async () => {
     await drop(
       "a.yaml",

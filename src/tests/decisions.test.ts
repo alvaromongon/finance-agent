@@ -149,6 +149,25 @@ describe("validateDecision", () => {
     );
   });
 
+  it("a split (#137) carries its ticker and its ratio, the units after it per unit before it", () => {
+    const split = buildDecision(
+      base({ type: "split", origin: "propietario", source: "portfolio-sync", currency: "EUR", split_ratio: 0.1 }),
+    );
+    assert.equal(split.split_ratio, 0.1);
+    assert.match(split.id, /^20260914-adbe-split-[0-9a-f]{8}$/);
+    assert.deepEqual(validateDecision(JSON.parse(JSON.stringify(split))), split);
+    assert.throws(() => buildDecision(base({ type: "split" })), /split_ratio is required in split/);
+    assert.throws(() => buildDecision(base({ type: "split", ticker: null, split_ratio: 2 })), /ticker/);
+    for (const bad of [0, -2, Number.NaN]) {
+      assert.throws(
+        () => buildDecision(base({ type: "split", split_ratio: bad })),
+        /split_ratio must be a number > 0/,
+        String(bad),
+      );
+    }
+    assert.throws(() => buildDecision(base({ split_ratio: 2 })), /split_ratio only goes in split/);
+  });
+
   it("regime: only favorable, neutral or adverso", () => {
     assert.equal(buildDecision(base({ regime: "neutral" })).regime, "neutral");
     assert.throws(
@@ -554,6 +573,16 @@ describe("validateOwnerInput", () => {
       () => validateOwnerInput({ type: "fx_conversion", currency: "EUR", amount: 100, fx_rate: 1.1 }),
       (err: Error) =>
         err.message.includes("a currency conversion is told to the engine with a convert command in inbox/") &&
+        err.message.includes("[adjust_stop, deposit, withdrawal]") &&
+        !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
+    );
+  });
+
+  it("refuses a split, naming the inbox command that replaces it (#137)", () => {
+    assert.throws(
+      () => validateOwnerInput({ type: "split", currency: "EUR", ticker: "KO" }),
+      (err: Error) =>
+        err.message.includes("a split is told to the engine with a split command in inbox/") &&
         err.message.includes("[adjust_stop, deposit, withdrawal]") &&
         !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
     );
