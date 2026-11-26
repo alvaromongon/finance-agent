@@ -63,7 +63,7 @@ export async function commitState<T>(
  */
 export type Git = (args: readonly string[], env?: NodeJS.ProcessEnv) => Promise<string>;
 
-/** How the commands that talk to the remote (`fetch`, `push`) sign in; no other process of the engine gets it. */
+/** How the commands that talk to the remote (`fetch`, `push`) sign in; of the processes the engine spawns, only those get it. */
 export interface RemoteAuth {
   /** The git server, e.g. `https://github.com`. */
   serverUrl: string;
@@ -197,8 +197,8 @@ export class GitStateRemote implements StateRemote {
 
 /**
  * The remote the environment asks for (`STATE_COMMIT=git`), or `null`: the work then leaves its files in place. The
- * credential is taken out of the environment here (`takeToken`), so that it reaches the `git fetch` and `git push` of
- * this remote and no other process of the engine.
+ * credential is taken out of the environment here (`takeToken`), so that of the processes the engine spawns, only the
+ * `git fetch` and `git push` of this remote get it.
  */
 export function stateRemoteFromConfig(
   config: {
