@@ -118,6 +118,11 @@ describe("mailer — renderBody through sendAlert", () => {
     assert.match(body, /Precio de referencia:\s+138 USD/);
   });
 
+  it("ADJUST_STOP: says the engine drops the stop as a set_stop in inbox/ (#136); a BUY does not", async () => {
+    await quiet(() => sendAlert(ADJUST_STOP_REC, ADJUST_STOP_TICKET));
+    assert.match((await readOnlyOutboxMessage()).body, /como comando `set_stop` en `inbox\/`: no cambia nada hasta/);
+  });
+
   it("ADJUST_STOP: no Direction or Amount (it is not a buy/sell)", async () => {
     await quiet(() => sendAlert(ADJUST_STOP_REC, ADJUST_STOP_TICKET));
     const { body } = await readOnlyOutboxMessage();
@@ -139,6 +144,7 @@ describe("mailer — renderBody through sendAlert", () => {
     assert.match(body, /AVISOS\n======\n- Regla de los dos meses/);
     assert.match(body, /SUPUESTOS\n=========\n- El Brent aguanta los 80 \$/);
     assert.doesNotMatch(body, /AJUSTE DE STOP-LOSS/);
+    assert.doesNotMatch(body, /set_stop/);
   });
 
   it("the conviction is the engine's, with its points; without it there is no line", async () => {

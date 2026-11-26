@@ -33,6 +33,7 @@ import {
   retireWatchlistEntry,
 } from "./vault-io.js";
 import { ignoringLots, readPortfolio, readPortfolioView, refreshPrices } from "./portfolio-store.js";
+import { dropStopProposals } from "./stop-proposals.js";
 import { buildBriefingDecisions, extractProposals, formatEngineTicketsSection } from "./utils/briefing-decisions.js";
 import { CUT_BOARD_HEADING, extractCutBoard } from "./utils/decisions-evaluation-render.js";
 import { siloValue } from "./utils/sizing.js";
@@ -361,6 +362,19 @@ export async function finalizeBriefing(
     await appendDecisions(decisions);
     console.log(`[monday-briefing] ${decisions.length} decision(s) in logs/decisions.jsonl`);
   }
+
+  // The stops the briefing proposes are not written into the state: they are one batch of set_stop commands in
+  // inbox/, which inbox:ingest applies (#136). Said and never thrown: the email below must still go out.
+  await dropStopProposals(
+    tickets.flatMap((t) =>
+      t.action === "ADJUST_STOP" && t.ticket?.kind === "ADJUST_STOP"
+        ? [{ ticker: t.ticker, currency: t.ticket.currency, stop: t.ticket.stop }]
+        : [],
+    ),
+    "monday-briefing",
+    today,
+    "[monday-briefing] ",
+  );
 
   // The email is always sent (also when the plan is "accumulate cash").
   const emailBody = [

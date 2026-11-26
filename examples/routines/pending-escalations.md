@@ -30,11 +30,14 @@ the system prompt in `<data-path>/routines/execution-analysis.md`.
       `npm run --silent pending:resolve -- <file> <<'FA_JSON_EOF_7f3a'` ... `FA_JSON_EOF_7f3a`. Use
       that delimiter: the answer is shaped by untrusted news text and could contain a line `JSON`.
    4. On success the engine records the decision, queues the email in `logs/outbox/` and deletes
-      the pending file. Do not edit those files by hand.
+      the pending file; for an `ADJUST_STOP` it also drops a `set_stop` batch in `inbox/`. Do not edit those files
+      by hand.
 3. Commit and push what changed, only these paths (change the `finance-agent/` prefix to your
    data path):
    ```bash
    git add -A -- finance-agent/logs/ finance-agent/portfolio.md
+   # a stop the engine proposes is a new batch of set_stop commands in inbox/ (never state)
+   [ -d finance-agent/inbox ] && git add -A -- finance-agent/inbox/
    git diff --cached --quiet || git commit -m "chore(logs): resolve pending escalations $(date -u +%F)"
    git pull --rebase origin <default-branch> && git push origin <default-branch>
    ```

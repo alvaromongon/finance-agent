@@ -99,19 +99,28 @@ parentheses so a code comment that cites it can be found here.
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
+      11'. A stop the reasoner proposes (a non-blocked `ADJUST_STOP`, the one proposal of a stop the heartbeat makes) is
+      **not written into the state**: after the last signal, in the same run and also if a later signal failed, the
+      run drops one batch file `inbox/<date>-heartbeat-<ccy>-stops.yaml` with a `set_stop` per proposal, and
+      `inbox:ingest` applies it like the owner's commands ([#136](https://github.com/alvaromongon/finance-agent/issues/136)).
+      A proposal already waiting in `inbox/` (the same ticker, currency and price, from any file) is not dropped twice,
+      and an `inbox/` that cannot be written to (a symbolic link) is said in the log and stops nothing. The stop
+      check of step 4 reads the last applied state and never waits for that batch.
   12. Send the digest (crossed stops, positions without a stop, a problem with the lots, a ticker or a money cell that cannot be read, tight stops, armed setups, escalations) with only what is new
       since the last send today (crossed stops and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
   regenerating the view `portfolio.md`; else `portfolio.md`),
-  `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
-  and email ([delivery](#email-delivery)). Market data comes from Yahoo Finance.
+  `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`,
+  the batch of stop proposals in `inbox/` (a new file; it never edits one) and email ([delivery](#email-delivery)).
+  Market data comes from Yahoo Finance. Its workflow commits `inbox/` with the other paths it writes, never state.
 - **When it fails**: what was gathered before the failure still goes out in the digest, and the
   original error turns the run red; if that email also fails, it is only logged. A provider failure
   on one ticker's extras (strength, ATR, benchmark) does not stop the run; they are best-effort.
 - **Why**: [ADR-0002](decisions/0002-escalate-to-claude-only-after-deterministic-filters.md) (filters
   first), [ADR-0007](decisions/0007-portfolio-is-the-source-of-truth-for-risk-watch.md) (what is
-  watched), [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md) (two reasoner backends).
+  watched), [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md) (two reasoner backends),
+  [ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md) (a stop the engine raises is a command).
   For the lots check and the portfolio write: [spec #27](https://github.com/alvaromongon/finance-agent/issues/27).
 
 ### Market data freshness
@@ -199,9 +208,12 @@ them. It needs one history request per position with a stop; without ATR the pos
      position, cash and silo value are read at resolve time, so a late resolution sizes on the
      current state. A ticker in neither file is stale and cannot be resolved.
   3. Hand over to [Record a decision](#record-a-decision), dated with the detection day.
+     3'. A stop it proposes is dropped as a `set_stop` in `inbox/<date>-pending-stops.yaml`, as the heartbeat does
+     (step 11' there); the portfolio is not written for it.
   4. Delete the pending file, whether the ticket was blocked or not.
-- **Reads / writes**: reads the pending file, `watchlist.md`, the portfolio; writes what Record a
-  decision writes and deletes the pending file.
+- **Reads / writes**: reads the pending file, `watchlist.md`, the portfolio, the files of `inbox/`; writes what Record a
+  decision writes, the batch of stop proposals in `inbox/` and deletes the pending file. The routine commits `inbox/`
+  with `logs/`.
 - **When it fails**: a validation or recording error exits non-zero and leaves the file for a retry.
 - **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
 
@@ -216,7 +228,13 @@ them. It needs one history request per position with a stop; without ATR the pos
   3. On a BUY, warn if the two-month rule applies.
   4. Blocked ticket: write the Markdown log and the decision line with the reasons; send no email.
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
-     if delivery fails).
+     if delivery fails). For an `ADJUST_STOP` the alert says that the engine drops the stop as a `set_stop` in
+     `inbox/`, and the flow returns the proposal (ticker, silo and the stop of the ticket) to its caller, which
+     drops it: this flow never writes the state for a stop (#136).
+     Today the engine proposes a stop in exactly three places, and all three go through the inbox: the heartbeat
+     and `pending:resolve` (a reasoner's `ADJUST_STOP` whose ticket is not blocked) and the Monday briefing (an
+     `ADJUST_STOP` in its `PROPOSALS` whose ticket has a stop). A blocked one (`no_atr`, `stop_not_raised`, no
+     position) is logged and dropped nowhere. The tight-stop warning of the heartbeat proposes no level.
 - **Steps (owner narration)**: `decision:record` records what the owner narrates that is not a trade: a stop
   adjustment (`adjust_stop`), a deposit or a withdrawal. **A currency [conversion](glossary.md#conversion) is no longer recorded here (#135)**:
   `fx_conversion` is refused, with a message that names the `convert` command of the [inbox](#apply-the-inbox), the
@@ -271,10 +289,13 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
      and prints the prompt (progress goes to stderr).
   3. `finalize` checks the report is complete, builds the engine tickets and one decision per open
      position, writes `logs/<date>-monday-briefing.md`, applies the watchlist removals the report
-     asks for (never a ticker with an open position), and emails the summary.
+     asks for (never a ticker with an open position), drops the stops it proposes as one batch of `set_stop` commands
+     in `inbox/<date>-monday-briefing-stops.yaml` (not written into the state; a proposal already waiting there is not
+     dropped twice; a failure to write is said and stops nothing), and emails the summary.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `portfolio-policy.md`,
   `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
-  `watchlist.md`, `tesis/`, `logs/decisions.jsonl`, the briefing log and email.
+  `watchlist.md`, `tesis/`, `logs/decisions.jsonl`, the briefing log, the batch of stop proposals in `inbox/` and
+  email. Its workflow commits `inbox/` with the other paths it writes, never state.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
   In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
@@ -416,6 +437,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Starts with**: the same as [Check the inbox](#check-the-inbox), then `npm run inbox:ingest`. No LLM. The only network
   call is one best-effort request of daily history per ticker a batch buys (for its ATR, see step 2), and only if one does.
   The inbox workflow starts it from a push to `inbox/`, a daily schedule or by hand, all in one `concurrency` group.
+  The batches it reads may be the engine's own: the [heartbeat](#heartbeat), `pending:resolve` and the
+  [Monday briefing](#monday-briefing) drop their stop proposals there as `set_stop` commands (#136), and `ingest`
+  applies them like any other. Whether they wait for the owner or the daily run applies them is the owner's
+  workflow (a push made with the default `GITHUB_TOKEN` starts no workflow).
   With `STATE_COMMIT=git` (that workflow) the whole run below is one [compare-and-swap](glossary.md#compare-and-swap):
   see _Commit_ at the end of the steps.
 - **Steps**:

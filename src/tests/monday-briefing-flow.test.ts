@@ -9,7 +9,7 @@
 process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, readdir, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { TechnicalsProvider } from "../utils/monday-briefing-helpers.js";
@@ -175,6 +175,7 @@ describe("monday-briefing prepare/finalize", () => {
     // logs/ is recreated from scratch: the briefing log carries today's date and
     // would pollute the next test if it survived between cases.
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
+    await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "routines"), { recursive: true });
     await writeFile(join(vaultDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
@@ -416,6 +417,48 @@ describe("monday-briefing prepare/finalize", () => {
       const logContent = await readFile(join(vaultDir, "logs", `${today}-monday-briefing.md`), "utf8");
       assert.match(logContent, /## Tickets del motor/);
       assert.match(logContent, /### SELL MSFT — PROPUESTA/);
+    });
+
+    describe("an ADJUST_STOP is a set_stop in inbox/, never a write of the portfolio (#136)", () => {
+      // MSFT trades at 440 with a stop of 400: three ATR of a 4.4 range lift it to about 427.
+      const risingProvider: TechnicalsProvider = {
+        getHistorical: async () => bars(Array.from({ length: 60 }, (_, i) => 380 + i)),
+        getPrices: async (tickers) => new Map(tickers.map((t) => [t, t === "EURUSD=X" ? 1.1 : 440])),
+      };
+      const adjust = VALID_REPORT.replace(
+        "PROPOSALS: []",
+        'PROPOSALS: [{"ticker":"MSFT","action":"ADJUST_STOP","conviction":"medium"}]',
+      ).replace("RETIRE: XOM,MSFT", "RETIRE:");
+
+      it("drops one batch with the engine's stop and changes no byte of portfolio.md for it", async () => {
+        const before = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+        await quietly(() => finalizeBriefing(adjust, risingProvider));
+
+        assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), before);
+        assert.deepEqual(await readdir(join(vaultDir, "inbox")), [`${today}-monday-briefing-stops.yaml`]);
+        const batch = await readFile(join(vaultDir, "inbox", `${today}-monday-briefing-stops.yaml`), "utf8");
+        const price = /command: set_stop\n {4}ticker: "MSFT"\n {4}price: (\S+) USD\n$/.exec(batch)?.[1];
+        assert.ok(price !== undefined && Number(price) > 400 && Number(price) < 440, batch);
+        assert.equal((await readDecisionLines()).find((d) => d.ticker === "MSFT")?.type, "adjust_stop");
+        const logContent = await readFile(join(vaultDir, "logs", `${today}-monday-briefing.md`), "utf8");
+        assert.match(logContent, /comando `set_stop` en `inbox\/`/);
+      });
+
+      it("a rerun the same day does not drop the same stop twice", async () => {
+        await quietly(() => finalizeBriefing(adjust, risingProvider));
+        await quietly(() => finalizeBriefing(adjust, risingProvider));
+
+        assert.equal((await readdir(join(vaultDir, "inbox"))).length, 1);
+      });
+
+      it("a stop that does not rise, or a SELL, drops nothing", async () => {
+        await quietly(() => finalizeBriefing(adjust, fakeProvider)); // 159: the trailing stop would fall below 400
+        await quietly(() =>
+          finalizeBriefing(adjust.replace('"action":"ADJUST_STOP"', '"action":"SELL"'), fakeProvider),
+        );
+
+        assert.deepEqual(await readdir(join(vaultDir, "inbox")).catch(() => []), []);
+      });
     });
 
     it("rejects a BUY: the only way in is the heartbeat setups", async () => {

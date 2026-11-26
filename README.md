@@ -61,7 +61,7 @@ Every variable is documented in [`.env.example`](.env.example). Copy it to `.env
 In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
-   - `portfolio.md`, your starting portfolio, kept in sync with your broker: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a cash flow with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
+   - `portfolio.md`, your starting portfolio, kept in sync with your broker: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a stop change with a `set_stop` command (the engine drops its own stop proposals there too, [below](#the-engines-stop-proposals)), a cash flow with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
    - `watchlist.md`, `screening-universe.md` and the theses.
 
    The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
@@ -144,13 +144,23 @@ runners are possible, for example Claude Code routines with `handoff` (below).
 
 | Example                                                                   | Triggers                                                                           | Commits                                                                                     |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
-| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
-| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
-| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `state/portfolio.json`, `watchlist.md`, `tesis/`                   |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`                                   |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`                                   |
+| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`                                   |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `watchlist.md`, `tesis/`         |
 | [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md`                                       |
 | [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
 | [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                     |
+
+##### The engine's stop proposals
+
+A stop the engine proposes (`ADJUST_STOP`, from the heartbeat, `pending:resolve` or the Monday briefing) is never
+written into the state by the flow that proposes it: it drops a new batch file in `inbox/` with a `set_stop` command per
+proposal (`<date>-heartbeat-eur-stops.yaml`, [format](docs/input-format.md#inboxyaml)), and `inbox:ingest` applies it
+like yours. The alert and the digests say so; placing the stop at your broker is still your job. That is why the heartbeat
+and briefing examples commit `inbox/`. Whether the engine's batch waits for you or is applied by the daily run of
+`inbox.yml` is your workflow's choice: delete its `schedule` trigger (a push made with the default `GITHUB_TOKEN` starts
+no workflow) to apply only what you run yourself. A proposal already waiting in `inbox/` is not dropped twice.
 
 ##### State writes never overlap
 

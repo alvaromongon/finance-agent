@@ -1076,6 +1076,9 @@ describe("inbox:check", () => {
         "inbox.ts",
         "inbox-store.ts",
         "inbox-rejected.ts",
+        // The engine as a writer of the inbox (#136): it drops its stop proposals there, after the stops are checked.
+        "stop-proposals.ts",
+        "utils/stop-proposals.ts",
         "utils/inbox-check.ts",
         "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",

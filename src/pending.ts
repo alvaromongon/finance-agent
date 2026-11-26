@@ -7,6 +7,7 @@
 import { validateRecommendation } from "./claude-analyst.js";
 import { siloValue } from "./utils/sizing.js";
 import { recordDecision } from "./decision.js";
+import { dropStopProposals } from "./stop-proposals.js";
 import { listPendingFiles, readPendingSignal, deletePendingFile, readWatchlistSkippingBadTickers } from "./vault-io.js";
 import { ignoringLots, readPortfolio } from "./portfolio-store.js";
 import type { Signal } from "./types.js";
@@ -80,7 +81,9 @@ export async function resolvePending(filename: string, recommendationInput: unkn
   const signal = await buildSignal(filename);
 
   // The pending file name starts with the detection date (writePendingSignal).
-  await recordDecision(rec, signal, { logPrefix: "[pending] ", detectedOn: filename.slice(0, 10) });
+  const proposal = await recordDecision(rec, signal, { logPrefix: "[pending] ", detectedOn: filename.slice(0, 10) });
+  // A stop the engine proposes is a set_stop in inbox/, never a write of the state (#136).
+  if (proposal) await dropStopProposals([proposal], "pending", undefined, "[pending] ");
 
   await deletePendingFile(filename);
   console.log(`Resolved and deleted: ${filename}`);

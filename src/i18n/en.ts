@@ -16,6 +16,9 @@ export const en = {
     tickerField: "Ticker",
     directionField: "Direction",
     engineNote: "Stop, units and amount are computed by the engine (ADR-0009); the target comes from the analysis.",
+    adjustStopNote:
+      "The engine drops this stop as a `set_stop` command in `inbox/`: it changes nothing until `inbox:ingest` applies it. " +
+      "Placing the stop at your broker is up to you.",
     noticesTitle: "NOTICES",
     assumptionsTitle: "ASSUMPTIONS",
     thesisTitle: "THESIS",
@@ -111,9 +114,10 @@ export const en = {
     breachHeader: [`| Ticker | Price | Stop | Below the stop | Unrealized P/L |`, `|---|---|---|---|---|`],
     breachOutro: [
       ``,
-      `After updating the account, tell the engine what happened through \`inbox/\``,
-      `(guide: \`routines/portfolio-sync.md\`) so the rest of the system stops`,
-      `reasoning about a position that no longer exists.`,
+      `After checking the account, tell the engine what happened with a batch in \`inbox/\` (a \`sale\` if the stop`,
+      `executed; a \`set_stop\` or a \`clear_stop\` if it did not; guide: \`routines/portfolio-sync.md\`) so the`,
+      `rest of the system stops reasoning about a position that no longer exists. A stop the engine proposed is already`,
+      `waiting there as a \`set_stop\`.`,
     ],
     lotsIntro: [
       `## \`portfolio.md\`: problem with the lots`,
@@ -208,9 +212,9 @@ export const en = {
     ],
     tightOutro: (syncedAt: string) => [
       ``,
-      `The real stop lives in your broker: the engine only reads the Stop loss column of`,
-      `\`portfolio.md\` (last sync: **${syncedAt}**). If you`,
-      `change it, reflect it there (guide: \`routines/portfolio-sync.md\`).`,
+      `The real stop lives in your broker: the engine only knows the stop of its own state (last sync: **${syncedAt}**).`,
+      `If you change it there, tell the engine with a \`set_stop\` (or a batch) in \`inbox/\` (guide:`,
+      `\`routines/portfolio-sync.md\`). When the engine itself proposes a stop, it drops the \`set_stop\` there for you.`,
     ],
     armedIntro: [
       `## Armed breakouts`,
@@ -573,7 +577,8 @@ export const en = {
       "> ⚠ Automatic notice: the web search returned no results in this run (blocked, exhausted or unused) — the context in this section may rest only on trained knowledge, not real time.\n",
     ticketsTitle: "## Engine tickets",
     ticketsNote:
-      "Sell amount and trailing stop are computed by the engine (ADR-0009). What is blocked is not executed.",
+      "Sell amount and trailing stop are computed by the engine (ADR-0009). What is blocked is not executed. A proposed " +
+      "stop is dropped as a `set_stop` command in `inbox/`: it changes nothing until `inbox:ingest` applies it.",
     proposed: "PROPOSED",
     blocked: (codes: string) => `BLOCKED (${codes})`,
     ticketHeader: ["| Field | Value |", "|---|---|"],
