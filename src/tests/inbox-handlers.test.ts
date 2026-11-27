@@ -55,6 +55,7 @@ const ctx = (over: Partial<BatchContext> = {}, state: InboxState = {}): BatchCon
     rulesVersion: "1.0",
     entryCostsTaken: new Map(),
     awaiting: new Set(),
+    escalations: new Set(),
     entry: entryContext(),
     today: "2026-11-26",
     ...over,

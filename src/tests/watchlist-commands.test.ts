@@ -77,6 +77,7 @@ describe("the handlers of the watchlist", () => {
   const context = (over: Partial<BatchContext> = {}): BatchContext => ({
     opened: new Map(),
     earlierTickers: new Set(),
+    escalations: new Set(),
     newEntryId: () => "x",
     rulesVersion: "1.0",
     entryCostsTaken: new Map(),
@@ -158,6 +159,7 @@ describe("running a batch with watch and stop_watching", () => {
   const run = (state: InboxState, ...files: string[]): InboxRun => {
     const context: RunContext = {
       awaiting: new Set(),
+      escalations: new Set(),
       rulesVersion: "1.0",
       takenIds: new Set(),
       entryCostsTaken: new Map(),

@@ -1,30 +1,38 @@
-// CLI to read and resolve the signals HandoffAnalystProvider leaves in
-// logs/pending/. The Claude Code Routine calls these
-// commands through Bash after reasoning about the signal; resolvePending()
-// reuses, without duplicating, the same validation and writing index.ts uses
-// for the "api" backend, so a signal resolved by hand produces exactly the
-// same log/email as if the API had resolved it.
+// CLI to read and record the signals HandoffAnalystProvider leaves in logs/pending/. The Claude Code Routine calls
+// these commands through Bash after reasoning about the signal; recordPending() reuses, without duplicating, the same
+// validation and writing index.ts uses for the "api" backend, so a signal answered by hand produces exactly the same
+// log/email as if the API had answered it.
+//
+// Closing a pending escalation is not done here (#141): it is a `resolve` command dropped in inbox/ (ADR-0018), the
+// only way to change the list. Recording the answer and closing the escalation are two things: the first writes the
+// decision log and the email, the second the store.
 import { validateRecommendation } from "./claude-analyst.js";
 import { siloValue } from "./utils/sizing.js";
 import { recordDecision } from "./decision.js";
-import { listPendingFiles, readPendingSignal, deletePendingFile, readWatchlistSkippingBadTickers } from "./vault-io.js";
+import { dropStopProposals } from "./stop-proposals.js";
+import { readEscalationsToDo } from "./inbox-escalations.js";
+import { readPendingSignal, readWatchlistSkippingBadTickers } from "./vault-io.js";
 import { ignoringLots, readPortfolio } from "./portfolio-store.js";
+import { printable } from "./utils/printable.js";
 import type { Signal } from "./types.js";
 
+/** The id of an escalation from what the owner typed: its id, or its file name in `logs/pending/`. */
+const idOf = (arg: string): string => (arg.endsWith(".md") ? arg.slice(0, -".md".length) : arg);
+
 export async function listPending(): Promise<void> {
-  const files = await listPendingFiles();
-  if (files.length === 0) {
+  const ids = await readEscalationsToDo();
+  if (ids.length === 0) {
     console.log("No pending signals.");
     return;
   }
-  for (const f of files.sort()) console.log(f);
+  for (const id of ids.sort()) console.log(id);
 }
 
-export async function showPending(filename: string): Promise<void> {
-  if (!filename) {
-    throw new Error("Usage: pending:show -- <file>");
+export async function showPending(arg: string): Promise<void> {
+  if (!arg) {
+    throw new Error("Usage: pending:show -- <id>");
   }
-  const { content } = await readPendingSignal(filename);
+  const { content } = await readPendingSignal(`${idOf(arg)}.md`);
   console.log(content);
 }
 
@@ -69,21 +77,31 @@ async function buildSignal(filename: string): Promise<Signal> {
 }
 
 /**
- * Validates and records the resolved Recommendation for `filename`, as
- * index.ts does for the "api" backend (shared via decision.ts): blocked
- * ticket -> log with blocked:true and no email; valid ticket -> log +
- * sendAlert. Deletes the pending file in both cases (it is already in logs/,
- * it must not be processed again).
+ * Validates and records the Recommendation for the escalation `arg`, as index.ts does for the "api" backend (shared via
+ * decision.ts): blocked ticket -> log with blocked:true and no email; valid ticket -> log + sendAlert. It does not close
+ * the escalation: the file stays in logs/pending/ and the escalation in the digest until a `resolve` command closes it,
+ * and it says so. An escalation already closed, or already closed by a batch waiting in inbox/, is refused: it would
+ * record the decision twice.
  */
-export async function resolvePending(filename: string, recommendationInput: unknown): Promise<void> {
+export async function recordPending(arg: string, recommendationInput: unknown): Promise<void> {
+  const id = idOf(arg);
+  if (!(await readEscalationsToDo()).includes(id)) {
+    throw new Error(
+      `${printable(id)} is not a pending escalation to record: it does not exist in logs/pending/, a resolve command closed it, or one waits in inbox/ (see pending:list)`,
+    );
+  }
+  const filename = `${id}.md`;
   const rec = validateRecommendation(recommendationInput);
   const signal = await buildSignal(filename);
 
   // The pending file name starts with the detection date (writePendingSignal).
-  await recordDecision(rec, signal, { logPrefix: "[pending] ", detectedOn: filename.slice(0, 10) });
+  const proposal = await recordDecision(rec, signal, { logPrefix: "[pending] ", detectedOn: filename.slice(0, 10) });
+  // A stop the engine proposes is a set_stop in inbox/, never a write of the state (#136).
+  if (proposal) await dropStopProposals([proposal], "pending", undefined, "[pending] ");
 
-  await deletePendingFile(filename);
-  console.log(`Resolved and deleted: ${filename}`);
+  console.log(
+    `Recorded: ${id}. Close it with a resolve command in inbox/ (command: resolve, id: ${id}, outcome: resolved); it stays in every digest until then.`,
+  );
 }
 
 async function readStdin(): Promise<string> {
@@ -102,16 +120,16 @@ if (isMain) {
   const commands: Record<string, () => Promise<void>> = {
     list: listPending,
     show: () => showPending(arg),
-    resolve: async () => {
-      if (!arg) throw new Error("Usage: pending:resolve -- <file>");
+    record: async () => {
+      if (!arg) throw new Error("Usage: pending:record -- <id>");
       const stdin = await readStdin();
-      await resolvePending(arg, JSON.parse(stdin));
+      await recordPending(arg, JSON.parse(stdin));
     },
   };
 
   const fn = commands[cmd];
   if (!fn) {
-    throw new Error("Usage: pending.ts <list|show|resolve> [file]");
+    throw new Error("Usage: pending.ts <list|show|record> [id]");
   }
   fn().catch((err) => {
     console.error("[pending]", err);

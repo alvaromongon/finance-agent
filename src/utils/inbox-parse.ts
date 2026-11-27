@@ -10,7 +10,15 @@ import yaml from "js-yaml";
 import { ASSET_CLASSES, CURRENCIES, HORIZONS, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
-import { ENTRY_ID, type BrokerPosition, type Command, type Correct } from "./inbox-handlers.js";
+import {
+  ENTRY_ID,
+  ESCALATION_ID,
+  ESCALATION_OUTCOMES,
+  NOTE_MAX_LENGTH,
+  type BrokerPosition,
+  type Command,
+  type Correct,
+} from "./inbox-handlers.js";
 import { quoted } from "./printable.js";
 
 /** The `schema_version` of the inbox format this engine reads. */
@@ -69,6 +77,7 @@ const COMMAND_KINDS = [
   "discard",
   "watch",
   "stop_watching",
+  "resolve",
   "correct",
 ] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
@@ -85,6 +94,7 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   discard: ["command", "file"],
   watch: ["command", "currency", "ticker", "note", "date", "horizon", "asset_class"],
   stop_watching: ["command", "ticker", "reason"],
+  resolve: ["command", "id", "outcome", "note", "date"],
   correct: ["command", "id", "ticker", "date", "units", "price", "costs", "amount"],
 };
 
@@ -422,6 +432,33 @@ function readCommand(raw: unknown): Command | Unread {
     const why = text("reason", false);
     if (problems.length > 0 || !t) return unread();
     return { kind, ticker: t, ...(why !== undefined ? { reason: why } : {}) };
+  }
+
+  if (kind === "resolve") {
+    const id = text("id", true);
+    if (id !== undefined && !ESCALATION_ID.test(id)) {
+      problems.push(
+        `"id" must be the id of a pending escalation, the name of its file in logs/pending/ without .md (as in 2026-07-15-xom); got: ${quoted(id)}`,
+      );
+    }
+    const outcomeText = text("outcome", true);
+    const outcome = ESCALATION_OUTCOMES.find((o) => o === outcomeText);
+    if (outcomeText !== undefined && outcome === undefined) {
+      problems.push(`"outcome" must be ${ESCALATION_OUTCOMES.join(" or ")}; got: ${quoted(outcomeText)}`);
+    }
+    const note = text("note", false);
+    if (note !== undefined && note.length > NOTE_MAX_LENGTH) {
+      problems.push(`"note" must be at most ${NOTE_MAX_LENGTH} characters; it has ${note.length}`);
+    }
+    const when = date(false);
+    if (problems.length > 0 || id === undefined || outcome === undefined) return unread();
+    return {
+      kind,
+      id,
+      outcome,
+      ...(note !== undefined ? { note } : {}),
+      ...(when !== undefined ? { date: when } : {}),
+    };
   }
 
   if (kind === "correct") {

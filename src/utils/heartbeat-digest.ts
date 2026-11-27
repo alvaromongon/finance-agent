@@ -29,6 +29,8 @@ import { printable } from "./printable.js";
 import type { Ticker } from "../ticker.js";
 import type { Currency, Difference, Signal } from "../types.js";
 import type { Staleness } from "./staleness.js";
+import type { ConfigurationProblem } from "../configuration.js";
+import { configurationWarningLines } from "./configuration-warning.js";
 
 export interface HeartbeatDigest {
   currency: Currency;
@@ -37,6 +39,8 @@ export interface HeartbeatDigest {
   /** Tight-stop warning threshold (STOP_MIN_ATR). */
   minAtr: number;
   breaches: StopBreach[];
+  /** A stop the engine proposed this run is waiting in `inbox/` (#136): the breach outro says so only then. */
+  stopProposed?: boolean;
   /**
    * Problems of the portfolio's `Lots` (ADR-0015): a table that does not read, or a `Volume` that is not
    * the sum of its lots. The run does not refuse the file: it keeps watching the positions and reports
@@ -64,11 +68,22 @@ export interface HeartbeatDigest {
    */
   rejectedBatches: string[];
   /**
+   * The ids of the pending escalations (`logs/pending/`) that no `resolve` command has closed (#141). Named in every digest
+   * while they last (not deduplicated): a signal that was escalated is never forgotten.
+   */
+  pendingEscalations: string[];
+  /**
    * Why the engine's state file cannot be read (#139), when it cannot: the run then watches the stops of the last state that
    * did read (`state/portfolio.last-readable.json`) and names the corruption here, in every digest while it lasts (not
    * deduplicated). `null`: the state file reads.
    */
   storeProblem: string | null;
+  /**
+   * The configuration files the run read that do not validate (#142): the run goes on over their last valid version (or,
+   * on the first run with none, refuses what needs them after the stop check). Named in every digest while the file on
+   * disk is not the valid one (not deduplicated), and gone on the first run after a valid edit.
+   */
+  configurationProblems: ConfigurationProblem[];
   /**
    * How stale the silo is (#138): the age of its latest snapshot of the broker; a silo with none is stale. `null`: not
    * judged (the state is still the old `portfolio.md`, which has its own warning).
@@ -87,7 +102,7 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches, configuration problems and the lots, ticker and unreadable-cell warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
   return [
     ...(d.staleness?.stale ? [staleKey(d.staleness)] : []),
@@ -98,7 +113,7 @@ export function digestKeys(d: HeartbeatDigest): string[] {
   ];
 }
 
-/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches, configuration problems and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
@@ -152,8 +167,18 @@ export function renderHeartbeatDigest(
   if (d.storeProblem !== null) {
     sections.push({ label: t.labels.storeUnreadable, tickers: [], lines: storeProblemSection(d, m) });
   }
+  if (d.configurationProblems.length > 0) {
+    sections.push({
+      label: m.configurationWarning.label,
+      tickers: [],
+      lines: configurationWarningLines(d.configurationProblems, m),
+    });
+  }
   if (d.rejectedBatches.length > 0) {
     sections.push({ label: t.labels.rejectedBatches, tickers: [], lines: rejectedBatchesSection(d, m) });
+  }
+  if (d.pendingEscalations.length > 0) {
+    sections.push({ label: t.labels.pendingEscalations, tickers: [], lines: pendingEscalationsSection(d, m) });
   }
   if (d.staleness?.stale) {
     sections.push({ label: t.labels.stale, tickers: [], lines: staleSection(d, d.staleness, m) });
@@ -207,6 +232,7 @@ function breachSection(d: HeartbeatDigest, m: Messages): string[] {
         ` -${b.belowStopPct.toFixed(2)}% | ${fmt(b.unrealizedPl)} ${b.currency} |`,
     ),
     ...m.heartbeatDigest.breachOutro,
+    ...(d.stopProposed ? m.heartbeatDigest.breachOutroStopWaiting : []),
   ];
 }
 
@@ -239,6 +265,16 @@ function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {
     // and a backtick, which would end the span, is written as an escape too.
     ...d.rejectedBatches.map((file) => t.rejectedBatchesLine(printable(file).replaceAll("`", "\\u0060"))),
     ...t.rejectedBatchesOutro,
+  ];
+}
+
+function pendingEscalationsSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [
+    ...t.pendingEscalationsIntro,
+    // An id comes from a file name: escaped like a rejected batch's, so no control character or backtick reaches the email.
+    ...d.pendingEscalations.map((id) => t.pendingEscalationsLine(printable(id).replaceAll("`", "\\u0060"))),
+    ...t.pendingEscalationsOutro,
   ];
 }
 

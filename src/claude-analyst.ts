@@ -4,13 +4,12 @@
 import { responseLanguageInstruction } from "./i18n/index.js";
 import { en } from "./i18n/en.js";
 import Anthropic from "@anthropic-ai/sdk";
-import { join } from "node:path";
 import { config } from "./config.js";
 import { ACTIONS, CURRENCIES, TRIGGER_KINDS } from "./types.js";
 import { asHorizon, isAssumptionList } from "./decisions.js";
 import { describeRegime } from "./utils/market-regime.js";
 import { describeAdjustStopPreview, describeBuyPreview } from "./utils/sizing.js";
-import { readTextFile } from "./utils/fs-text.js";
+import { readConfiguration } from "./configuration.js";
 import { readRoutinePrompt } from "./vault-io.js";
 import { formatMoney } from "./money.js";
 import type { Recommendation, Signal, TriggerKind } from "./types.js";
@@ -54,13 +53,11 @@ export async function analyze(signal: Signal, newsHeadlines: string[] = []): Pro
   return parseRecommendation(fullText);
 }
 
-/** Reasoner instructions plus the strategies/base.md rules, if it exists. */
+/** Reasoner instructions plus the strategies/base.md rules (both through the configuration port: the last valid version when the file is not valid). */
 export async function loadSystemPrompt(): Promise<string> {
-  const strategyPath = join(config.paths.vaultProjectDir, "strategies", "base.md");
-
   const [routine, strategy] = await Promise.all([
     readRoutinePrompt("execution-analysis"),
-    readTextFile(strategyPath).catch(() => ""),
+    readConfiguration("strategies/base.md"),
   ]);
 
   if (!strategy) return routine;

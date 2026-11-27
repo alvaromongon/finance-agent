@@ -53,7 +53,7 @@ built-in defaults: a missing prompt fails with the example to copy.
 | `routines/weekly-screening.md`   | `screening:prepare` (system prompt of each candidate)                                                             | [`examples/brain/routines/weekly-screening.md`](../examples/brain/routines/weekly-screening.md)     |
 | `routines/execution-analysis.md` | `heartbeat` whenever it escalates a signal (system prompt of the reasoner, `ANALYST_PROVIDER` `api` or `handoff`) | [`examples/brain/routines/execution-analysis.md`](../examples/brain/routines/execution-analysis.md) |
 
-`pending:*`, `decisions:evaluate`, `screening:outcomes`, `outbox:send` and
+`pending:list`, `pending:show`, `pending:record`, `decisions:evaluate`, `screening:outcomes`, `outbox:send` and
 `decision:record` need no prompt; `heartbeat` needs one only when it escalates.
 
 A [ticker](glossary.md#ticker) in any file is read case-insensitively and written in upper case:
@@ -68,7 +68,7 @@ ticker outside that pattern (`TC|K`, `M&M.NS`, `A..B`) is never silently
 accepted, and a typo there must never switch off the stop alerts
 ([ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md)). In general, a row or entry whose
 ticker does not parse is skipped with a warning by the tolerant readers (the heartbeat,
-`pending:resolve`, the Monday briefing, the weekly screening), while some commands, those that must
+`pending:record`, the Monday briefing, the weekly screening), while some commands, those that must
 not act on a file they cannot fully read, refuse it, naming the file and the row.
 
 Two cases are the same everywhere:
@@ -274,7 +274,7 @@ section (`## USD — Lots`), and the lots count as empty for that run. The warni
 is not deduplicated: it is in every digest while the problem lasts. A missing
 `Cash` or `Positions` section still stops the heartbeat, as every other problem of
 the file. `decisions:evaluate` keeps the strict reader: it refuses a `Lots` table or
-section that does not read. `pending:resolve`, the Monday briefing and the weekly
+section that does not read. `pending:record`, the Monday briefing and the weekly
 screening use positions, cash and silo value only, so they read the file like the
 heartbeat and carry on with the lots counted as empty; unlike the heartbeat, they
 send no warning.
@@ -328,6 +328,7 @@ anything is recorded) a movement that would take the cash of a silo below zero. 
   "unmoved_batches": [],
   "pending_decisions": [],
   "resolved_rejections": [],
+  "closed_escalations": [],
   "silos": {
     "EUR": {
       "synced_at": "2026-11-12T09:00:00.000Z",
@@ -378,7 +379,7 @@ and each difference it found (empty when the broker and the engine agree); a sil
 one: the batches applied whose files are still in `inbox/`, and the decision-log lines of their trades not yet in
 `logs/decisions.jsonl`. `resolved_rejections` lists the [rejected batches](glossary.md#rejected-batch) that a later batch
 replaced or discarded (`file`, the `sha256` of its text, `how`, the batch that settled it as `by`, and `at`): a file of
-`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). `starting_silos` (optional, #139) is the `silos` as the store began, from `portfolio.md`: what a correction and the repair apply the batches of `inbox/applied/` over (a store without it began empty). A cash flow told with `decision:record` is in no batch, so a log that holds one is refused by the repair, which changes nothing. The reader is strict: a number that is not plain decimal, an amount in another currency, a
+`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). `closed_escalations` lists the [pending escalations](glossary.md#pending-escalation) a `resolve` command closed (see _A pending escalation is closed by a command_, below); a file of `logs/pending/` not listed there is still open (a store without the field closed none). `starting_silos` (optional, #139) is the `silos` as the store began, from `portfolio.md`: what a correction and the repair apply the batches of `inbox/applied/` over (a store without it began empty). A cash flow told with `decision:record` is in no batch, so a log that holds one is refused by the repair, which changes nothing. The reader is strict: a number that is not plain decimal, an amount in another currency, a
 ticker that does not parse or another `schema_version` is refused, naming the file and the field, instead of read
 partially.
 
@@ -527,6 +528,7 @@ case-insensitively.
 | `snapshot`      | `date`, `cash`, `positions`                                                     |                                          | What the broker shows of one [silo](glossary.md#silo) on `date`: a [snapshot](glossary.md#snapshot). `cash` is the broker's available cash with its currency (`1050.00 EUR`, at most two decimals, zero allowed), which names the silo; `positions` is a list of `ticker` and `units` (a plain decimal number greater than zero), each ticker once, `[]` when the broker holds none (an empty value is an error). The engine compares it with the state the commands before it in the batch left: the cash to the cent, and the units of each ticker either side holds (a ticker the broker lacks is 0 units, one the engine lacks is 0), within the units tolerance. **It changes no cash, position, lot or stop**: it records on the silo the date and each difference (what the broker and the engine hold, and the size, the broker's less the engine's), `inbox:check` and `inbox:ingest` print each one as a warning (never an error: a difference is not a refused batch) and `inbox:ingest` writes a `reconcile` line of the decision log per difference (the ticker, or none for the cash; `broker`, `engine`, `difference`; the snapshot's `date`; none when the two agree). The owner corrects the state with a command. Refused if the silo does not exist, if `date` is in the future (of the day of the run), if a ticker is listed twice. A later snapshot replaces the earlier one (its differences, its `date` and the day it was recorded, `recorded_on` in the store), and the age of its `date` is what makes a silo [stale](glossary.md#stale) (see _Staleness_ below). It changes nothing the commands after it read, so one refused or unread leaves nothing unknown; it is itself not checked after a command that changed the cash or lots of its silo was refused, and after a split was. Added without a migration, per [#124](https://github.com/alvaromongon/finance-agent/issues/124) › _Decisions_ (#138). |
 | `correct`       | `id`, and at least one of `ticker`, `date`, `units`, `price`, `costs`, `amount` |                                          | Corrects a mistaken record: the buy (its `entry`), the sale (its `exit`), the deposit or the withdrawal that the engine gave `id` in the decision log, with the values it should have had; what is left out stays as it was. It goes **alone** in a batch of corrections, after the batches it corrects are applied (`inbox:ingest` first). The engine does not edit the state: it applies again, in order, the batches already in `inbox/applied/` with the corrected record, so every later command is judged against it, and the lots, cash, positions and [R](glossary.md#r) are rebuilt. It writes a `correction` line per line that changes (the record, and the lines of the sales that drew on a corrected lot); each points at the original with `corrects` and holds the fields that change in `patch`, and the original **stays in the log and in the history**: nothing is erased ([correction](glossary.md#correction)). The values go through the same validation as the original command. Refused, with a reason and a place, if the id is not a record of the log (or is a line a correction does not reach: a conversion, a split), if a value does not apply to that record (`units` on a deposit), if an amount is in another currency than the record (a correction does not move a record between silos), if the correction would leave a later sale without lots, a sale before its lot was bought, or cash below zero, or if it changes nothing. Like any batch, all or nothing: one refused correction rejects the whole file. Added without a migration, per [#124](https://github.com/alvaromongon/finance-agent/issues/124) › _Decisions_ (#139).                                                                                                                                                                                                                                                              |
 | `discard`       | `file`                                                                          |                                          | Gives up a [rejected batch](glossary.md#rejected-batch) for good (see _A rejected batch is never forgotten_, below). It changes no cash, lot or stop, so it has no currency. Refused if `file` is not a rejected batch awaiting an answer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `resolve`       | `id`, `outcome` (`resolved` or `discarded`)                                     | `note`, `date`                           | Closes a [pending escalation](glossary.md#pending-escalation) (see _A pending escalation is closed by a command_, below). It changes no cash, lot or stop, so it has no currency. Refused if `id` is not a pending escalation still open, if `date` is in the future or if `note` is longer than 500 characters.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `watch`         | `currency`, `ticker`                                                            | `note`, `date`, `horizon`, `asset_class` | Puts a ticker on the [watchlist](glossary.md#watchlist) of the silo `currency`: `note` is why (kept as the entry's thesis), `date` the day it joins (the day of the run by default), `horizon` is `short` or `medium` (default `medium`) and `asset_class` `equity`, `commodity` or `etf`. Refused if the ticker is on the list already, in either silo. It changes no cash, lot or stop.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `stop_watching` | `ticker`                                                                        | `reason`                                 | Takes a ticker off the watchlist. Refused if it is not on it. A position it holds stays under risk watch: the watchlist is not what the heartbeat watches stops for. `reason` is for the batch, which stays in `inbox/applied/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
@@ -543,6 +545,17 @@ by dropping a `watch` batch per candidate (`<date>-screening-watch-<ticker>.yaml
 name already in `inbox/` is left as it is. `inbox:ingest` applies them like the owner's batches (the screening's own push starts no
 workflow, so the daily run of the inbox workflow does), and a rejected one is named in the digest. The theses
 (`tesis/`) stay hand-editable text: a flow that retires a ticker still archives its thesis when it proposes it.
+
+**The engine drops batches too ([#136](https://github.com/alvaromongon/finance-agent/issues/136)).** The stops it
+proposes (`ADJUST_STOP` from the heartbeat, `pending:resolve` and the Monday briefing) are dropped as a new file,
+`<date>-heartbeat-<ccy>-stops.yaml`, `<date>-pending-stops.yaml` or `<date>-monday-briefing-stops.yaml` (`-2`, `-3`
+when the name is taken), holding one `set_stop` per proposal, the ticker quoted and the price a plain decimal with its
+currency, under two comment lines that say who wrote it. It is an ordinary batch: `inbox:check` and `inbox:ingest`
+read it with the rules of this section, and a file the engine dropped that is refused (a position sold meanwhile) is a
+[rejected batch](glossary.md#rejected-batch) like any other. A proposal whose ticker, currency and price match a
+`set_stop` already waiting in any file of `inbox/` is not dropped again. The engine never edits a batch, its own
+included, and the format itself does not change: it is a new writer of an existing command, so there is no
+`schema_version` bump and no migration (approved by the owner on 2026-11-26 in #136, spec #124 › _Decisions_).
 
 **A stop is its own command.** A position has one [stop](glossary.md#stop), and a buy never changes it.
 The initial stop of a lot (the base of [R](glossary.md#r)) is the stop of the position right after the batch
@@ -618,6 +631,32 @@ was settled (the old one deleted by hand) awaits an answer again. `replaces:` an
 without a migration: approved by the owner on 2026-11-05 for agent work (spec
 [#124](https://github.com/alvaromongon/finance-agent/issues/124) › _Decisions_, issue
 [#152](https://github.com/alvaromongon/finance-agent/issues/152)).
+
+**A pending escalation is closed by a command.** A signal the engine escalated in `handoff` mode is a file in
+`logs/pending/` (`<date>-<ticker>.md`); its **id** is the file name without `.md` (`2026-11-20-xom`). It is open until
+a `resolve` command closes it, in a batch that is applied, as `resolved` (it was answered) or `discarded` (it is given up
+unanswered); until then it is named in every digest of the heartbeat and by `inbox:check`. `pending:resolve` no longer
+exists: the command is the only way to change the list, and `pending:record` (see the README) only records the reasoner's
+answer in the decision log and the outbox, it closes nothing.
+
+```yaml
+schema_version: 1
+commands:
+  - command: resolve
+    id: 2026-11-20-xom
+    outcome: resolved # or discarded
+    note: bought half, the rest on the next pullback # optional, at most 500 characters
+    date: 2026-11-21 # optional: the day it was closed, today by default, never in the future
+```
+
+An `id` that does not exist in `logs/pending/` or is already closed (by an earlier run, an earlier file of the run or
+an earlier command of the same batch) is refused as an error of its command, which blocks no other command. A refused
+batch closes nothing. The file stays in `logs/pending/` as the record: the store remembers what was closed
+(`closed_escalations`: the `id`, the `sha256` of the file, the `outcome`, the optional `note`, the `date`, the batch
+that closed it as `by`, and `at`), so a new signal written later under the same name (another text) is open again.
+`resolve` is a new command, so the format ships without a migration: approved by the owner on 2026-11-26 for agent work
+(spec [#124](https://github.com/alvaromongon/finance-agent/issues/124) › _Decisions_, issue
+[#141](https://github.com/alvaromongon/finance-agent/issues/141)).
 
 **The folder is not trusted.** A batch must be a regular file: a symbolic link (or a folder or named pipe with a batch's
 name) is never followed or read, and is reported, by `check` and `ingest`, as an error that names it; `ingest` leaves
@@ -746,6 +785,27 @@ One thesis per asset, created by the screening and editable by hand.
 | `status`          | `active` or `archived`: set by the flow that proposes the asset's retirement from the watchlist; it copies whether the ticker is on it (a follow-up of #140 proposes deriving it from the watchlist) |
 | `created`         | Creation date                                                                                                                                                                                        |
 | `exit_criteria`   | `pending` while the invalidation criteria are missing; the screening reminds you until you fill them in and remove the field                                                                         |
+
+## Configuration files
+
+The files that configure the engine, kept by hand in the data directory (spec #124, ADR-0018, #142):
+
+| File                             | What it is                                                   | Required | A run that reads it                   |
+| -------------------------------- | ------------------------------------------------------------ | -------- | ------------------------------------- |
+| `strategies/base.md`             | The strategy: its frontmatter `version` is the rules version | yes      | heartbeat, inbox, briefing, screening |
+| `portfolio-policy.md`            | Free text the briefing respects                              | no       | briefing                              |
+| `screening-universe.md`          | The screening universe ([format](#screening-universemd))     | yes      | screening                             |
+| `routines/monday-briefing.md`    | The briefing's prompt                                        | yes      | briefing                              |
+| `routines/weekly-screening.md`   | The screening's prompt                                       | yes      | screening                             |
+| `routines/execution-analysis.md` | The reasoner's instructions for a signal                     | yes      | heartbeat                             |
+
+**Validated when read, fail-fast.** Each run validates the files it reads, with every error (file, field, reason) and not just the first:
+
+- `strategies/base.md`: starts with a `---` block that is valid YAML and has a `version` that is a number or a non-empty string.
+- `screening-universe.md`: `schema_version` 1, a ` ```yaml ` block that is valid YAML with `universe:` and `eur` and `usd` as lists (`commodities`, if present, a list too). An entry whose ticker does not parse is still skipped with a warning (ADR-0016), not an error of the file.
+- `portfolio-policy.md` and the prompts: not empty. A file that exists and says nothing is an accident, not a policy; to have no policy, delete the file. A prompt cannot be absent.
+
+**The last valid configuration.** A file that validates is copied by the engine, byte for byte, to `state/config/<file>` (for example `state/config/strategies/base.md`): written only by the engine, committed with the state, so it survives a fresh CI checkout. Do not edit it; a copy that does not validate is ignored. A file that does not validate is **refused**: the engine runs on the copy, and every [heartbeat](flows.md#heartbeat) digest and the [Monday briefing](flows.md#monday-briefing) email warn with the errors until the first run after a valid edit. With no copy yet (the first run) the run that needs the file refuses with the errors; the heartbeat has already checked every stop and sent its digest by then ([flow](flows.md#heartbeat), step 2'-c). A file that is optional and absent is no file: its copy is deleted. The terms are in the [glossary](glossary.md#last-valid-configuration).
 
 ## Files the engine writes and reads back
 

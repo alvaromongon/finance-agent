@@ -78,7 +78,9 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   unreadableCells: [],
   noStop: [],
   rejectedBatches: [],
+  pendingEscalations: [],
   storeProblem: null,
+  configurationProblems: [],
   staleness: null,
   snapshot: null,
   tightStops: [],
@@ -228,6 +230,22 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual(onlyNew(withNoStop, new Set(["anything"])).noStop, noStop);
   });
 
+  it("the breach and tight-stop outros send the owner to inbox/ (a set_stop or a batch), never to portfolio.md (#136)", () => {
+    const { body } = renderHeartbeatDigest(digest({ breaches, tightStops }))!;
+
+    assert.match(body, /un `set_stop` o un `clear_stop`/, "the breach says which command");
+    assert.doesNotMatch(body, /ya espera/, "no batch is said to wait when the engine proposed no stop");
+    assert.match(body, /cuéntaselo al motor con un `set_stop` \(o un lote\) en `inbox\/`/, "the tight stop too");
+    assert.match(body, /deja allí el `set_stop` por ti/);
+    assert.doesNotMatch(body, /refléjalo|columna Stop loss/, "the old advice to edit portfolio.md by hand is gone");
+  });
+
+  it("the breach outro says a stop the engine proposed waits in inbox/ only when one was proposed (#136)", () => {
+    const { body } = renderHeartbeatDigest(digest({ breaches, stopProposed: true }))!;
+
+    assert.match(body, /Un stop que el motor haya propuesto ya espera\s+allí como `set_stop`/);
+  });
+
   it("a rejected batch is named in every digest, by its file, and is never marked as sent (#152)", () => {
     const rejectedBatches = ["2026-11-12.yaml", "2026-11-13-2.yaml"];
     const withRejected = digest({ rejectedBatches });
@@ -242,6 +260,59 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual(digestKeys(withRejected), []);
     assert.deepEqual(onlyNew(withRejected, new Set(["anything"])).rejectedBatches, rejectedBatches);
     assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
+  });
+
+  it("a configuration file that does not validate is named in every digest, with every error, and is never marked as sent (#142)", () => {
+    const configurationProblems = [
+      {
+        file: "strategies/base.md" as const,
+        errors: [
+          { field: "version", reason: "missing or empty" },
+          { field: "frontmatter", reason: "x\n## injected\u001b[31m" },
+        ],
+        usingLastValid: true,
+      },
+      {
+        file: "screening-universe.md" as const,
+        errors: [{ field: "universe.eur", reason: "missing" }],
+        usingLastValid: false,
+      },
+    ];
+    const withProblems = digest({ configurationProblems });
+    const email = renderHeartbeatDigest(withProblems)!;
+
+    assert.match(email.subject, /configuración que no valida/);
+    assert.match(email.body, /## Un archivo de configuración no valida/);
+    assert.match(email.body, /- `strategies\/base\.md`: el motor trabaja con su \*\*última versión válida\*\*/);
+    assert.match(email.body, /- `screening-universe\.md`: \*\*aún no hay última versión válida\*\*/);
+    assert.match(email.body, /\n {2}- version: missing or empty/);
+    assert.match(email.body, /\n {2}- universe\.eur: missing/);
+    assert.ok(!email.body.includes("\n## injected"), "a reason cannot start a heading");
+    assert.ok(!email.body.includes("\u001b"));
+    assert.deepEqual(digestKeys(withProblems), []);
+    assert.deepEqual(onlyNew(withProblems, new Set(["anything"])).configurationProblems, configurationProblems);
+    assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
+  });
+
+  it("a pending escalation is named in every digest, by its file, and is never marked as sent (#141)", () => {
+    const pendingEscalations = ["2026-11-20-xom", "2026-11-21-ko"];
+    const withPending = digest({ pendingEscalations });
+    const email = renderHeartbeatDigest(withPending)!;
+
+    assert.match(email.subject, /escalado pendiente/);
+    assert.match(email.body, /## Escalados pendientes a la espera de respuesta/);
+    assert.ok(email.body.includes("- `logs/pending/2026-11-20-xom.md`"));
+    assert.ok(email.body.includes("- `logs/pending/2026-11-21-ko.md`"));
+    assert.match(email.body, /comando `resolve`/);
+    assert.deepEqual(digestKeys(withPending), []);
+    assert.deepEqual(onlyNew(withPending, new Set(["anything"])).pendingEscalations, pendingEscalations);
+  });
+
+  it("a pending escalation id is written inside its code span safely (#141)", () => {
+    const email = renderHeartbeatDigest(digest({ pendingEscalations: ["a`b\n## injected\u001b[31m"] }))!;
+    assert.ok(email.body.includes("- `logs/pending/a\\u0060b\\n## injected\\u001b[31m.md`"), email.body);
+    assert.ok(!email.body.includes("\n## injected"));
+    assert.ok(!email.body.includes("\u001b"));
   });
 
   it("a rejected file name is written inside its code span safely: a backtick or a control character cannot end it or reach the email (#152)", () => {

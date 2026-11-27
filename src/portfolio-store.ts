@@ -355,7 +355,7 @@ export function requireReadable<C extends Currency>(read: PortfolioRead<C>): Por
 }
 
 /**
- * The model for the flows that use positions, cash and silo value but not the lots (`pending:resolve`, the
+ * The model for the flows that use positions, cash and silo value but not the lots (`pending:record`, the
  * Monday briefing, the weekly screening): a `Lots` table that does not read does not stop them. A `Positions`
  * row whose ticker does not parse and a cell too large to count in cents are warned of, not refused.
  */
@@ -609,7 +609,7 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
     raw = await readFile(portfolioPath(), "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT")
-      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [] };
+      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [], closedEscalations: [] };
     throw err;
   }
   const read = silosOfText(raw);
@@ -625,6 +625,7 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
     unmoved: [],
     pendingDecisions: [],
     resolvedRejections: [],
+    closedEscalations: [],
   };
 }
 

@@ -59,6 +59,25 @@ export interface ResolvedRejection {
   at: string;
 }
 
+/**
+ * A pending escalation that was closed (#141): a `resolve` command said it was answered or given up. The signal's file
+ * stays in `logs/pending/` as the record; the hash of its text tells it from a file written later under the same name
+ * (a new escalation). The pending escalations not listed here are the ones still open, named in every digest.
+ */
+export interface ClosedEscalationRecord {
+  /** The id of the escalation: its file in `logs/pending/` without `.md`. */
+  id: string;
+  sha256: string;
+  outcome: "resolved" | "discarded";
+  note?: string;
+  /** YYYY-MM-DD: the day it was closed. */
+  date: string;
+  /** The batch that closed it, by its file name in `inbox/`. */
+  by: string;
+  /** ISO timestamp of when it was closed. */
+  at: string;
+}
+
 /** The whole store: each silo the portfolio has, the account kind and the batches applied. */
 export interface PortfolioStore {
   silos: { readonly [C in Currency]?: PortfolioSnapshot<C> };
@@ -74,6 +93,8 @@ export interface PortfolioStore {
   pendingDecisions: string[];
   /** The rejected batches that were replaced or discarded, see `ResolvedRejection`. */
   resolvedRejections: ResolvedRejection[];
+  /** The pending escalations that were closed, see `ClosedEscalationRecord`. */
+  closedEscalations: ClosedEscalationRecord[];
   /**
    * The silos as the store began, from `portfolio.md` (#139): what the batches in `inbox/applied/` are replayed over by a
    * correction and by the repair. Absent in a store that began empty.
@@ -189,6 +210,15 @@ export function encodeStore(store: PortfolioStore): string {
       how: r.how,
       by: r.by,
       at: r.at,
+    })),
+    closed_escalations: store.closedEscalations.map((c) => ({
+      id: c.id,
+      sha256: c.sha256,
+      outcome: c.outcome,
+      ...(c.note !== undefined ? { note: c.note } : {}),
+      date: c.date,
+      by: c.by,
+      at: c.at,
     })),
     silos,
     ...(store.starting !== undefined ? { starting_silos: encodeSilos(store.starting) } : {}),
@@ -411,12 +441,33 @@ export function decodeStore(text: string, where: string): PortfolioStore {
       "is missing: the store has one and not the other",
     );
   }
+  const closedEscalations = (
+    doc.closed_escalations === undefined ? [] : array(doc.closed_escalations, "closed_escalations")
+  ).map((r, i): ClosedEscalationRecord => {
+    const path = `closed_escalations[${i}]`;
+    const o = object(r, path);
+    const outcome = string(o.outcome, `${path}.outcome`);
+    if (outcome !== "resolved" && outcome !== "discarded") fail(`${path}.outcome`, 'must be "resolved" or "discarded"');
+    const date = string(o.date, `${path}.date`);
+    if (!isCalendarDate(date))
+      fail(`${path}.date`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(date)}`);
+    return {
+      id: string(o.id, `${path}.id`),
+      sha256: string(o.sha256, `${path}.sha256`),
+      outcome: outcome as ClosedEscalationRecord["outcome"],
+      ...(o.note !== undefined ? { note: string(o.note, `${path}.note`) } : {}),
+      date,
+      by: string(o.by, `${path}.by`),
+      at: string(o.at, `${path}.at`),
+    };
+  });
   return {
     silos,
     ...(doc.account_env !== undefined ? { accountEnv: string(doc.account_env, "account_env") } : {}),
     unmoved,
     pendingDecisions,
     resolvedRejections,
+    closedEscalations,
     ...(doc.starting_silos !== undefined ? { starting: readSilos(doc.starting_silos, "starting_silos") } : {}),
     ...(doc.watchlist !== undefined ? { watchlist: readWatchlist(doc.watchlist, "watchlist") } : {}),
     ...(doc.starting_watchlist !== undefined

@@ -49,5 +49,5 @@ jobs:
           # (watch and stop_watching commands) as batches in inbox/, which the inbox workflow applies:
           # the watchlist is the engine's state, the screening never edits it.
           # Change the finance-agent/ prefix together with data-path.
-          paths: finance-agent/logs/ finance-agent/tesis/ finance-agent/inbox/ finance-agent/screening-log.md
+          paths: finance-agent/logs/ finance-agent/tesis/ finance-agent/inbox/ finance-agent/screening-log.md finance-agent/state/config/
           message: "chore(screening): weekly screening"

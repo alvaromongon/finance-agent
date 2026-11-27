@@ -36,6 +36,7 @@ const store = (over: Partial<PortfolioStore> = {}): PortfolioStore => ({
   unmoved: [],
   pendingDecisions: [],
   resolvedRejections: [],
+  closedEscalations: [],
   ...over,
 });
 

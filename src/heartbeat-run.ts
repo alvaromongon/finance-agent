@@ -8,6 +8,7 @@
 import { collectWatchedTickers, evaluateSignals } from "./heartbeat.js";
 import { sendSummaryEmail } from "./mailer.js";
 import { config } from "./config.js";
+import { describeProblems, resolveConfiguration, type ConfigurationFile } from "./configuration.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { fetchHeadlines } from "./providers/news-provider.js";
 import {
@@ -21,6 +22,7 @@ import {
   writeHeartbeatSent,
 } from "./vault-io.js";
 import { readPortfolio, refreshPrices } from "./portfolio-store.js";
+import { readOpenEscalations } from "./inbox-escalations.js";
 import { readAwaitingRejected } from "./inbox-rejected.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
@@ -29,6 +31,8 @@ import { detectStopBreaches } from "./utils/stop-breach.js";
 import { positionsWithoutStop } from "./utils/stop.js";
 import { detectTightStops, fetchAtrForPositions } from "./utils/atr-stop.js";
 import { recordDecision } from "./decision.js";
+import { dropStopProposals } from "./stop-proposals.js";
+import type { StopProposal } from "./utils/stop-proposals.js";
 import { attachStrength } from "./utils/strength.js";
 import { fetchBenchmarks } from "./utils/benchmark.js";
 import { describeSetup } from "./utils/setups/index.js";
@@ -52,6 +56,9 @@ export interface HeartbeatDeps {
   lotsCheck?: (portfolio: PortfolioSnapshot) => string[];
 }
 
+/** The configuration files the heartbeat reads: the rules version of the setups it records, and the reasoner's instructions. */
+const HEARTBEAT_CONFIGURATION: readonly ConfigurationFile[] = ["strategies/base.md", "routines/execution-analysis.md"];
+
 export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const digest: HeartbeatDigest = {
@@ -64,7 +71,9 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     unreadableCells: [],
     noStop: [],
     rejectedBatches: [],
+    pendingEscalations: [],
     storeProblem: null,
+    configurationProblems: [],
     staleness: null,
     snapshot: null,
     tightStops: [],
@@ -129,6 +138,13 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
         recordedToday: portfolio.reconciled.recordedOn === today,
       }
     : null;
+  // The configuration files this run reads (#142): a valid one is saved as the last valid version, an invalid one is named in
+  // the digest and the run goes on over its last valid version. With none yet (the first run) what needs the file refuses, but
+  // only after the stops below are checked and the digest is sent. It never throws for a file: a bad edit never stops risk watch.
+  digest.configurationProblems = (await resolveConfiguration(HEARTBEAT_CONFIGURATION)).problems;
+  for (const line of describeProblems(digest.configurationProblems)) {
+    console.warn(`[finance-agent] WARNING, configuration: ${line}`);
+  }
   // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
   // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
   const tickerWarning = (message: string): void => {
@@ -148,6 +164,12 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // the stops below must still be watched.
   digest.rejectedBatches = await readAwaitingRejected().catch((err: unknown) => {
     console.warn(`[finance-agent] WARNING, inbox/rejected: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  });
+
+  // A pending escalation no `resolve` command closed is named in every digest (#141), like a rejected batch.
+  digest.pendingEscalations = await readOpenEscalations().catch((err: unknown) => {
+    console.warn(`[finance-agent] WARNING, logs/pending: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   });
 
@@ -293,34 +315,43 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // 4. Escalate each new signal to Claude.
   // logFiles is listed once and reused for all the run's signals.
   const logFiles = await listLogFiles();
-  for (const signal of signals) {
-    const lastLog = await getLastLogForTicker(signal.ticker, logFiles);
-    if (
-      shouldSkipReanalysis({
-        currentTriggers: signal.triggers,
-        currentPrice: signal.price,
-        lastLog,
-        reanalysisPriceDeltaPct: config.strategy.reanalysisPriceDeltaPct,
-      })
-    ) {
-      console.log(
-        `[finance-agent] ${signal.ticker}: cooldown active (same trigger, no relevant price change), skipping.`,
-      );
-      continue;
-    }
+  // The stops the reasoner proposes leave as one batch in inbox/ (#136), also when a later signal fails: the proposal
+  // is already in the decision log and in an email. The heartbeat never writes the state for a stop.
+  const stopProposals: StopProposal[] = [];
+  try {
+    for (const signal of signals) {
+      const lastLog = await getLastLogForTicker(signal.ticker, logFiles);
+      if (
+        shouldSkipReanalysis({
+          currentTriggers: signal.triggers,
+          currentPrice: signal.price,
+          lastLog,
+          reanalysisPriceDeltaPct: config.strategy.reanalysisPriceDeltaPct,
+        })
+      ) {
+        console.log(
+          `[finance-agent] ${signal.ticker}: cooldown active (same trigger, no relevant price change), skipping.`,
+        );
+        continue;
+      }
 
-    // T-04: fetch recent headlines as extra context (non-blocking).
-    const result = await analyst.escalate(signal, await headlines(signal.ticker));
-    if (result.status === "deferred") {
-      // The BUY/SELL alert arrives when the Routine resolves it; here only an informational line.
-      console.log(`[finance-agent] ${signal.ticker}: escalation deferred (${result.pendingPath}).`);
-      digest.escalated.push(signal);
-      continue;
-    }
+      // T-04: fetch recent headlines as extra context (non-blocking).
+      const result = await analyst.escalate(signal, await headlines(signal.ticker));
+      if (result.status === "deferred") {
+        // The BUY/SELL alert arrives when the Routine resolves it; here only an informational line.
+        console.log(`[finance-agent] ${signal.ticker}: escalation deferred (${result.pendingPath}).`);
+        digest.escalated.push(signal);
+        continue;
+      }
 
-    // Deterministic guardrail + recording: checks financial consistency before
-    // alerting (shared with pending.ts — see decision.ts).
-    await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
+      // Deterministic guardrail + recording: checks financial consistency before
+      // alerting (shared with pending.ts — see decision.ts).
+      const proposal = await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
+      if (proposal) stopProposals.push(proposal);
+    }
+  } finally {
+    const { dropped, waiting } = await dropStopProposals(stopProposals, `heartbeat-${currency.toLowerCase()}`);
+    digest.stopProposed = dropped.length + waiting.length > 0;
   }
 }
 

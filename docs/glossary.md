@@ -85,9 +85,10 @@ sale can share a batch.
 
 ### Inbox
 
-The folder where a person, an AI or a routine drops one file per [batch](#batch) of [commands](#command). The
-engine never edits a file there: `inbox:ingest` moves it to `applied/`, or to `rejected/` with the line and the
-reason of each error (a [rejected batch](#rejected-batch)). It is the only way a buy or a sale is recorded.
+The folder where a person, an AI, a routine or the engine itself drops one file per [batch](#batch) of
+[commands](#command). The engine writes there only new files (the `set_stop` of a stop it proposes) and never edits
+one: `inbox:ingest` moves it to `applied/`, or to `rejected/` with the line and the reason of each error (a
+[rejected batch](#rejected-batch)). It is the only way a buy or a sale is recorded.
 
 ### Rejected batch
 
@@ -95,6 +96,15 @@ A [batch](#batch) that `inbox:ingest` refused: it applied nothing, and the file 
 trail, never retried. It awaits an answer, named in every digest of the [heartbeat](#heartbeat), until a later batch
 replaces it (`replaces: <file>` at its top) or discards it (a `discard` [command](#command) with `file: <file>`). A
 batch that depends on it fails its own validation.
+
+### Pending escalation
+
+A signal that was [escalated](#escalation) in `handoff` mode and that no one has closed. The engine leaves it as a file
+in `logs/pending/` (its id is the file name without `.md`, such as `2026-11-20-xom`) for the [reasoner](#reasoner-api-and-handoff).
+It stays open, and is named in every digest of the [heartbeat](#heartbeat), until a `resolve` [command](#command) closes it
+as `resolved` (answered) or `discarded` (given up). A command is the only way to close it: the file is never edited or
+deleted, and the store remembers what was closed with the hash of the file, so a new signal written later under the same
+name is open again.
 
 ### Conversion
 
@@ -132,6 +142,15 @@ What the owner runs when the [store](#store) is corrupt (#139): `npm run state:r
 and the batches in `inbox/applied/`, the audit trail, and refuses, changing nothing, when the two disagree, saying where. It is never
 automatic, it edits no batch and no line of the log, and every run writes a `repair` line with the date, the result and the differences.
 
+### Last valid configuration
+
+The copy of a [configuration file](input-format.md#configuration-files) (the strategy, the portfolio policy, the screening
+universe or a prompt) that the engine last found valid, kept in `state/config/<file>`, written only by the engine and committed
+with the rest of the state (#142). When the file the owner edits stops validating, the engine runs on this copy: a bad edit never
+stops risk watch. Every [heartbeat](#heartbeat) digest and the Monday briefing email warn, with every error (file, field, reason),
+until the first run after a valid edit. Until a file has validated once (the first run) there is no copy, and what needs the file
+refuses with the errors.
+
 ### Stale
 
 A [silo](#silo) is stale when it has no [snapshot](#snapshot) of the broker, or its latest one is older than
@@ -144,7 +163,9 @@ trades and a recent snapshot is not stale. The [heartbeat](#heartbeat) names a s
 The price at which a position is closed to cap its loss. A position has one stop, set or moved by the
 `set_stop` [command](#command) and removed by `clear_stop`; a buy never changes it. The stop a lot starts
 with is its initial stop, the base of [R](#r). A position without a stop is named in every digest, since
-risk watch cannot protect it.
+risk watch cannot protect it. A stop the engine proposes (`ADJUST_STOP`) is never written into the state by the flow
+that proposes it: it drops a `set_stop` in the [inbox](#inbox), as the owner would, and placing the stop at the broker
+is the owner's job.
 
 ### Silo
 

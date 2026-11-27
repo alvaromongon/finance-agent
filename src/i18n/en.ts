@@ -16,6 +16,9 @@ export const en = {
     tickerField: "Ticker",
     directionField: "Direction",
     engineNote: "Stop, units and amount are computed by the engine (ADR-0009); the target comes from the analysis.",
+    adjustStopNote:
+      "The engine drops this stop as a `set_stop` command in `inbox/`: it changes nothing until `inbox:ingest` applies it. " +
+      "Placing the stop at your broker is up to you.",
     noticesTitle: "NOTICES",
     assumptionsTitle: "ASSUMPTIONS",
     thesisTitle: "THESIS",
@@ -84,6 +87,28 @@ export const en = {
     blocked: (reasons: string) => `BLOCKED (${reasons})`,
   },
 
+  /** The warning for a configuration file that does not validate (#142): in every heartbeat digest and the briefing email. */
+  configurationWarning: {
+    label: "configuration that does not validate",
+    intro: [
+      `## A configuration file does not validate`,
+      ``,
+      `The engine refused the file(s) below, with every error it found. A refused file changes nothing: the engine does not`,
+      `read it.`,
+      ``,
+    ],
+    usingLastValid: (file: string) =>
+      `- \`${file}\`: the engine runs on its **last valid version** (\`state/config/${file}\`).`,
+    noLastValid: (file: string) =>
+      `- \`${file}\`: there is **no last valid version yet**, so what needs this file refuses to run.`,
+    error: (field: string, reason: string) => `  - ${field}: ${reason}`,
+    outro: [
+      ``,
+      `Fix the file (\`docs/input-format.md#configuration-files\`). The notice stays in every digest until the first run after a`,
+      `valid edit.`,
+    ],
+  },
+
   heartbeatDigest: {
     subject: (currency: string, sections: string) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
@@ -93,6 +118,7 @@ export const en = {
       unreadableCells: "cell that cannot be counted",
       noStop: "position without a stop",
       rejectedBatches: "rejected batch",
+      pendingEscalations: "pending escalation",
       storeUnreadable: "state file that does not read",
       stale: "stale portfolio",
       differences: "difference with the broker",
@@ -115,10 +141,11 @@ export const en = {
     breachHeader: [`| Ticker | Price | Stop | Below the stop | Unrealized P/L |`, `|---|---|---|---|---|`],
     breachOutro: [
       ``,
-      `After updating the account, tell the engine what happened through \`inbox/\``,
-      `(guide: \`routines/portfolio-sync.md\`) so the rest of the system stops`,
-      `reasoning about a position that no longer exists.`,
+      `After checking the account, tell the engine what happened with a batch in \`inbox/\` (a \`sale\` if the stop`,
+      `executed; a \`set_stop\` or a \`clear_stop\` if it did not; guide: \`routines/portfolio-sync.md\`) so the`,
+      `rest of the system stops reasoning about a position that no longer exists.`,
     ],
+    breachOutroStopWaiting: [`A stop the engine proposed is already waiting there as a \`set_stop\`.`],
     lotsIntro: [
       `## \`portfolio.md\`: problem with the lots`,
       ``,
@@ -158,6 +185,19 @@ export const en = {
       `Replace each with a new batch that starts with \`replaces: <file>\`, or give it up with a \`discard\` command`,
       `(\`file: <file>\`) in \`inbox/\` (see \`docs/input-format.md\`). The file stays in \`inbox/rejected/\` as the audit`,
       `trail. The notice stays in every digest until you do.`,
+    ],
+    pendingEscalationsIntro: [
+      `## Pending escalations awaiting an answer`,
+      ``,
+      `The engine escalated these signals and left them in \`logs/pending/\` for the reasoner. A pending escalation is never`,
+      `forgotten: it stays here until you close it:`,
+      ``,
+    ],
+    pendingEscalationsLine: (id: string) => `- \`logs/pending/${id}.md\``,
+    pendingEscalationsOutro: [
+      ``,
+      `Close each with a \`resolve\` command (\`id: <id>\`, \`outcome: resolved\` or \`discarded\`) in \`inbox/\` (see`,
+      `\`docs/input-format.md\`). The file stays in \`logs/pending/\` as the record. The notice stays in every digest until you do.`,
     ],
     storeUnreadableIntro: [
       `## The state file does not read`,
@@ -261,9 +301,9 @@ export const en = {
     ],
     tightOutro: (syncedAt: string) => [
       ``,
-      `The real stop lives in your broker: the engine only reads the Stop loss column of`,
-      `\`portfolio.md\` (last sync: **${syncedAt}**). If you`,
-      `change it, reflect it there (guide: \`routines/portfolio-sync.md\`).`,
+      `The real stop lives in your broker: the engine only knows the stop of its own state (last sync: **${syncedAt}**).`,
+      `If you change it there, tell the engine with a \`set_stop\` (or a batch) in \`inbox/\` (guide:`,
+      `\`routines/portfolio-sync.md\`). When the engine itself proposes a stop, it drops the \`set_stop\` there for you.`,
     ],
     armedIntro: [
       `## Armed breakouts`,
@@ -626,7 +666,8 @@ export const en = {
       "> ⚠ Automatic notice: the web search returned no results in this run (blocked, exhausted or unused) — the context in this section may rest only on trained knowledge, not real time.\n",
     ticketsTitle: "## Engine tickets",
     ticketsNote:
-      "Sell amount and trailing stop are computed by the engine (ADR-0009). What is blocked is not executed.",
+      "Sell amount and trailing stop are computed by the engine (ADR-0009). What is blocked is not executed. A proposed " +
+      "stop is dropped as a `set_stop` command in `inbox/`: it changes nothing until `inbox:ingest` applies it.",
     proposed: "PROPOSED",
     blocked: (codes: string) => `BLOCKED (${codes})`,
     ticketHeader: ["| Field | Value |", "|---|---|"],

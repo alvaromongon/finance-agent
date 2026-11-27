@@ -14,6 +14,9 @@ export const es: Messages = {
     tickerField: "Ticker",
     directionField: "Dirección",
     engineNote: "Stop, unidades e importe los calcula el motor (ADR-0009); el objetivo lo propone el análisis.",
+    adjustStopNote:
+      "El motor deja este stop como comando `set_stop` en `inbox/`: no cambia nada hasta que `inbox:ingest` lo aplica. " +
+      "Colocar el stop en tu bróker es cosa tuya.",
     noticesTitle: "AVISOS",
     assumptionsTitle: "SUPUESTOS",
     thesisTitle: "TESIS",
@@ -81,6 +84,27 @@ export const es: Messages = {
     blocked: (reasons) => `BLOQUEADO (${reasons})`,
   },
 
+  configurationWarning: {
+    label: "configuración que no valida",
+    intro: [
+      `## Un archivo de configuración no valida`,
+      ``,
+      `El motor rechazó los archivos de abajo, con todos los errores que encontró. Un archivo rechazado no cambia nada: el`,
+      `motor no lo lee.`,
+      ``,
+    ],
+    usingLastValid: (file) =>
+      `- \`${file}\`: el motor trabaja con su **última versión válida** (\`state/config/${file}\`).`,
+    noLastValid: (file) =>
+      `- \`${file}\`: **aún no hay última versión válida**, así que lo que necesita este archivo se niega a correr.`,
+    error: (field, reason) => `  - ${field}: ${reason}`,
+    outro: [
+      ``,
+      `Corrige el archivo (\`docs/input-format.md#configuration-files\`). El aviso sigue en cada resumen hasta la primera`,
+      `ejecución tras una edición válida.`,
+    ],
+  },
+
   heartbeatDigest: {
     subject: (currency, sections) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
@@ -90,6 +114,7 @@ export const es: Messages = {
       unreadableCells: "celda que no se puede contar",
       noStop: "posición sin stop",
       rejectedBatches: "lote rechazado",
+      pendingEscalations: "escalado pendiente",
       storeUnreadable: "archivo de estado que no se lee",
       stale: "cartera desactualizada",
       differences: "diferencia con el bróker",
@@ -112,10 +137,11 @@ export const es: Messages = {
     breachHeader: [`| Ticker | Precio | Stop | Bajo el stop | P/L latente |`, `|---|---|---|---|---|`],
     breachOutro: [
       ``,
-      `Tras actualizar la cuenta, cuéntale al motor lo ocurrido por \`inbox/\``,
-      `(guía: \`routines/portfolio-sync.md\`) para que el resto del sistema deje`,
-      `de razonar sobre una posición que ya no existe.`,
+      `Tras revisar la cuenta, cuéntale al motor lo ocurrido con un lote en \`inbox/\` (una \`sale\` si el stop se`,
+      `ejecutó; un \`set_stop\` o un \`clear_stop\` si no; guía: \`routines/portfolio-sync.md\`) para que el resto`,
+      `del sistema deje de razonar sobre una posición que ya no existe.`,
     ],
+    breachOutroStopWaiting: [`Un stop que el motor haya propuesto ya espera allí como \`set_stop\`.`],
     lotsIntro: [
       `## \`portfolio.md\`: problema con los lotes`,
       ``,
@@ -155,6 +181,19 @@ export const es: Messages = {
       `Sustituye cada uno con un lote nuevo que empiece por \`replaces: <archivo>\`, o renuncia a él con un comando`,
       `\`discard\` (\`file: <archivo>\`) en \`inbox/\` (ver \`docs/input-format.md\`). El archivo queda en \`inbox/rejected/\``,
       `como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
+    ],
+    pendingEscalationsIntro: [
+      `## Escalados pendientes a la espera de respuesta`,
+      ``,
+      `El motor escaló estas señales y las dejó en \`logs/pending/\` para el razonador. Un escalado pendiente nunca se`,
+      `olvida: sigue aquí hasta que lo cierres:`,
+      ``,
+    ],
+    pendingEscalationsLine: (id) => `- \`logs/pending/${id}.md\``,
+    pendingEscalationsOutro: [
+      ``,
+      `Cierra cada uno con un comando \`resolve\` (\`id: <id>\`, \`outcome: resolved\` o \`discarded\`) en \`inbox/\` (ver`,
+      `\`docs/input-format.md\`). El archivo queda en \`logs/pending/\` como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
     ],
     storeUnreadableIntro: [
       `## El archivo de estado no se lee`,
@@ -259,9 +298,9 @@ export const es: Messages = {
     ],
     tightOutro: (syncedAt) => [
       ``,
-      `El stop real vive en tu bróker: el motor solo lee la columna Stop loss de`,
-      `\`portfolio.md\` (última sincronización: **${syncedAt}**). Si lo`,
-      `cambias, refléjalo allí (guía: \`routines/portfolio-sync.md\`).`,
+      `El stop real vive en tu bróker: el motor solo conoce el stop de su propio estado (última sincronización: **${syncedAt}**).`,
+      `Si lo cambias allí, cuéntaselo al motor con un \`set_stop\` (o un lote) en \`inbox/\` (guía:`,
+      `\`routines/portfolio-sync.md\`). Cuando es el propio motor quien propone un stop, deja allí el \`set_stop\` por ti.`,
     ],
     armedIntro: [
       `## Rupturas armadas`,
@@ -621,7 +660,9 @@ export const es: Messages = {
     macroSearchWarning:
       "> ⚠ Aviso automático: la búsqueda web no devolvió resultados en este run (bloqueada, agotada o sin uso) — el contexto de esta sección puede basarse solo en conocimiento entrenado, no en tiempo real.\n",
     ticketsTitle: "## Tickets del motor",
-    ticketsNote: "Importe de venta y trailing stop los calcula el motor (ADR-0009). Lo bloqueado no se ejecuta.",
+    ticketsNote:
+      "Importe de venta y trailing stop los calcula el motor (ADR-0009). Lo bloqueado no se ejecuta. Un stop propuesto " +
+      "se deja como comando `set_stop` en `inbox/`: no cambia nada hasta que `inbox:ingest` lo aplica.",
     proposed: "PROPUESTA",
     blocked: (codes) => `BLOQUEADA (${codes})`,
     ticketHeader: ["| Campo | Valor |", "|---|---|"],

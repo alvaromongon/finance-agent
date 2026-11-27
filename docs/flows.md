@@ -11,7 +11,7 @@ parentheses so a code comment that cites it can be found here.
 | Flow                                                          | Command                                                                                     |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | [Heartbeat](#heartbeat)                                       | `heartbeat:eu`, `heartbeat:us`                                                              |
-| [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:resolve`                                           |
+| [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:record`; a `resolve` command in `inbox/` closes it |
 | [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner's flows and stop adjustments |
 | [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`                                       |
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize`                             |
@@ -36,17 +36,17 @@ parentheses so a code comment that cites it can be found here.
      section) do not stop the run: the lots count as empty for that run and the warning names
      `portfolio.md` and the expected section. Only the `Lots` reading is tolerant: a missing `Cash`
      or `Positions` section, or a table of them that does not read, still stops the run.
-     The same tolerance applies to `pending:resolve`, the Monday briefing and the weekly screening,
+     The same tolerance applies to `pending:record`, the Monday briefing and the weekly screening,
      which do not use the lots; only `decisions:evaluate` refuses a broken `Lots` (and `inbox:check` and `inbox:ingest`
      refuse a portfolio whose `Volume` is not the sum of its lots).
      A ticker that does not parse (`M&M.NS`, a typo) is handled the same way: the `Positions` row or
      watchlist entry is skipped, the other positions are still priced and their stops detected, and the
-     digest carries a warning naming the row in every run while it lasts. `pending:resolve`, the Monday
+     digest carries a warning naming the row in every run while it lasts. `pending:record`, the Monday
      briefing and the weekly screening skip such a row, entry or screening-log row with a warning and
      carry on, each also logging the warning through `warnSkipped`; only `decisions:evaluate` and the inbox refuse.
      A `Positions` `P/L`, `Available cash` or `Total cash` cell holding a number too large to count in cents
      (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
-     cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
+     cell and the digest carries it in its own section in every run while it lasts. `pending:record`, the Monday
      briefing and the screening log the same warning.
      2a. A state file that does not read never stops risk watch (ADR-0015, #139): when `state/portfolio.json` is not valid
      (bad JSON, a field the engine does not accept, another version), the run goes on over `state/portfolio.last-readable.json`, the
@@ -59,6 +59,17 @@ parentheses so a code comment that cites it can be found here.
      after the portfolio is read (before anything can end the run), also when there is nothing else to watch. Only the list of the
      rejected files is read, never a batch run, and a folder that cannot be read is said in the log and stops nothing: a
      rejected batch never switches off a stop alert.
+     2'-b. Name every [pending escalation](glossary.md#pending-escalation) no `resolve` command has closed (a file of
+     `logs/pending/` whose id and text the store does not list as closed, #141) in the digest, in every run while it
+     lasts (not deduplicated), at the same point and with the same guarantee: a folder that cannot be read is said in the
+     log and stops nothing.
+     2'-c. Validate the [configuration files](input-format.md#configuration-files) the heartbeat reads (`strategies/base.md` and
+     `routines/execution-analysis.md`, #142), before anything can end the run: a valid one is copied to `state/config/` as the
+     [last valid configuration](glossary.md#last-valid-configuration), and one that does not validate is named in every digest, with every
+     error (file, field, reason), while it lasts (not deduplicated); the run goes on over its last valid version. A bad edit never
+     stops risk watch (ADR-0015). With **no** last valid version yet (the first run) the stops below are still checked and the digest
+     is still sent; what needs the invalid file (the rules version of the setups, step 8; the reasoner's instructions, step 11)
+     then refuses the run with the errors, after the digest is out. The heartbeat's stop check reads neither file.
      2''. Judge how stale the silo is and what its latest [snapshot](glossary.md#snapshot) found (#138), once the state is
      the [store](glossary.md#store): a silo is [stale](glossary.md#stale) by its latest snapshot alone. A console warning names it, and the digest has a section for it. The differences of the latest snapshot are in the
      digest in every run (not deduplicated) until a later snapshot shows none; a snapshot with no difference says so, once,
@@ -110,20 +121,29 @@ parentheses so a code comment that cites it can be found here.
   11. [Escalate](glossary.md#escalation) the rest to the [reasoner](glossary.md#reasoner-api-and-handoff).
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
-      `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
-  12. Send the digest (crossed stops, positions without a stop, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
-      since the last send today (crossed stops, the differences of a snapshot and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
+      `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated, and as a
+      [pending escalation](glossary.md#pending-escalation) in every later digest until a `resolve` command closes it.
+      11'. A stop the reasoner proposes (a non-blocked `ADJUST_STOP`, the one proposal of a stop the heartbeat makes) is
+      **not written into the state**: after the last signal, in the same run and also if a later signal failed, the
+      run drops one batch file `inbox/<date>-heartbeat-<ccy>-stops.yaml` with a `set_stop` per proposal, and
+      `inbox:ingest` applies it like the owner's commands ([#136](https://github.com/alvaromongon/finance-agent/issues/136)).
+      A proposal already waiting in `inbox/` (the same ticker, currency and price, from any file) is not dropped twice,
+      and an `inbox/` that cannot be written to (a symbolic link) is said in the log and stops nothing. The stop
+      check of step 4 reads the last applied state and never waits for that batch.
+  12. Send the digest (crossed stops, positions without a stop, a configuration file that does not validate, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
+      since the last send today (crossed stops, the differences of a snapshot, configuration problems and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), the watchlist (the store, else `watchlist.md`), `logs/decisions.jsonl`, the rules
-  `version` in `strategies/base.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
-  regenerating the view `portfolio.md`; else `portfolio.md`),
+  `version` in `strategies/base.md`, `routines/execution-analysis.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
+  regenerating the view `portfolio.md`; else `portfolio.md`), `state/config/`, the batch of stop proposals in `inbox/` (a new file; it never edits one),
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
-  and email ([delivery](#email-delivery)). Market data comes from Yahoo Finance.
+  and email ([delivery](#email-delivery)). Market data comes from Yahoo Finance. Its workflow commits `inbox/` with the other paths it writes, never state.
 - **When it fails**: what was gathered before the failure still goes out in the digest, and the
   original error turns the run red; if that email also fails, it is only logged. A provider failure
   on one ticker's extras (strength, ATR, benchmark) does not stop the run; they are best-effort.
 - **Why**: [ADR-0002](decisions/0002-escalate-to-claude-only-after-deterministic-filters.md) (filters
   first), [ADR-0007](decisions/0007-portfolio-is-the-source-of-truth-for-risk-watch.md) (what is
-  watched), [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md) (two reasoner backends).
+  watched), [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md) (two reasoner backends),
+  [ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md) (a stop the engine raises is a command).
   For the lots check and the portfolio write: [spec #27](https://github.com/alvaromongon/finance-agent/issues/27).
 
 ### Market data freshness
@@ -201,25 +221,34 @@ them. It needs one history request per position with a stop; without ATR the pos
 
 ## Resolve a pending escalation
 
-- **Starts with**: an agent session (a routine or a person) after a handoff heartbeat left files in
-  `logs/pending/`: `pending:list`, `pending:show -- <file>`, then `pending:resolve -- <file>` with
-  the answer as JSON on stdin.
-- **Steps**:
-  1. Validate the answer's shape.
-  2. Rebuild the signal from the pending file and the current watchlist and portfolio (the store, else `watchlist.md` and `portfolio.md`).
+- **Starts with**: an agent session (a routine or a person) after a handoff heartbeat left files in `logs/pending/`:
+  `pending:list` (the open ones not already closed by a batch waiting in `inbox/`), `pending:show -- <id>`, then
+  `pending:record -- <id>` with the answer as JSON on stdin, and finally a `resolve` command in `inbox/` that closes it.
+  The id of an escalation is its file name without `.md`.
+- **Steps** (`pending:record`):
+  1. Refuse an id that is not open: it does not exist, a `resolve` command closed it, or a batch in `inbox/` is about to
+     (recording again would record the decision twice).
+  2. Validate the answer's shape.
+  3. Rebuild the signal from the pending file and the current watchlist and portfolio (the store, else `watchlist.md` and `portfolio.md`).
      The detection snapshot keeps only strength, benchmark, setup, conviction and price; the entry,
-     position, cash and silo value are read at resolve time, so a late resolution sizes on the
-     current state. A ticker in neither file is stale and cannot be resolved.
-  3. Hand over to [Record a decision](#record-a-decision), dated with the detection day.
-  4. Delete the pending file, whether the ticket was blocked or not.
-- **Reads / writes**: reads the pending file, the watchlist, the portfolio; writes what Record a
-  decision writes and deletes the pending file.
+     position, cash and silo value are read at record time, so a late answer sizes on the
+     current state. A ticker in neither file is stale and cannot be recorded.
+  4. Hand over to [Record a decision](#record-a-decision), dated with the detection day.
+  5. Say how to close it. The file stays: `pending:record` changes no list, and the escalation stays in every digest.
+- **Closing** is a `resolve` command (`id`, `outcome` `resolved` or `discarded`, optional `note` and `date`), the only way
+  to change the list of pending escalations ([ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md)). It is
+  checked by [Check the inbox](#check-the-inbox) against the escalations still open as the commands before it in the batch
+  leave them (an id that does not exist or is already closed is refused, and blocks no other command), and applied by
+  [Apply the inbox](#apply-the-inbox), which writes it to the store with the hash of the file. It changes no cash, lot or
+  stop. A signal can be closed as `discarded` without ever recording an answer.
+- **Reads / writes**: `pending:record` reads the pending file, the watchlist, the portfolio and the inbox, and writes what Record a
+  decision writes and the batch of stop proposals in `inbox/`; it deletes nothing. The `resolve` command writes the store only.
 - **When it fails**: a validation or recording error exits non-zero and leaves the file for a retry.
-- **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
+- **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md), [ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md).
 
 ## Record a decision
 
-- **Starts with**: a reasoner answer (the heartbeat with the `api` backend, or `pending:resolve`),
+- **Starts with**: a reasoner answer (the heartbeat with the `api` backend, or `pending:record`),
   or the owner narrating a cash flow or a stop adjustment (`npm run decision:record`, JSON on stdin).
 - **Steps (reasoner answer)**:
   1. Check the answer is for the signal's ticker and currency.
@@ -228,7 +257,13 @@ them. It needs one history request per position with a stop; without ATR the pos
   3. On a BUY, warn if the two-month rule applies.
   4. Blocked ticket: write the Markdown log and the decision line with the reasons; send no email.
      Otherwise write the log, then the decision line, then the alert email (the decision exists even
-     if delivery fails).
+     if delivery fails). For an `ADJUST_STOP` the alert says that the engine drops the stop as a `set_stop` in
+     `inbox/`, and the flow returns the proposal (ticker, silo and the stop of the ticket) to its caller, which
+     drops it: this flow never writes the state for a stop (#136).
+     Today the engine proposes a stop in exactly three places, and all three go through the inbox: the heartbeat
+     and `pending:resolve` (a reasoner's `ADJUST_STOP` whose ticket is not blocked) and the Monday briefing (an
+     `ADJUST_STOP` in its `PROPOSALS` whose ticket has a stop). A blocked one (`no_atr`, `stop_not_raised`, no
+     position) is logged and dropped nowhere. The tight-stop warning of the heartbeat proposes no level.
 - **Steps (owner narration)**: `decision:record` records what the owner narrates that is not a trade: a stop
   adjustment (`adjust_stop`), a deposit or a withdrawal. **A currency [conversion](glossary.md#conversion) is no longer recorded here (#135)**:
   `fx_conversion` is refused, with a message that names the `convert` command of the [inbox](#apply-the-inbox), the
@@ -275,7 +310,10 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   printed prompt, then `monday-briefing:finalize` with the report on stdin. With
   `ANALYST_PROVIDER=api`, `monday-briefing` (no subcommand) does both; in `handoff` it refuses, so
   the API is not spent by accident.
-- **Steps**:
+- **Steps**: 0. Both commands validate the [configuration files](input-format.md#configuration-files) the briefing reads (its prompt, the
+  portfolio policy and `strategies/base.md`, #142): a valid one is saved as the [last valid configuration](glossary.md#last-valid-configuration),
+  an invalid one is named on stderr and the run goes on over its last valid version; `finalize` also puts the warning, with the
+  errors, at the top of the email until the first run after a valid edit. With no last valid version the run refuses with the errors.
   1. `prepare` reads both portfolios and watchlists (the watchlist as the text of `watchlist.md`, generated from the store), the portfolio policy, the latest evaluation
      table and the logs of the last 30 days, and refreshes prices in the portfolio (the store, else `portfolio.md`) first so the
      prompt describes one state.
@@ -284,11 +322,13 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   3. `finalize` checks the report is complete, builds the engine tickets and one decision per open
      position, writes `logs/<date>-monday-briefing.md`, proposes the watchlist removals the report
      asks for (never a ticker with an open position, and only a ticker that is on the watchlist) as a `stop_watching`
-     batch in `inbox/` and archives their theses, and emails the summary. The watchlist is engine state: the
-     briefing edits neither it nor the store, and [`inbox:ingest`](#apply-the-inbox) applies the batch.
+     batch in `inbox/` and archives their theses, drops the stops it proposes as one batch of `set_stop` commands
+     in `inbox/<date>-monday-briefing-stops.yaml` (not written into the state; a proposal already waiting there is not
+     dropped twice; a failure to write is said and stops nothing), and emails the summary. The watchlist is engine state: the
+     briefing edits neither it nor the store, and [`inbox:ingest`](#apply-the-inbox) applies the batches.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), the watchlist (the store, else `watchlist.md`), `portfolio-policy.md`,
-  `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
-  `inbox/` (the `stop_watching` batch), `tesis/`, `logs/decisions.jsonl`, the briefing log and email.
+  `routines/monday-briefing.md`, `strategies/base.md`, `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
+  `tesis/`, `state/config/`, `logs/decisions.jsonl`, the briefing log, `inbox/` (the `stop_watching` batch and the batch of stop proposals) and email. Its workflow commits `inbox/` with the other paths it writes, never state.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
   In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
@@ -302,7 +342,10 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
 - **Starts with**: a weekly schedule. Handoff: `screening:prepare`, then one `screening:resolve --
 <file>` per candidate, then `screening:summarize`. `weekly-screening` with `ANALYST_PROVIDER=api`
   runs the whole thing.
-- **Steps**:
+- **Steps**: 0. `prepare` first validates the [configuration files](input-format.md#configuration-files) it reads (`screening-universe.md`,
+  `routines/weekly-screening.md`, `strategies/base.md`, #142): a valid one is saved as the
+  [last valid configuration](glossary.md#last-valid-configuration), an invalid one is named on stderr and the screening runs on its
+  last valid version (a universe with a missing pool, a broken YAML block or another `schema_version` is the usual case); with none yet it refuses with every error.
   1. `prepare` ranks the universe in `screening-universe.md` ([the funnel](#the-screening-funnel)),
      proposes to retire watchlist entries by mechanical rules (a `stop_watching` batch in `inbox/`, and
      their theses archived), selects the candidates, and writes one context
@@ -315,13 +358,13 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   3. `summarize` sends one aggregated email from `results.jsonl` and deletes it. Unresolved
      candidates are listed and kept. If the email did not go out, `results.jsonl` is kept for the
      relay.
-- **Reads / writes**: reads `screening-universe.md`, the watchlist (the store, else `watchlist.md`), both portfolios, the screening
-  log; writes `screening-log.md`, `tesis/`, `inbox/` (its `watch` and `stop_watching` batches), `logs/decisions.jsonl`,
+- **Reads / writes**: reads `screening-universe.md`, `routines/weekly-screening.md`, `strategies/base.md`, the watchlist (the store, else `watchlist.md`), both portfolios, the screening
+  log; writes `screening-log.md`, `state/config/`, `tesis/`, `inbox/` (its `watch` and `stop_watching` batches), `logs/decisions.jsonl`,
   `logs/pending-screening/` and email.
 - **State**: it never writes the [store](glossary.md#store), `portfolio.md` or `watchlist.md`: the watchlist is engine state, and
   the screening only proposes changes to it in `inbox/`, which [`inbox:ingest`](#apply-the-inbox) applies (the workflow's own push starts
   no workflow, so the inbox workflow's daily run does). Its workflow gives `commit-changes`
-  no `state-paths` and commits only `logs/`, `tesis/`, `inbox/` and `screening-log.md`.
+  no `state-paths` and commits only `logs/`, `tesis/`, `inbox/`, `screening-log.md` and the copies of the configuration files it saves (`state/config/`).
 - **When it fails**: if the ranking cannot be trusted the run falls back to a random draw among
   filter-0 eligibles and the email says **NO RANKING** with the reason. A candidate that fails to
   prepare is skipped with a warning.
@@ -378,6 +421,9 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      `discard` of such a file is an error of its command. A `discard` changes no cash, lots or stop, so a refused or
      unreadable one leaves nothing unknown and blocks no other command. A clean batch settles what it replaces and
      discards for the batches after it in name order (a second batch cannot answer the same file again).
+     A `resolve` is checked the same way against the [pending escalations](glossary.md#pending-escalation) still open
+     (the files of `logs/pending/` the store does not list as closed): an id that does not exist or that an earlier
+     command or file closed is an error of its command. It changes no cash, lots or stop either.
   3. Check each command with its handler, in order, against the state the previous ones would produce, and
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
@@ -438,6 +484,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Starts with**: the same as [Check the inbox](#check-the-inbox), then `npm run inbox:ingest`. No LLM. The only network
   call is one best-effort request of daily history per ticker a batch buys (for its ATR, see step 2), and only if one does.
   The inbox workflow starts it from a push to `inbox/`, a daily schedule or by hand, all in one `concurrency` group.
+  The batches it reads may be the engine's own: the [heartbeat](#heartbeat), `pending:resolve` and the
+  [Monday briefing](#monday-briefing) drop their stop proposals there as `set_stop` commands (#136), and `ingest`
+  applies them like any other. Whether they wait for the owner or the daily run applies them is the owner's
+  workflow (a push made with the default `GITHUB_TOKEN` starts no workflow).
   With `STATE_COMMIT=git` (that workflow) the whole run below is one [compare-and-swap](glossary.md#compare-and-swap):
   see _Commit_ at the end of the steps.
 - **Steps**:
@@ -448,7 +498,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      there is none, `portfolio.md` read whole (a row that does not read is refused, not dropped, so a position is
      never lost on the way). First write to the decision log the lines an earlier run committed to the store and did
      not get to write (the ones the log lacks by id), then read the decision history, whose ids no new lot may take.
-     Without a `version` in `strategies/base.md` nothing is applied (the lots carry it): the run fails. When a batch
+     The rules `version` comes from `strategies/base.md` as [configuration](input-format.md#configuration-files) (#142): when the
+     file does not validate the batches are applied with its [last valid version](glossary.md#last-valid-configuration) and the output
+     names the errors; with none (and no valid file) nothing is applied (the lots carry the version): the run fails with every error.
+     A valid file is saved to `state/config/` together with the state, in the same commit, by a run that applies something. When a batch
      buys, read also what the rules of an entry judge it with: the ATR of each ticker bought (a failure to get it only
      leaves the stop distance unjudged). The watchlist is part of the state read here: a store that holds none is
      seeded from `watchlist.md` for the run (a `watchlist.md` that cannot be read fails the run; none is an empty list),
@@ -483,7 +536,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      correction batch is rejected with that reason and nothing changes. Otherwise the store takes the rebuilt lots, cash and positions,
      and the log gets a `correction` line per line that changes, each pointing at its original, which stays.
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
-     the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
+     the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded and the pending escalations they closed (each
      with the hash of its file), the watchlist the `watch` and `stop_watching` commands left (a `watch` of a ticker that is on the
      list is refused, a `stop_watching` of one that is not on it too; neither changes cash, lots or stops, so neither depends on a
      refusal of one that does), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot

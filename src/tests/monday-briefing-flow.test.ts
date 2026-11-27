@@ -9,7 +9,7 @@
 process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, readdir, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { TechnicalsProvider } from "../utils/monday-briefing-helpers.js";
@@ -176,6 +176,8 @@ describe("monday-briefing prepare/finalize", () => {
     // would pollute the next test if it survived between cases.
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
     await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
+    // The last valid copies of the configuration files are state too: one test's must not feed the next.
+    await rm(join(vaultDir, "state"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "routines"), { recursive: true });
     await writeFile(join(vaultDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
@@ -325,6 +327,76 @@ describe("monday-briefing prepare/finalize", () => {
     });
   });
 
+  describe("a configuration file that does not validate (#142): the briefing runs on its last valid version and says so", () => {
+    const edit = (file: string, text: string) => writeFile(join(vaultDir, file), text, "utf8");
+    const stored = (file: string) => readFile(join(vaultDir, "state", "config", file), "utf8");
+    const POLICY = "- At most 25% of a silo in one position.\n";
+
+    beforeEach(async () => {
+      await edit("portfolio-policy.md", POLICY);
+    });
+
+    it("prepare saves a valid prompt and policy and, once they are invalid, goes on with the copies", async () => {
+      const quiet = mock.method(console, "error", () => {});
+      try {
+        await prepareBriefing(fakeProvider);
+        assert.equal(await stored("portfolio-policy.md"), POLICY);
+        assert.equal(await stored("routines/monday-briefing.md"), SYSTEM_PROMPT_MD);
+        await edit("routines/monday-briefing.md", " \n");
+        await edit("portfolio-policy.md", "");
+
+        const { systemPrompt, userPrompt } = await prepareBriefing(fakeProvider);
+
+        assert.equal(systemPrompt, SYSTEM_PROMPT_MD);
+        assert.match(userPrompt, /At most 25% of a silo in one position/);
+        const said = quiet.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+        assert.match(
+          said,
+          /WARNING, configuration: routines\/monday-briefing\.md is not valid, running on its last valid version/,
+        );
+        assert.match(said, /portfolio-policy\.md is not valid/);
+      } finally {
+        quiet.mock.restore();
+      }
+    });
+
+    it("finalize puts the warning in the email, with the errors, while the file is invalid", async () => {
+      await quietly(() => finalizeBriefing(VALID_REPORT, fakeProvider)); // saves the copies
+      await edit("portfolio-policy.md", "\n");
+      const log = mock.method(console, "log", () => {});
+      const warn = mock.method(console, "warn", () => {});
+      try {
+        await finalizeBriefing(VALID_REPORT, fakeProvider);
+        const dumped = log.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+        assert.match(dumped, /## Un archivo de configuración no valida/);
+        assert.match(dumped, /- `portfolio-policy\.md`: el motor trabaja con su \*\*última versión válida\*\*/);
+        assert.match(dumped, /- content: empty/);
+        assert.match(dumped, /={60}\n\n## Un archivo de configuración no valida/, "at the top, ahead of the report");
+      } finally {
+        log.mock.restore();
+        warn.mock.restore();
+      }
+      await edit("portfolio-policy.md", POLICY);
+      const log2 = mock.method(console, "log", () => {});
+      const warn2 = mock.method(console, "warn", () => {});
+      try {
+        await finalizeBriefing(VALID_REPORT, fakeProvider);
+        assert.doesNotMatch(log2.mock.calls.map((c) => String(c.arguments[0])).join("\n"), /configuración no valida/);
+      } finally {
+        log2.mock.restore();
+        warn2.mock.restore();
+      }
+    });
+
+    it("finalize with an invalid strategy and no copy refuses with the errors, before writing anything", async () => {
+      await edit("strategies/base.md", "# broken\n");
+      await assert.rejects(
+        quietly(() => finalizeBriefing(VALID_REPORT, fakeProvider)),
+        /strategies\/base\.md is not valid and there is no last valid version/,
+      );
+    });
+  });
+
   describe("finalizeBriefing", () => {
     const today = new Date().toISOString().slice(0, 10);
 
@@ -446,6 +518,48 @@ describe("monday-briefing prepare/finalize", () => {
       const logContent = await readFile(join(vaultDir, "logs", `${today}-monday-briefing.md`), "utf8");
       assert.match(logContent, /## Tickets del motor/);
       assert.match(logContent, /### SELL MSFT — PROPUESTA/);
+    });
+
+    describe("an ADJUST_STOP is a set_stop in inbox/, never a write of the portfolio (#136)", () => {
+      // MSFT trades at 440 with a stop of 400: three ATR of a 4.4 range lift it to about 427.
+      const risingProvider: TechnicalsProvider = {
+        getHistorical: async () => bars(Array.from({ length: 60 }, (_, i) => 380 + i)),
+        getPrices: async (tickers) => new Map(tickers.map((t) => [t, t === "EURUSD=X" ? 1.1 : 440])),
+      };
+      const adjust = VALID_REPORT.replace(
+        "PROPOSALS: []",
+        'PROPOSALS: [{"ticker":"MSFT","action":"ADJUST_STOP","conviction":"medium"}]',
+      ).replace("RETIRE: XOM,MSFT", "RETIRE:");
+
+      it("drops one batch with the engine's stop and changes no byte of portfolio.md for it", async () => {
+        const before = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+        await quietly(() => finalizeBriefing(adjust, risingProvider));
+
+        assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), before);
+        assert.deepEqual(await readdir(join(vaultDir, "inbox")), [`${today}-monday-briefing-stops.yaml`]);
+        const batch = await readFile(join(vaultDir, "inbox", `${today}-monday-briefing-stops.yaml`), "utf8");
+        const price = /command: set_stop\n {4}ticker: "MSFT"\n {4}price: (\S+) USD\n$/.exec(batch)?.[1];
+        assert.ok(price !== undefined && Number(price) > 400 && Number(price) < 440, batch);
+        assert.equal((await readDecisionLines()).find((d) => d.ticker === "MSFT")?.type, "adjust_stop");
+        const logContent = await readFile(join(vaultDir, "logs", `${today}-monday-briefing.md`), "utf8");
+        assert.match(logContent, /comando `set_stop` en `inbox\/`/);
+      });
+
+      it("a rerun the same day does not drop the same stop twice", async () => {
+        await quietly(() => finalizeBriefing(adjust, risingProvider));
+        await quietly(() => finalizeBriefing(adjust, risingProvider));
+
+        assert.equal((await readdir(join(vaultDir, "inbox"))).length, 1);
+      });
+
+      it("a stop that does not rise, or a SELL, drops nothing", async () => {
+        await quietly(() => finalizeBriefing(adjust, fakeProvider)); // 159: the trailing stop would fall below 400
+        await quietly(() =>
+          finalizeBriefing(adjust.replace('"action":"ADJUST_STOP"', '"action":"SELL"'), fakeProvider),
+        );
+
+        assert.deepEqual(await readdir(join(vaultDir, "inbox")).catch(() => []), []);
+      });
     });
 
     it("rejects a BUY: the only way in is the heartbeat setups", async () => {

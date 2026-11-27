@@ -1,7 +1,7 @@
 // The batches the flows drop in `inbox/` to change the watchlist (#140, spec #124): the screening proposes who joins and who
 // leaves it, the Monday briefing who leaves it. A flow never edits `watchlist.md` or the store: it writes a batch like the
 // owner's, and `inbox:ingest` applies it (or rejects it, and the digest says so). Pure: the file is written by
-// `inbox-store.ts` (`dropBatch`).
+// `inbox-store.ts` (`dropBatchOnce`).
 import yaml from "js-yaml";
 import type { AssetClass, Currency, Horizon } from "../types.js";
 import type { Ticker } from "../ticker.js";

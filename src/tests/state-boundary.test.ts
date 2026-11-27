@@ -20,7 +20,8 @@ const SRC = join(import.meta.dirname, "..");
  * The storage layer, relative to `src/`: the modules that may read or write a state file and parse what
  * it stores. `portfolio-store.ts` is the portfolio state port; the others are its parsers, codec and
  * writer, the engine's own JSON store of the portfolio and its generated view (`portfolio-json.ts`, #132), and
- * the vault reader/writer of the other files.
+ * the vault reader/writer of the other files, and the configuration files with their last valid versions
+ * (`configuration.ts`, #142).
  */
 const STORAGE_LAYER: readonly string[] = [
   "vault-io.ts",
@@ -32,6 +33,7 @@ const STORAGE_LAYER: readonly string[] = [
   "utils/parse.ts",
   "utils/fs-text.ts",
   "inbox-store.ts",
+  "configuration.ts",
 ];
 
 /** What a module imports to read or write a file (`node:fs`) or to parse a stored value (the storage layer's parsers). */
@@ -40,7 +42,6 @@ const PARSER_MODULES = ["parse", "vault-parser", "portfolio-codec", "portfolio-w
 
 /** Modules outside the storage layer that still do it today, and the slice of the milestone that removes each. */
 const ALLOWLIST: Readonly<Record<string, { slices: string; why: string }>> = {
-  "claude-analyst.ts": { slices: "#142", why: "reads the strategy file (configuration)" },
   "decisions-chart.ts": { slices: "#143", why: "writes the chart file (a report, not state)" },
   "decisions-evaluate.ts": { slices: "#143", why: "writes the evaluation file (a report, not state)" },
   "demo.ts": {
@@ -58,8 +59,8 @@ const ALLOWLIST: Readonly<Record<string, { slices: string; why: string }>> = {
   "utils/screening-helpers.ts": { slices: "#143", why: "reads the theses and screening files" },
   "utils/screening-outcomes-helpers.ts": { slices: "#143", why: "uses the screening-log result values" },
   "weekly-screening.ts": {
-    slices: "#142, #143",
-    why: "reads screening-universe.md as text, writes the theses",
+    slices: "#140, #142, #143",
+    why: "reads screening-universe.md and the watchlist as text, writes the theses",
   },
 };
 
