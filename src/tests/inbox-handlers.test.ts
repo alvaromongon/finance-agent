@@ -14,6 +14,7 @@ import {
   deposit,
   initialStopBreaches,
   sale,
+  silosOf,
   saleShares,
   withdrawal,
   type InboxState,
@@ -40,7 +41,7 @@ import { crossedState, entryContext, lot, stateOf } from "./fixtures/inbox.js";
  * taken, so the tests can name the lots; the real source is `uniqueDecisionIds` (tested in inbox-ingest.test.ts).
  */
 const ctx = (over: Partial<BatchContext> = {}, state: InboxState = {}): BatchContext => {
-  const taken = new Set(Object.values(state).flatMap((silo) => silo.lots.map((l) => l.entryId)));
+  const taken = new Set(silosOf(state).flatMap((silo) => silo.lots.map((l) => l.entryId)));
   return {
     opened: new Map(),
     earlierTickers: new Set(),
@@ -576,8 +577,8 @@ describe("inbox handlers", () => {
         rules_version: "1.0",
         ...over,
       });
-    const bought = (command: Buy<"EUR">, over: Partial<EntryContext> = {}) => {
-      const result = applyCommand(stateOf(), command, ctx({ entry: entryContext(over) }));
+    const bought = (command: Buy<"EUR">, over: Partial<EntryContext> = {}, state: InboxState = stateOf()) => {
+      const result = applyCommand(state, command, ctx({ entry: entryContext(over) }));
       assert.ok("state" in result && result.lot !== undefined);
       return result;
     };
@@ -591,7 +592,8 @@ describe("inbox handlers", () => {
     });
 
     it("flags a ticker that is not in the watchlist of its silo, and only that", () => {
-      const { lot: opened } = bought(buyOf(), { watchlist: { EUR: [entryEntry("KO")], USD: [entryEntry("SAP.DE")] } });
+      const onlyInUsd: WatchlistEntry = { ...entryEntry("SAP.DE"), currency: "USD" };
+      const { lot: opened } = bought(buyOf(), {}, stateOf({}, {}, [entryEntry("KO"), onlyInUsd]));
       assert.deepEqual(opened!.rulesViolations, ["not_in_watchlist", "no_stop"]);
     });
 

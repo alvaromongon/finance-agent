@@ -17,6 +17,7 @@ export type AssetClass = "equity" | "commodity" | "etf";
 // frontmatter, CLI stdin).
 export const CURRENCIES: readonly Currency[] = ["EUR", "USD"];
 export const HORIZONS: readonly Horizon[] = ["short", "medium"];
+export const ASSET_CLASSES: readonly AssetClass[] = ["equity", "commodity", "etf"];
 export const ACTIONS: readonly Action[] = ["BUY", "SELL", "HOLD", "ADJUST_STOP"];
 export const CONVICTIONS: readonly Conviction[] = ["high", "medium", "low"];
 
@@ -35,15 +36,21 @@ export interface EngineConviction {
   points: ConvictionPoint[];
 }
 
-/** Watchlist entry (parsed from the YAML block of watchlist.md). */
+/**
+ * Watchlist entry. With the engine's store it is what a `watch` command made (`thesis` is its note, `date` the day it
+ * joined the list); an entry seeded from the old `watchlist.md` also has what that file carried.
+ */
 export interface WatchlistEntry {
   ticker: Ticker;
-  name: string;
-  market: string;
+  /** The asset's name, as `watchlist.md` or the screening gave it; a `watch` command carries none. */
+  name?: string;
+  market?: string;
   currency: Currency;
   horizon: Horizon;
   thesis: string;
   thesis_link?: string;
+  /** The day it joined the watchlist, YYYY-MM-DD (the `date` of its `watch` command); absent in an entry seeded from `watchlist.md`. */
+  date?: string;
   // Optional for compatibility with existing entries without this field;
   // consumers (weight breakdown, screening) use `?? "equity"`.
   asset_class?: AssetClass;

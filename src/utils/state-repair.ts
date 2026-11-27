@@ -7,12 +7,13 @@
 // two tell one story: every line the batches would write must be in the log with the same figures, and every line
 // of an applied batch that the log holds must be one the batches write. What neither has (the origin of a lot and the
 // rules it broke, the prices) is taken from the log and from the store that is replaced, when it reads.
-import type { Currency, Lot } from "../types.js";
+import type { Currency, Lot, WatchlistEntry } from "../types.js";
 import { CURRENCIES } from "../types.js";
 import { zero } from "../money.js";
 import type { Decision } from "../decisions.js";
 import { printable, quoted } from "./printable.js";
 import type { InboxState } from "./inbox-handlers.js";
+import { parseBatch } from "./inbox-parse.js";
 import { runFiles } from "./inbox-check.js";
 import {
   currenciesOf,
@@ -43,6 +44,11 @@ export interface RepairInput {
   old: InboxState | null;
   /** The silos before the first batch (the store's `starting`, or its last readable copy's); absent: the portfolio began empty. */
   starting?: InboxState;
+  /**
+   * The watchlist before the first batch (the store's `startingWatchlist`, or its last readable copy's), as `starting` is for the
+   * silos (#140). Absent: the state never held the watchlist (it was still `watchlist.md`), or nothing tells what it began with.
+   */
+  startingWatchlist?: readonly WatchlistEntry[];
   rulesVersion: string;
   /** The day of the run, YYYY-MM-DD. */
   today: string;
@@ -125,7 +131,7 @@ export function planRepair(input: RepairInput): Repair {
   const batches = applied.length;
   const currencies = CURRENCIES.filter((c) => input.old?.[c] !== undefined || currenciesOf(applied).includes(c));
   // The silos start as the store began (`starting`), else empty: the old store's, when it reads, give their day of sync; one it lacks is of today.
-  const blank =
+  const silos: InboxState =
     input.starting ??
     Object.fromEntries(
       currencies.map((c) => [
@@ -133,6 +139,27 @@ export function planRepair(input: RepairInput): Repair {
         { currency: c, cash: zero(c), positions: [], lots: [], syncedAt: input.old?.[c]?.syncedAt ?? input.now },
       ]),
     );
+  // A repair never silently empties the watchlist: the batches that changed it are replayed over the list the store began with, and
+  // when nothing tells that list the repair refuses (a store that never held the watchlist has no such batch).
+  const watching = applied.find((file) =>
+    parseBatch(file.text).commands.some(({ command }) => command.kind === "watch" || command.kind === "stop_watching"),
+  );
+  if (watching !== undefined && input.startingWatchlist === undefined) {
+    return {
+      result: "refused",
+      batches,
+      findings: [
+        {
+          currency: null,
+          text: `inbox/applied/${printable(watching.name)} changes the watchlist, but neither the store nor its last readable copy tells the watchlist it began with: the watchlist cannot be rebuilt`,
+        },
+      ],
+    };
+  }
+  const blank: InboxState = {
+    ...silos,
+    ...(input.startingWatchlist !== undefined ? { watchlist: input.startingWatchlist } : {}),
+  };
   const result = replay(runFiles, applied, [], {
     initial: blank,
     history: input.history,

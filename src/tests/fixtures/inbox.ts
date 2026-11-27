@@ -3,7 +3,7 @@
 import type { Currency, Lot, PortfolioSnapshot, Position, WatchlistEntry } from "../../types.js";
 import { money } from "../../money.js";
 import { parseTicker } from "../../ticker.js";
-import type { EntryContext, InboxState } from "../../utils/inbox-handlers.js";
+import type { EntryContext, Silos } from "../../utils/inbox-handlers.js";
 import { lotsSection, mdTable, type HeldLot } from "./lots.js";
 
 export const lot = <C extends Currency>(
@@ -48,12 +48,27 @@ const silo = <C extends Currency>(currency: C, cash: number, lots: Lot<C>[]): Po
   syncedAt: "2026-10-01T00:00:00Z",
 });
 
-/** Both silos: EUR with `eurCash` and the given lots, USD with `usdCash` and the given lots. */
+/** The tickers `stateOf` has on the watchlist of both silos: the ones the tests buy, so that no entry is flagged `not_in_watchlist`. */
+const WATCHED = ["SAP.DE", "TCK", "AAA", "BBB", "ADBE"];
+
+/** An entry of the watchlist, the one a `watch` would make. */
+export const watched = (ticker: string, currency: Currency): WatchlistEntry => ({
+  ticker: parseTicker(ticker),
+  currency,
+  horizon: "medium",
+  thesis: "test",
+});
+
+/**
+ * Both silos: EUR with `eurCash` and the given lots, USD with `usdCash` and the given lots, and the watchlist of the
+ * tickers the tests buy (in both silos); `watchlist` replaces it.
+ */
 export function stateOf(
   { eurCash = 1000, usdCash = 500 } = {},
   lots: { EUR?: Lot<"EUR">[]; USD?: Lot<"USD">[] } = {},
-): Required<InboxState> {
-  return { EUR: silo("EUR", eurCash, lots.EUR ?? []), USD: silo("USD", usdCash, lots.USD ?? []) };
+  watchlist: readonly WatchlistEntry[] = WATCHED.flatMap((t) => [watched(t, "EUR"), watched(t, "USD")]),
+): Required<Silos> & { watchlist: readonly WatchlistEntry[] } {
+  return { EUR: silo("EUR", eurCash, lots.EUR ?? []), USD: silo("USD", usdCash, lots.USD ?? []), watchlist };
 }
 
 const POSITIONS_HEADER = ["Ticker", "Volume", "Avg price", "Current price", "P/L", "Stop loss"];
@@ -97,25 +112,15 @@ ${lotsSection("USD", usd)}`;
 }
 
 /** A state whose USD silo is the EUR one: the type cannot tell, only a check of the currency at run time can (#145). */
-export const crossedState = (state: Required<InboxState>): Required<InboxState> =>
-  ({ ...state, USD: state.EUR }) as unknown as Required<InboxState>;
+export const crossedState = (state: Required<Silos>): Required<Silos> =>
+  ({ ...state, USD: state.EUR }) as unknown as Required<Silos>;
 
 /**
- * What the rules of an entry read (`EntryContext`) with nothing to flag: the tickers the tests buy are in the
- * watchlist of both silos and follow no proposal, no ATR is known. `over` changes any of it.
+ * What the rules of an entry read (`EntryContext`) with nothing to flag: they follow no proposal and no ATR is known.
+ * `over` changes any of it. (The watchlist is in the state: see `stateOf`.)
  */
 export function entryContext(over: Partial<EntryContext> = {}): EntryContext {
-  const entry = (ticker: string, currency: Currency): WatchlistEntry => ({
-    ticker: parseTicker(ticker),
-    name: ticker,
-    market: "TEST",
-    currency,
-    horizon: "medium",
-    thesis: "test",
-  });
-  const tickers = ["SAP.DE", "TCK", "AAA", "BBB", "ADBE"];
   return {
-    watchlist: { EUR: tickers.map((t) => entry(t, "EUR")), USD: tickers.map((t) => entry(t, "USD")) },
     history: [],
     cited: new Set(),
     atr: new Map(),

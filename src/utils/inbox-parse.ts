@@ -7,7 +7,7 @@
 // `<plain decimal> <currency>` (`100.50 EUR`): digits with an optional decimal point, no sign, no thousands
 // separator, no exponent.
 import yaml from "js-yaml";
-import { CURRENCIES, type Currency } from "../types.js";
+import { ASSET_CLASSES, CURRENCIES, HORIZONS, type AssetClass, type Currency, type Horizon } from "../types.js";
 import { canCountInCents, money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
 import { ENTRY_ID, type BrokerPosition, type Command, type Correct } from "./inbox-handlers.js";
@@ -67,6 +67,8 @@ const COMMAND_KINDS = [
   "split",
   "snapshot",
   "discard",
+  "watch",
+  "stop_watching",
   "correct",
 ] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
@@ -81,6 +83,8 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   split: ["command", "ticker", "date", "ratio"],
   snapshot: ["command", "date", "cash", "positions"],
   discard: ["command", "file"],
+  watch: ["command", "currency", "ticker", "note", "date", "horizon", "asset_class"],
+  stop_watching: ["command", "ticker", "reason"],
   correct: ["command", "id", "ticker", "date", "units", "price", "costs", "amount"],
 };
 
@@ -380,6 +384,44 @@ function readCommand(raw: unknown): Command | Unread {
     if (typeof named === "object") problems.push(named.problem);
     if (problems.length > 0 || named === undefined || typeof named === "object") return unread();
     return { kind, file: named };
+  }
+
+  if (kind === "watch") {
+    const currencyText = text("currency", true);
+    const currency = CURRENCIES.find((c) => c === currencyText);
+    if (currencyText !== undefined && currency === undefined) {
+      problems.push(`"currency" must be EUR or USD; got: ${quoted(currencyText)}`);
+    }
+    const t = ticker();
+    const note = text("note", false);
+    const when = date(false);
+    const horizonText = text("horizon", false);
+    const horizon = HORIZONS.find((h) => h === horizonText);
+    if (horizonText !== undefined && horizon === undefined) {
+      problems.push(`"horizon" must be ${HORIZONS.join(" or ")}; got: ${quoted(horizonText)}`);
+    }
+    const classText = text("asset_class", false);
+    const assetClass = ASSET_CLASSES.find((a) => a === classText);
+    if (classText !== undefined && assetClass === undefined) {
+      problems.push(`"asset_class" must be ${ASSET_CLASSES.join(", ")}; got: ${quoted(classText)}`);
+    }
+    if (problems.length > 0 || !currency || !t) return unread();
+    return {
+      kind,
+      currency,
+      ticker: t,
+      ...(note !== undefined ? { note } : {}),
+      ...(when !== undefined ? { date: when } : {}),
+      ...(horizon !== undefined ? { horizon: horizon as Horizon } : {}),
+      ...(assetClass !== undefined ? { assetClass: assetClass as AssetClass } : {}),
+    };
+  }
+
+  if (kind === "stop_watching") {
+    const t = ticker();
+    const why = text("reason", false);
+    if (problems.length > 0 || !t) return unread();
+    return { kind, ticker: t, ...(why !== undefined ? { reason: why } : {}) };
   }
 
   if (kind === "correct") {

@@ -19,6 +19,7 @@ import {
   parseWatchlistBlock,
 } from "./utils/vault-parser.js";
 import {
+  ASSET_CLASSES,
   CONVICTION_POINTS,
   CONVICTIONS,
   CURRENCIES,
@@ -776,8 +777,6 @@ export interface ScreeningCandidateMeta extends ScreeningSelection {
   /** Setups current at prepare, one line per setup (describeSetup). */
   setups: string[];
 }
-
-const ASSET_CLASSES: readonly AssetClass[] = ["equity", "commodity", "etf"];
 
 /** Resolves a logs/pending-screening/ filename, checking it does not escape the directory. */
 function screeningCandidatePath(filename: string): string {

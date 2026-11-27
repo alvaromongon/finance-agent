@@ -27,6 +27,7 @@ const MOST_FINDINGS = 50;
 const asState = (store: PortfolioStore): InboxState => ({
   ...(store.silos.EUR ? { EUR: store.silos.EUR } : {}),
   ...(store.silos.USD ? { USD: store.silos.USD } : {}),
+  ...(store.watchlist !== undefined ? { watchlist: store.watchlist } : {}),
 });
 
 /** The `repair` line of one silo: the day, the result and what the run found about that silo (or about both). */
@@ -61,7 +62,7 @@ function auditLine(
  */
 export async function repairStore(now: Date = new Date()): Promise<RepairOutcome> {
   const today = now.toISOString().slice(0, 10);
-  const { store: existing, problem, starting } = await readStoreForRepair();
+  const { store: existing, problem, starting, startingWatchlist } = await readStoreForRepair();
   // A store that reads first gets what an earlier run left in it written to the log.
   const old = existing === null ? null : await writePendingDecisions(existing);
 
@@ -80,6 +81,7 @@ export async function repairStore(now: Date = new Date()): Promise<RepairOutcome
     history,
     old: old === null ? null : asState(old),
     ...(starting !== undefined ? { starting: asState({ silos: starting } as PortfolioStore) } : {}),
+    ...(startingWatchlist !== undefined ? { startingWatchlist } : {}),
     rulesVersion,
     today,
     now: now.toISOString(),
@@ -125,6 +127,9 @@ export async function repairStore(now: Date = new Date()): Promise<RepairOutcome
   const committed: PortfolioStore = {
     silos: plan.state,
     ...(starting !== undefined ? { starting } : {}),
+    // The watchlist is rebuilt from the list the store began with and the `watch` and `stop_watching` commands applied (#140).
+    ...(plan.state.watchlist !== undefined ? { watchlist: [...plan.state.watchlist] } : {}),
+    ...(startingWatchlist !== undefined ? { startingWatchlist } : {}),
     ...(old?.accountEnv !== undefined ? { accountEnv: old.accountEnv } : {}),
     unmoved: old?.unmoved ?? [],
     pendingDecisions: lines.map((d) => JSON.stringify(d)),

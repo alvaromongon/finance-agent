@@ -6,16 +6,25 @@
 //   (never an exponent, so nothing reads `1e-8` differently); every amount of money carries its currency.
 // - `renderView`: the Markdown view, in the tables the old reader reads, so the two stay one format.
 // - `withPrices`: the edit the price refresh makes to a silo of the store.
+// - The watchlist (#140) is part of the store too: `watchlist` (the entries) and `starting_watchlist` (the entries the
+//   store began with, from `watchlist.md`, what a correction and the repair replay the `watch` and `stop_watching`
+//   commands over). `renderWatchlistView` is `watchlist.md`, generated from it.
 import { canCountInCents, money, type Money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
+import yaml from "js-yaml";
 import {
+  ASSET_CLASSES,
   CURRENCIES,
+  HORIZONS,
+  type AssetClass,
   type Currency,
   type Difference,
+  type Horizon,
   type Lot,
   type PortfolioSnapshot,
   type Position,
   type Reconciliation,
+  type WatchlistEntry,
 } from "../types.js";
 import { DECISION_ORIGINS, type DecisionOrigin } from "../decisions.js";
 import { numberFormat } from "./portfolio-writer.js";
@@ -70,6 +79,13 @@ export interface PortfolioStore {
    * correction and by the repair. Absent in a store that began empty.
    */
   starting?: { readonly [C in Currency]?: PortfolioSnapshot<C> };
+  /**
+   * The watchlist (#140): what `watch` and `stop_watching` change and every flow reads. Absent while the state is still
+   * the old `watchlist.md`; the first `inbox:ingest` after that seeds it from the file. A ticker is on it once.
+   */
+  watchlist?: WatchlistEntry[];
+  /** The watchlist as the store began, from `watchlist.md`: present exactly when `watchlist` is (`starting` is for the silos). */
+  startingWatchlist?: WatchlistEntry[];
 }
 
 // ─── Plain decimal ────────────────────────────────────────────────────────────
@@ -139,6 +155,18 @@ const encodeSilo = (silo: PortfolioSnapshot) => ({
   lots: silo.lots.map((l) => encodeLot(l, silo.currency)),
 });
 
+const encodeEntry = (e: WatchlistEntry) => ({
+  ticker: e.ticker,
+  currency: e.currency,
+  horizon: e.horizon,
+  ...(e.asset_class !== undefined ? { asset_class: e.asset_class } : {}),
+  thesis: e.thesis,
+  ...(e.thesis_link !== undefined ? { thesis_link: e.thesis_link } : {}),
+  ...(e.name !== undefined ? { name: e.name } : {}),
+  ...(e.market !== undefined ? { market: e.market } : {}),
+  ...(e.date !== undefined ? { date: e.date } : {}),
+});
+
 const encodeSilos = (silos: PortfolioStore["silos"]) =>
   Object.fromEntries(
     CURRENCIES.flatMap((currency) => {
@@ -164,6 +192,8 @@ export function encodeStore(store: PortfolioStore): string {
     })),
     silos,
     ...(store.starting !== undefined ? { starting_silos: encodeSilos(store.starting) } : {}),
+    ...(store.watchlist !== undefined ? { watchlist: store.watchlist.map(encodeEntry) } : {}),
+    ...(store.startingWatchlist !== undefined ? { starting_watchlist: store.startingWatchlist.map(encodeEntry) } : {}),
   };
   return `${JSON.stringify(document, null, 2)}\n`;
 }
@@ -338,6 +368,49 @@ export function decodeStore(text: string, where: string): PortfolioStore {
       at: string(o.at, `${path}.at`),
     };
   });
+  const readWatchlist = (value: unknown, root: string): WatchlistEntry[] => {
+    const seen = new Set<string>();
+    return array(value, root).map((item, i): WatchlistEntry => {
+      const path = `${root}[${i}]`;
+      const o = object(item, path);
+      const t = ticker(o.ticker, `${path}.ticker`);
+      if (seen.has(t)) fail(`${path}.ticker`, `${t} is already on the list`);
+      seen.add(t);
+      const currency = string(o.currency, `${path}.currency`);
+      if (!CURRENCIES.includes(currency as Currency)) fail(`${path}.currency`, "must be EUR or USD");
+      const horizon = string(o.horizon, `${path}.horizon`);
+      if (!HORIZONS.includes(horizon as Horizon)) fail(`${path}.horizon`, "must be short or medium");
+      const assetClass = o.asset_class === undefined ? undefined : string(o.asset_class, `${path}.asset_class`);
+      if (assetClass !== undefined && !ASSET_CLASSES.includes(assetClass as AssetClass)) {
+        fail(`${path}.asset_class`, "must be equity, commodity or etf");
+      }
+      const date = o.date === undefined ? undefined : string(o.date, `${path}.date`);
+      if (date !== undefined && !isCalendarDate(date)) {
+        fail(`${path}.date`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(date)}`);
+      }
+      const optionalText = (name: string): string | undefined =>
+        o[name] === undefined ? undefined : string(o[name], `${path}.${name}`);
+      const [thesisLink, name, market] = [optionalText("thesis_link"), optionalText("name"), optionalText("market")];
+      return {
+        ticker: t,
+        currency: currency as Currency,
+        horizon: horizon as Horizon,
+        ...(assetClass !== undefined ? { asset_class: assetClass as AssetClass } : {}),
+        thesis: string(o.thesis, `${path}.thesis`),
+        ...(thesisLink !== undefined ? { thesis_link: thesisLink } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(market !== undefined ? { market } : {}),
+        ...(date !== undefined ? { date } : {}),
+      };
+    });
+  };
+  // The two lists come together: a store with one and not the other is not one this engine wrote.
+  if ((doc.watchlist === undefined) !== (doc.starting_watchlist === undefined)) {
+    fail(
+      doc.watchlist === undefined ? "watchlist" : "starting_watchlist",
+      "is missing: the store has one and not the other",
+    );
+  }
   return {
     silos,
     ...(doc.account_env !== undefined ? { accountEnv: string(doc.account_env, "account_env") } : {}),
@@ -345,6 +418,10 @@ export function decodeStore(text: string, where: string): PortfolioStore {
     pendingDecisions,
     resolvedRejections,
     ...(doc.starting_silos !== undefined ? { starting: readSilos(doc.starting_silos, "starting_silos") } : {}),
+    ...(doc.watchlist !== undefined ? { watchlist: readWatchlist(doc.watchlist, "watchlist") } : {}),
+    ...(doc.starting_watchlist !== undefined
+      ? { startingWatchlist: readWatchlist(doc.starting_watchlist, "starting_watchlist") }
+      : {}),
   };
 }
 
@@ -447,6 +524,40 @@ export function renderView(store: PortfolioStore): string {
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * `watchlist.md` as the engine generates it from the store: the first ```yaml block of the file of the old format
+ * (`schema_version: 1`), in the order of the list, with a note that it is generated. Nothing reads it as a source while
+ * the store holds the watchlist; it is for the owner's notes app.
+ */
+export function renderWatchlistView(store: PortfolioStore): string {
+  const entries = (store.watchlist ?? []).map((e) => ({
+    ticker: e.ticker,
+    ...(e.name !== undefined ? { name: e.name } : {}),
+    ...(e.market !== undefined ? { market: e.market } : {}),
+    currency: e.currency,
+    horizon: e.horizon,
+    ...(e.asset_class !== undefined ? { asset_class: e.asset_class } : {}),
+    thesis: e.thesis,
+    ...(e.thesis_link !== undefined ? { thesis_link: e.thesis_link } : {}),
+    ...(e.date !== undefined ? { date: e.date } : {}),
+  }));
+  return [
+    "---",
+    "schema_version: 1",
+    "---",
+    "",
+    "# Watchlist",
+    "",
+    "Generated by the engine from `state/portfolio.json`: do not edit it, the next change overwrites it.",
+    "To change the watchlist, drop a `watch` or `stop_watching` command in `inbox/` (`docs/input-format.md`).",
+    "",
+    "```yaml",
+    yaml.dump({ watchlist: entries }, { lineWidth: 120, quotingType: '"' }).trimEnd(),
+    "```",
+    "",
+  ].join("\n");
 }
 
 // ─── Edits of a silo ──────────────────────────────────────────────────────────

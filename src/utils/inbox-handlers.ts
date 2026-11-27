@@ -7,8 +7,10 @@
 // touches a silo (`siloOf`).
 import {
   CURRENCIES,
+  type AssetClass,
   type Currency,
   type Difference,
+  type Horizon,
   type Lot,
   type PortfolioSnapshot,
   type Position,
@@ -202,6 +204,32 @@ export interface Correct {
   amount?: Money;
 }
 
+/**
+ * Puts a ticker on the watchlist (#140): the engine's own list, which the heartbeat scans for setups and which the trade
+ * checks read (`not_in_watchlist`). A ticker is on it once, in one silo.
+ */
+export interface Watch {
+  kind: "watch";
+  currency: Currency;
+  ticker: Ticker;
+  /** Why it is watched; kept as the entry's thesis. */
+  note?: string;
+  /** The day it joins the list, YYYY-MM-DD; the day of the run when left out. */
+  date?: string;
+  /** `medium` when left out. */
+  horizon?: Horizon;
+  /** `equity` when left out. */
+  assetClass?: AssetClass;
+}
+
+/** Takes a ticker off the watchlist (#140). It changes no cash, lot or stop: a position it holds stays under risk watch. */
+export interface StopWatching {
+  kind: "stop_watching";
+  ticker: Ticker;
+  /** Why it is retired; the engine does not keep it (the batch in `inbox/applied/` does). */
+  reason?: string;
+}
+
 export type Command<C extends Currency = Currency> =
   | Deposit<C>
   | Withdrawal<C>
@@ -213,12 +241,23 @@ export type Command<C extends Currency = Currency> =
   | Split
   | Snapshot<C>
   | Discard
+  | Watch
+  | StopWatching
   | Correct;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
-/** What the handlers work on: each silo's portfolio, in its own currency; a silo the portfolio does not have is absent. */
-export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
+/** The silos of a state: each silo's portfolio, in its own currency; a silo the portfolio does not have is absent. */
+export type Silos = { readonly [C in Currency]?: PortfolioSnapshot<C> };
+
+/**
+ * What the handlers work on: the silos, and the watchlist (#140), which the `watch` and `stop_watching` commands change and
+ * the rules of an entry read. A state with no `watchlist` is one with nothing on it.
+ */
+export type InboxState = Silos & { readonly watchlist?: readonly WatchlistEntry[] };
+
+/** The silos of a state, in the order of `CURRENCIES`. */
+export const silosOf = (state: InboxState): PortfolioSnapshot[] => CURRENCIES.flatMap((c) => state[c] ?? []);
 
 /**
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
@@ -249,13 +288,12 @@ export type HandlerResult =
 export type NewEntryId = (date: string, ticker: Ticker) => string;
 
 /**
- * What the rules of an entry (ADR-0013 §4, ADR-0009 §5 and §8) read, from whoever runs the batch: the watchlist of
- * each silo, the decision history (where the system proposal a trade follows is found), the proposals earlier trades
- * of the run already cited, and the ATR of the tickers bought. Everything is read before the run, so the handlers
- * stay pure.
+ * What the rules of an entry (ADR-0013 §4, ADR-0009 §5 and §8) read, from whoever runs the batch: the decision history
+ * (where the system proposal a trade follows is found), the proposals earlier trades of the run already cited, and the ATR
+ * of the tickers bought. Everything is read before the run, so the handlers stay pure. The watchlist is not here: it is
+ * part of the state (`InboxState`), so a `watch` earlier in the batch counts.
  */
 export interface EntryContext {
-  watchlist: Readonly<Partial<Record<Currency, readonly WatchlistEntry[]>>>;
   history: readonly Decision[];
   /** Ids of the proposals the buys before this command (earlier files included) cited: one proposal, one trade. */
   cited: ReadonlySet<string>;
@@ -351,7 +389,7 @@ const refused = (reason: string): { reason: string } => ({ reason });
 
 /** The silo of `currency`, or why the command cannot be applied to it. */
 function siloOf<C extends Currency>(state: InboxState, currency: C): PortfolioSnapshot<C> | { reason: string } {
-  const silo = state[currency];
+  const silo = (state as Silos)[currency];
   if (silo?.currency !== currency) {
     return refused(`there is no ${currency} silo in the portfolio`);
   }
@@ -517,7 +555,7 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>, cont
       ...entryRuleViolations({
         price: command.price,
         stop: held ? stopOf(held) : null,
-        entry: entry.watchlist[currency]?.find((e) => e.ticker === ticker),
+        entry: state.watchlist?.find((e) => e.currency === currency && e.ticker === ticker),
         proposal,
         atr: entry.atr.get(ticker),
         minStopAtr: entry.minStopAtr,
@@ -953,6 +991,35 @@ export function discard(
   return { state, discarded: command.file };
 }
 
+/** `watch`: puts the ticker on the watchlist. Refused when it is on it already, in either silo. */
+export function watch(state: InboxState, command: Watch, { today }: Pick<BatchContext, "today">): HandlerResult {
+  const list = state.watchlist ?? [];
+  const on = list.find((e) => e.ticker === command.ticker);
+  if (on !== undefined) {
+    return refused(
+      `${printable(command.ticker)} is already on the watchlist (${on.currency} silo): a ticker is watched once`,
+    );
+  }
+  const entry: WatchlistEntry = {
+    ticker: command.ticker,
+    currency: command.currency,
+    horizon: command.horizon ?? "medium",
+    ...(command.assetClass !== undefined ? { asset_class: command.assetClass } : {}),
+    thesis: command.note ?? "",
+    date: command.date ?? today,
+  };
+  return { state: { ...state, watchlist: [...list, entry] } };
+}
+
+/** `stop_watching`: takes the ticker off the watchlist. Refused when it is not on it. */
+export function stopWatching(state: InboxState, command: StopWatching): HandlerResult {
+  const list = state.watchlist ?? [];
+  if (!list.some((e) => e.ticker === command.ticker)) {
+    return refused(`${printable(command.ticker)} is not on the watchlist: there is nothing to stop watching`);
+  }
+  return { state: { ...state, watchlist: list.filter((e) => e.ticker !== command.ticker) } };
+}
+
 /** A lot the batch opened whose initial stop is not below its entry price, so its R would be zero or negative. */
 export interface InitialStopBreach {
   currency: Currency;
@@ -1019,6 +1086,10 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return snapshot(state, command, context);
       case "discard":
         return discard(command, context, state);
+      case "watch":
+        return watch(state, command, context);
+      case "stop_watching":
+        return stopWatching(state, command);
       case "correct":
         // The runner of the inbox applies it over the applied batches (`checkCorrections`); there is no state to hand it.
         return refused("a correct command is run on its own in a batch, over the batches already applied");
