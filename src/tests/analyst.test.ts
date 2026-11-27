@@ -399,6 +399,14 @@ describe("buildUserPrompt — owned/not-owned branching", () => {
     assert.match(prompt, /Pattern target: 160\.5 — it is the ticket\.target of a BUY/);
   });
 
+  it("an entry made by a watch command with no note has an empty thesis: the prompt says none was recorded (#140)", () => {
+    const prompt = buildUserPrompt(
+      baseSignal({ entry: { ticker: tk("XOM"), currency: "USD", horizon: "medium", thesis: "" } }),
+      [],
+    );
+    assert.match(prompt, /No thesis recorded in the watchlist/);
+  });
+
   it("without a watchlist entry (orphan position): does not throw and uses defaults", () => {
     const prompt = buildUserPrompt(
       baseSignal({
@@ -416,7 +424,7 @@ describe("buildUserPrompt — owned/not-owned branching", () => {
       }),
       [],
     );
-    assert.match(prompt, /No thesis recorded in watchlist\.md/);
+    assert.match(prompt, /No thesis recorded in the watchlist/);
     assert.match(prompt, /Horizon: medium/);
     assert.match(prompt, /Ownership: open position/);
   });

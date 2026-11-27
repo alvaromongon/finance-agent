@@ -1296,6 +1296,7 @@ describe("inbox:check", () => {
         "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",
         "utils/inbox-handlers.ts",
+        "utils/inbox-proposals.ts",
         "utils/inbox-replay.ts",
         "utils/state-repair.ts",
         "state-repair.ts",
@@ -1311,13 +1312,22 @@ describe("inbox:check", () => {
               : [],
         );
       // The one thing the heartbeat reads of the inbox is the list of the rejected batches still awaiting an answer
-      // (`inbox-rejected.ts`, #152), to name them in its digest: it never runs a batch nor reads `inbox/` itself.
+      // (`inbox-rejected.ts`, #152), to name them in its digest: it never runs a batch nor reads `inbox/` itself. The two
+      // flows that propose a change of the watchlist (the screening and the Monday briefing, #140) drop a batch in it, as
+      // the owner would, and read nothing of it.
       const importers = walk(SRC)
         .filter((file) => !inboxModules.has(file))
         .flatMap((file) =>
           [...readFileSync(join(SRC, file), "utf8").matchAll(/from\s+["']([^"']*inbox[^"']*)["']/g)]
             .map((m) => m[1])
             .filter((from) => !(file === "heartbeat-run.ts" && from === "./inbox-rejected.js"))
+            .filter(
+              (from) =>
+                !(
+                  (file === "weekly-screening.ts" || file === "monday-briefing.ts") &&
+                  (from === "./inbox-store.js" || from === "./utils/inbox-proposals.js")
+                ),
+            )
             .map((from) => `${file} -> ${from}`),
         );
       assert.deepEqual(importers, []);

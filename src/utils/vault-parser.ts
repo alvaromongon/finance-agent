@@ -5,7 +5,7 @@ import { normalizeEol } from "./eol.js";
 import { parseMarkdownMoney, parseMarkdownNumber } from "./parse.js";
 import { zero, canCountInCents, money, type Money } from "../money.js";
 import { DECISION_ORIGINS } from "../decisions.js";
-import { checkTicker, namesTicker, type Ticker } from "../ticker.js";
+import { checkTicker, type Ticker } from "../ticker.js";
 import type { Currency, Lot, Position, SkippedLotRow, WatchlistEntry } from "../types.js";
 import { missingLotsSection, portfolioWhere } from "./portfolio-where.js";
 import { quoted } from "./printable.js";
@@ -301,35 +301,6 @@ export function parseWatchlistBlock(block: string, onSkip?: (message: string) =>
     }
     return [{ ...entry, ticker: checked.ticker }];
   });
-}
-
-/**
- * Adds an entry to the watchlist.md YAML block.
- * Pure function: takes the current markdown and returns the updated one.
- * Returns the same string if the ticker already exists.
- */
-export function applyAddWatchlistEntry(md: string, entry: import("../types.js").WatchlistEntry): string {
-  md = normalizeEol(md);
-  const block = extractYamlBlock(md);
-  const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
-  const watchlist = parsed?.watchlist ?? [];
-  if (watchlist.some((e) => namesTicker(e?.ticker, entry.ticker))) return md;
-  watchlist.push(entry);
-  const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
-  return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
-}
-
-/**
- * Removes a ticker from the watchlist.md YAML block.
- * Pure function: takes the current markdown and returns the updated one.
- */
-export function applyRetireWatchlistEntry(md: string, ticker: Ticker): string {
-  md = normalizeEol(md);
-  const block = extractYamlBlock(md);
-  const parsed = yaml.load(block) as { watchlist?: import("../types.js").WatchlistEntry[] };
-  const watchlist = (parsed?.watchlist ?? []).filter((e) => !namesTicker(e?.ticker, ticker));
-  const newYaml = yaml.dump({ watchlist }, { lineWidth: 120, quotingType: '"' });
-  return md.replace(/```yaml\n[\s\S]*?\n```/, "```yaml\n" + newYaml + "```");
 }
 
 /** Columns of the positions table (v1 format), by header text. */

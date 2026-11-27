@@ -127,6 +127,22 @@ describe("inbox:ingest as a compare-and-swap", () => {
     assert.equal(remote.published.length, 1, "the rejection is committed: the file is in rejected/ for the digest");
   });
 
+  it("a retry judges a batch against the watchlist the other run left: the watchlist comes with the store (#140)", async () => {
+    await start("a.yaml", batch("command: watch\ncurrency: USD\nticker: AMD"));
+    // Another run's commit watched AMD first.
+    remote.raceOnce(async (dir) => {
+      const path = join(dir, "state", "portfolio.json");
+      const doc = JSON.parse(await readFile(path, "utf8")) as { watchlist: object[] };
+      doc.watchlist.push({ ticker: "AMD", currency: "USD", horizon: "medium", thesis: "" });
+      await writeFile(path, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
+    });
+    const result = await inbox.ingestCommitted(remote, 3);
+    assert.equal(result.exitCode, 1);
+    assert.match(result.lines.join("\n"), /AMD is already on the watchlist \(USD silo\)/);
+    assert.deepEqual(await ls("inbox", "rejected"), ["a.yaml", "a.yaml.errors.txt"]);
+    assert.equal(remote.reads, 2, "the state, the watchlist with it, was read again after the loss");
+  });
+
   it("the result of a retry equals that of a fresh run over the same state", async () => {
     remote.raceOnce(setCash("1300.00 EUR"));
     await inbox.ingestCommitted(remote, 3, NOW);

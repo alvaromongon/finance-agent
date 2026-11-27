@@ -1,14 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  parseScreeningLog,
-  extractRetireList,
-  extractPlanSummary,
-  applyAddWatchlistEntry,
-  applyRetireWatchlistEntry,
-} from "../utils/vault-parser.js";
-import type { WatchlistEntry } from "../types.js";
-import { parseTicker as tk } from "../ticker.js";
+import { parseScreeningLog, extractRetireList, extractPlanSummary } from "../utils/vault-parser.js";
 
 // ── parseScreeningLog ─────────────────────────────────────────────────────────
 
@@ -134,93 +126,5 @@ describe("extractPlanSummary", () => {
 
   it("returns an empty string if there is no PLAN_SUMMARY", () => {
     assert.equal(extractPlanSummary("## Resumen\n\nSin acciones."), "");
-  });
-});
-
-// ── applyAddWatchlistEntry ────────────────────────────────────────────────────
-
-const WATCHLIST_MD = `# Watchlist
-
-\`\`\`yaml
-watchlist:
-  - ticker: DEF.MI
-    name: Example Defence
-    market: Borsa Italiana
-    currency: EUR
-    horizon: medium
-    thesis: "Defensa europea"
-\`\`\`
-`;
-
-const newEntry: WatchlistEntry = {
-  ticker: tk("AIR.PA"),
-  name: "Airbus",
-  market: "Euronext Paris",
-  currency: "EUR",
-  horizon: "medium",
-  thesis: "Aeroespacial y defensa",
-};
-
-describe("applyAddWatchlistEntry", () => {
-  it("adds a new ticker to the YAML block", () => {
-    const updated = applyAddWatchlistEntry(WATCHLIST_MD, newEntry);
-    assert.ok(updated.includes("AIR.PA"));
-  });
-
-  it("keeps the existing ticker", () => {
-    const updated = applyAddWatchlistEntry(WATCHLIST_MD, newEntry);
-    assert.ok(updated.includes("DEF.MI"));
-  });
-
-  it("returns the same string if the ticker already exists (idempotent)", () => {
-    const duplicate: WatchlistEntry = { ...newEntry, ticker: tk("DEF.MI") };
-    const updated = applyAddWatchlistEntry(WATCHLIST_MD, duplicate);
-    assert.equal(updated, WATCHLIST_MD);
-  });
-
-  it("the result is valid Markdown with a yaml block", () => {
-    const updated = applyAddWatchlistEntry(WATCHLIST_MD, newEntry);
-    assert.ok(updated.includes("```yaml"));
-    assert.ok(updated.includes("```"));
-  });
-
-  it("keeps asset_class when writing a new entry (round-trip)", () => {
-    const commodityEntry: WatchlistEntry = { ...newEntry, ticker: tk("4GLD.DE"), asset_class: "commodity" };
-    const updated = applyAddWatchlistEntry(WATCHLIST_MD, commodityEntry);
-    assert.ok(/asset_class:\s*commodity/.test(updated));
-  });
-
-  it("an entry without asset_class does not write it (stays undefined, not a literal 'equity')", () => {
-    const updated = applyAddWatchlistEntry(WATCHLIST_MD, newEntry);
-    // The added entry (AIR.PA) does not define asset_class: the default is resolved
-    // at the point of use (`entry.asset_class ?? "equity"`), not when writing.
-    const parsed = /watchlist:[\s\S]*- ticker: AIR\.PA[\s\S]*?(?=- ticker:|```)/.exec(updated);
-    assert.ok(parsed);
-    assert.ok(!parsed[0].includes("asset_class"));
-  });
-});
-
-// ── applyRetireWatchlistEntry ─────────────────────────────────────────────────
-
-describe("applyRetireWatchlistEntry", () => {
-  it("removes the ticker from the YAML block", () => {
-    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, tk("DEF.MI"));
-    assert.ok(!updated.includes("DEF.MI"));
-  });
-
-  it("does not change other tickers", () => {
-    const md = applyAddWatchlistEntry(WATCHLIST_MD, newEntry);
-    const updated = applyRetireWatchlistEntry(md, tk("DEF.MI"));
-    assert.ok(updated.includes("AIR.PA"));
-  });
-
-  it("does not fail if the ticker does not exist", () => {
-    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, tk("NOEXISTE"));
-    assert.ok(updated.includes("DEF.MI")); // the rest untouched
-  });
-
-  it("the result is still Markdown with a yaml block", () => {
-    const updated = applyRetireWatchlistEntry(WATCHLIST_MD, tk("DEF.MI"));
-    assert.ok(updated.includes("```yaml"));
   });
 });

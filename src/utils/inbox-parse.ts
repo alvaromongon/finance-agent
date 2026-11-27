@@ -7,7 +7,7 @@
 // `<plain decimal> <currency>` (`100.50 EUR`): digits with an optional decimal point, no sign, no thousands
 // separator, no exponent.
 import yaml from "js-yaml";
-import { ASSET_CLASSES, CURRENCIES, HORIZONS, type AssetClass, type Currency, type Horizon } from "../types.js";
+import { ASSET_CLASSES, CURRENCIES, HORIZONS, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
 import { ENTRY_ID, type BrokerPosition, type Command, type Correct } from "./inbox-handlers.js";
@@ -412,8 +412,8 @@ function readCommand(raw: unknown): Command | Unread {
       ticker: t,
       ...(note !== undefined ? { note } : {}),
       ...(when !== undefined ? { date: when } : {}),
-      ...(horizon !== undefined ? { horizon: horizon as Horizon } : {}),
-      ...(assetClass !== undefined ? { assetClass: assetClass as AssetClass } : {}),
+      ...(horizon !== undefined ? { horizon } : {}),
+      ...(assetClass !== undefined ? { assetClass } : {}),
     };
   }
 

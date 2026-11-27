@@ -71,7 +71,8 @@ export function buildUserPrompt(signal: Signal, news: string[]): string {
   const owned = signal.position != null;
   // No entry (position without a watchlist entry): there is no
   // recorded entry thesis — monitoring is purely about the position's risk.
-  const thesis = signal.entry?.thesis ?? "No thesis recorded in watchlist.md — open position under risk watch only.";
+  // An entry made by a `watch` command with no note has an empty thesis: it reads as none, as no entry does.
+  const thesis = signal.entry?.thesis || "No thesis recorded in the watchlist — open position under risk watch only.";
   const horizon = asHorizon(signal.entry?.horizon) ?? "medium";
   const atr = signal.strength?.atr14 ?? null;
   const cur = signal.currency;

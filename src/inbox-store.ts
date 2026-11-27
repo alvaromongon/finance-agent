@@ -166,3 +166,31 @@ export async function moveBatch(
     return target;
   }
 }
+
+/**
+ * Drops a batch in `inbox/` as the owner would (#140): a flow of the engine that proposes a change of the state writes the
+ * batch and leaves applying it to `inbox:ingest`. A file of that name already in `inbox/` is left as it is (`exists`): a flow
+ * that runs again before the ingest proposes the same change once. Refuses a name that is not a plain file name and an
+ * `inbox/` that is a link or not a folder; creates the folder when there is none.
+ */
+export async function dropBatch(name: string, text: string): Promise<"written" | "exists"> {
+  if (name === "" || name !== basename(name) || name.includes(sep) || name.startsWith(".") || !/\.ya?ml$/i.test(name)) {
+    throw new Error(`${printable(name)} is not a plain batch file name (.yaml or .yml): not written`);
+  }
+  const dir = inboxDir();
+  const folder = await lstat(dir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  });
+  if (folder === null) await mkdir(dir, { recursive: true });
+  else if (folder.isSymbolicLink() || !folder.isDirectory()) {
+    throw new Error(`inbox/ is not a real folder (a link or a file): ${printable(name)} is not written`);
+  }
+  try {
+    await writeFile(join(dir, name), text, { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+    throw err;
+  }
+  return "written";
+}
