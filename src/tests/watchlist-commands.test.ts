@@ -8,6 +8,8 @@ import { parseTicker as tk } from "../ticker.js";
 import { parseBatch } from "../utils/inbox-parse.js";
 import { applyCommand, type BatchContext, type Command, type InboxState } from "../utils/inbox-handlers.js";
 import { runFiles, type InboxRun, type RunContext } from "../utils/inbox-check.js";
+import { withTelemetry } from "../utils/inbox-replay.js";
+import type { WatchlistEntry } from "../types.js";
 import { stateOf, watched } from "./fixtures/inbox.js";
 
 const batch = (...commands: string[]): string =>
@@ -251,5 +253,21 @@ describe("running a batch with watch and stop_watching", () => {
         ["AIR.PA", "EUR", "Backlog"],
       ],
     );
+  });
+});
+
+describe("the join date of an undated watch on a replay", () => {
+  it("keeps the date the store holds, so a correction or a repair does not restart the no_setup counter", () => {
+    const entry = (date: string): WatchlistEntry => ({
+      ticker: tk("AMD"),
+      currency: "USD",
+      horizon: "medium",
+      thesis: "",
+      date,
+    });
+    const kept = withTelemetry({ watchlist: [entry("2026-11-27")] }, { watchlist: [entry("2026-10-01")] });
+    assert.equal(kept.watchlist?.[0]?.date, "2026-10-01");
+    const fresh = withTelemetry({ watchlist: [entry("2026-11-27")] }, {});
+    assert.equal(fresh.watchlist?.[0]?.date, "2026-11-27");
   });
 });

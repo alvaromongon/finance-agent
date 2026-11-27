@@ -272,7 +272,7 @@ export function restoreMetadata(state: InboxState, known: readonly Lot[], histor
 /**
  * The silos of `rebuilt` with what the batches do not tell, taken from `old` (the store they replace): the day it was
  * synced and the snapshot of the broker, the prices of the positions (and the P/L they give) and the total cash, moved
- * as the cash was. A silo `old` does not have is left as it was rebuilt.
+ * as the cash was, and the join date of the watchlist entries. A silo `old` does not have is left as it was rebuilt.
  */
 export function withTelemetry(rebuilt: InboxState, old: InboxState): InboxState {
   const keep = <C extends Currency>(
@@ -300,7 +300,16 @@ export function withTelemetry(rebuilt: InboxState, old: InboxState): InboxState 
   return {
     ...(rebuilt.EUR ? { EUR: keep(rebuilt.EUR, old.EUR) } : {}),
     ...(rebuilt.USD ? { USD: keep(rebuilt.USD, old.USD) } : {}),
-    ...(rebuilt.watchlist !== undefined ? { watchlist: rebuilt.watchlist } : {}),
+    // An undated `watch` takes the day of the run as its join date: a replay keeps the date the store holds, or the 4-week
+    // `no_setup` exit counter would restart at every correction or repair (#140).
+    ...(rebuilt.watchlist !== undefined
+      ? {
+          watchlist: rebuilt.watchlist.map((e) => {
+            const was = old.watchlist?.find((o) => o.ticker === e.ticker && o.currency === e.currency);
+            return was?.date !== undefined ? { ...e, date: was.date } : e;
+          }),
+        }
+      : {}),
   };
 }
 
