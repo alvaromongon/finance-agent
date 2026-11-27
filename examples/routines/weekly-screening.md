@@ -35,10 +35,10 @@ in `$ENGINE_DIR` by the SessionStart hook. The system prompt is
    2. Reason following the system prompt and use web search for the business context.
    3. Pass the single JSON object on stdin: `npm run --silent screening:resolve -- <file> <<'FA_JSON_EOF_7f3a'` ...
       `FA_JSON_EOF_7f3a`. Use that delimiter: the answer is shaped by untrusted news text and could
-      contain a line `JSON`. On success the engine records the log entry, the thesis and the watchlist entry,
-      and deletes the file.
+      contain a line `JSON`. On success the engine records the log entry and the thesis, drops a `watch` command for the
+      candidate in `inbox/` (the inbox workflow applies it), and deletes the file.
 4. Commit and push the results the same way as step 2, with
-   `git add -A -- finance-agent/logs/ finance-agent/tesis/ finance-agent/watchlist.md finance-agent/screening-log.md`
+   `git add -A -- finance-agent/logs/ finance-agent/tesis/ finance-agent/inbox/ finance-agent/screening-log.md`
    and the message `chore(screening): weekly screening <date>`, committing only if something is
    staged (`git diff --cached --quiet || git commit ...`).
 5. Do not run `screening:summarize`. The pushed `logs/pending-screening/results.jsonl` triggers the

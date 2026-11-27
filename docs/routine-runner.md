@@ -92,8 +92,8 @@ reads a session branch: the next heartbeat, the email relay and the Monday brief
 the default branch.
 
 The paths each flow commits are the same as in the Actions callers: `logs/` and `portfolio.md` for
-escalations; plus `watchlist.md` and `tesis/` for the briefing and the screening, and
-`screening-log.md` for the screening.
+escalations; plus `inbox/` (their proposals for the watchlist, which `inbox:ingest` applies) and `tesis/` for the briefing and the
+screening, and `screening-log.md` for the screening.
 
 ## Waking the routine
 
@@ -116,7 +116,7 @@ escalations; plus `watchlist.md` and `tesis/` for the briefing and the screening
 If the routine runs while a heartbeat is committing, the session's `git pull --rebase` handles the
 race; anything left pending is picked up by the next wake or the daily fallback. The pending item
 keeps the detection snapshot (strength, benchmark, setup, conviction and price), but entry,
-position, cash and silo value are rebuilt from the current `watchlist.md` and `portfolio.md` when
+position, cash and silo value are rebuilt from the current watchlist and portfolio (`state/portfolio.json`) when
 it is resolved, so a late resolution mixes the day's signal with today's portfolio.
 
 ## Security of the routine

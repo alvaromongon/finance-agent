@@ -161,8 +161,19 @@ writes a state file.
 
 ### Store
 
-The engine's own file of the portfolio, `state/portfolio.json`, written only by the engine. `portfolio.md` is a
-view generated from it, read by nobody; to change the portfolio, drop a [batch](#batch) in the [inbox](#inbox).
+The engine's own file of the portfolio, `state/portfolio.json`, written only by the engine; it holds the [watchlist](#watchlist) too.
+`portfolio.md` and `watchlist.md` are views generated from it, read by nobody; to change the portfolio or the watchlist, drop a
+[batch](#batch) in the [inbox](#inbox).
+
+### Watchlist
+
+The tickers the [heartbeat](#heartbeat) scans every day for [setups](#setup): the candidates a buy can come from (a buy of a
+ticker that is not on the list of its [silo](#silo) is flagged `not_in_watchlist`). It is engine state (#140), kept in the
+[store](#store) with the list it began with, and changed only by the `watch` and `stop_watching` [commands](#command) of a
+[batch](#batch): the weekly [screening](#screening) and the Monday briefing propose entries and exits by dropping such a
+batch in the [inbox](#inbox), and `inbox:ingest` applies it. `watchlist.md` is a view the engine generates from it, read by
+nobody once the store holds the list; before the first `inbox:ingest` after that it is the state, as it always was, and seeds the
+store. A ticker is on it once, in one silo. A position is watched for risk whether or not its ticker is on the watchlist.
 
 ### Compare-and-swap
 

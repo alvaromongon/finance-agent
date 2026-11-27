@@ -62,7 +62,8 @@ In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
    - `portfolio.md`, your starting portfolio, kept in sync with your broker: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a split with a `split` command, a cash flow with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
-   - `watchlist.md`, `screening-universe.md` and the theses.
+   - `watchlist.md`, the [watchlist](docs/glossary.md#watchlist) you start from: the first `npm run inbox:ingest` seeds the store with it, and from then on the watchlist is engine state, changed with `watch` and `stop_watching` commands in `inbox/` (the weekly screening and the Monday briefing drop theirs there too) and `watchlist.md` is a view the engine generates ([format](docs/input-format.md#stateportfoliojson));
+   - `screening-universe.md` and the theses, which you keep editing by hand.
 
    The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
 
@@ -142,19 +143,20 @@ calls the Anthropic API itself, on a schedule. Copy the callers you need from
 `commit` job that applies the run's patch and commits only the paths that flow writes. Other
 runners are possible, for example Claude Code routines with `handoff` (below).
 
-| Example                                                                   | Triggers                                                                           | Commits                                                                                     |
-| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
-| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
-| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`, `state/portfolio.json`                                             |
-| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `state/portfolio.json`, `watchlist.md`, `tesis/`                   |
-| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md`                                       |
-| [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
-| [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                     |
+| Example                                                                   | Triggers                                                                           | Commits                                                                                                     |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                                             |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `portfolio.md`, `state/portfolio.json`                                                             |
+| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `portfolio.md`, `state/portfolio.json`                                                             |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `portfolio.md`, `state/portfolio.json`, `inbox/`, `tesis/`                                         |
+| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `inbox/`, `screening-log.md`                                                             |
+| [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `watchlist.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
+| [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                                     |
 
 ##### State writes never overlap
 
-The engine's state (`state/portfolio.json`, the [store](docs/glossary.md#store), and the `portfolio.md` view generated
+The engine's state (`state/portfolio.json`, the [store](docs/glossary.md#store), which holds the
+[watchlist](docs/glossary.md#watchlist) too, and the `portfolio.md` and `watchlist.md` views generated
 from it) is written by runs that can start at any time: the three triggers of `inbox.yml`, a heartbeat or a briefing
 refreshing prices, and `decision:record`. Any trigger is valid as long as the writes do not overlap
 ([ADR-0018](docs/decisions/0018-commands-are-the-only-way-to-change-state.md)):
@@ -164,7 +166,7 @@ refreshing prices, and `decision:record`. Any trigger is valid as long as the wr
   default `GITHUB_TOKEN`, the engine's own included, starts no workflow, so a run never starts another.)
 - **`inbox:ingest` commits the state as a [compare-and-swap](docs/glossary.md#compare-and-swap)** (`STATE_COMMIT=git`,
   which `inbox.yml` sets), retrying at most `STATE_COMMIT_ATTEMPTS` times (3); a run that keeps losing leaves its
-  batches in `inbox/` for the next run and its output says so. `inbox.yml` is therefore the one workflow of the engine
+  batches in `inbox/` for the next run and its output says so. A retry reads the store again, and the watchlist with it. `inbox.yml` is therefore the one workflow of the engine
   that commits itself and needs `contents: write`; its credential (`STATE_COMMIT_TOKEN`) is read once and
   removed from the engine's environment, so of the processes the engine spawns, only `git fetch` and `git push` get it.
 - **`decision:record` does the same only with `STATE_COMMIT=git`, and no workflow of the engine or of the examples runs
