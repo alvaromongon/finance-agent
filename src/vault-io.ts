@@ -90,7 +90,7 @@ export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[
 }
 
 /**
- * `readWatchlist` for every other reader (heartbeat, `pending:resolve`, the Monday briefing, the weekly
+ * `readWatchlist` for every other reader (heartbeat, `pending:record`, the Monday briefing, the weekly
  * screening): an entry whose ticker does not parse is skipped and reported to `onSkip` (a warning by
  * default), and the rest keeps working (ADR-0016).
  */
@@ -376,7 +376,7 @@ export async function listPendingFiles(): Promise<string[]> {
 
 /**
  * Reads logs/pending/<filename>: returns the full content (for
- * `pending:show`) and the parsed frontmatter (for `pending:resolve`, which
+ * `pending:show`) and the parsed frontmatter (for `pending:record`, which
  * rebuilds the real Signal from it instead of trusting what the caller
  * repeats). It validates the frontmatter — a corrupt pending file must not
  * propagate a silent NaN/undefined down to validateTicket.

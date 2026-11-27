@@ -16,7 +16,7 @@ runner uses. Everything here is an example to copy and adapt.
 
 The heartbeat still runs in GitHub Actions, with `analyst-provider: handoff`
 ([`heartbeat-eu-handoff.yml`](../examples/workflows/heartbeat-eu-handoff.yml)). The routines
-answer what it leaves in `logs/pending/` and write to the same repository: they record each answer with `pending:record` and close the escalation by dropping a `resolve` batch in `inbox/` (never by editing `logs/pending/`). The system prompts the
+answer the [pending escalations](glossary.md#pending-escalation) it leaves in `logs/pending/` and write to the same repository: they record each answer with `pending:record` and close the escalation by dropping a `resolve` batch in `inbox/` (never by editing `logs/pending/`). The system prompts the
 reasoning follows live in your brain, under `routines/`
 ([examples](../examples/brain/routines)); the orchestration prompts in this guide only say which
 commands to run and when to commit.

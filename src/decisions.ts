@@ -701,7 +701,7 @@ export function asHorizon(h: unknown): Horizon | undefined {
 
 /**
  * System decision from a reasoner recommendation (heartbeat via API or
- * pending:resolve) and the ticket the engine computed. A blocked
+ * pending:record) and the ticket the engine computed. A blocked
  * BUY is recorded as `buy_blocked` with its reasons: not acting is a decision
  * too. A SELL or ADJUST_STOP the engine cannot carry out leaves the position
  * as it was, so it is a `hold`, as in the Monday Briefing. Without an open
