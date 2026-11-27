@@ -8,6 +8,7 @@
 import { collectWatchedTickers, evaluateSignals } from "./heartbeat.js";
 import { sendSummaryEmail } from "./mailer.js";
 import { config } from "./config.js";
+import { describeProblems, resolveConfiguration, type ConfigurationFile } from "./configuration.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { fetchHeadlines } from "./providers/news-provider.js";
 import {
@@ -21,6 +22,7 @@ import {
   writeHeartbeatSent,
 } from "./vault-io.js";
 import { readPortfolio, refreshPrices } from "./portfolio-store.js";
+import { readOpenEscalations } from "./inbox-escalations.js";
 import { readAwaitingRejected } from "./inbox-rejected.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
@@ -54,6 +56,9 @@ export interface HeartbeatDeps {
   lotsCheck?: (portfolio: PortfolioSnapshot) => string[];
 }
 
+/** The configuration files the heartbeat reads: the rules version of the setups it records, and the reasoner's instructions. */
+const HEARTBEAT_CONFIGURATION: readonly ConfigurationFile[] = ["strategies/base.md", "routines/execution-analysis.md"];
+
 export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const digest: HeartbeatDigest = {
@@ -66,6 +71,11 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     unreadableCells: [],
     noStop: [],
     rejectedBatches: [],
+    pendingEscalations: [],
+    storeProblem: null,
+    configurationProblems: [],
+    staleness: null,
+    snapshot: null,
     tightStops: [],
     armed: [],
     escalated: [],
@@ -108,8 +118,33 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem, skippedRows, unreadableCells } = await readPortfolio(currency);
+  //    A state file that does not read never stops risk watch (ADR-0015, #139): the run goes on over the last state that
+  //    did read and names the corruption in the digest.
+  const { portfolio, lotsProblem, skippedRows, unreadableCells, staleness, storeProblem } = await readPortfolio(
+    currency,
+    { lastReadable: true },
+  );
   digest.syncedAt = portfolio.syncedAt;
+  if (storeProblem !== undefined) {
+    digest.storeProblem = storeProblem;
+    console.warn(`[finance-agent] WARNING, state: ${storeProblem}; watching the last state that read`);
+  }
+  // How stale the silo is and what its latest snapshot of the broker found (#138).
+  digest.staleness = staleness;
+  digest.snapshot = portfolio.reconciled
+    ? {
+        date: portfolio.reconciled.date,
+        differences: portfolio.reconciled.differences,
+        recordedToday: portfolio.reconciled.recordedOn === today,
+      }
+    : null;
+  // The configuration files this run reads (#142): a valid one is saved as the last valid version, an invalid one is named in
+  // the digest and the run goes on over its last valid version. With none yet (the first run) what needs the file refuses, but
+  // only after the stops below are checked and the digest is sent. It never throws for a file: a bad edit never stops risk watch.
+  digest.configurationProblems = (await resolveConfiguration(HEARTBEAT_CONFIGURATION)).problems;
+  for (const line of describeProblems(digest.configurationProblems)) {
+    console.warn(`[finance-agent] WARNING, configuration: ${line}`);
+  }
   // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
   // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
   const tickerWarning = (message: string): void => {
@@ -129,6 +164,12 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // the stops below must still be watched.
   digest.rejectedBatches = await readAwaitingRejected().catch((err: unknown) => {
     console.warn(`[finance-agent] WARNING, inbox/rejected: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  });
+
+  // A pending escalation no `resolve` command closed is named in every digest (#141), like a rejected batch.
+  digest.pendingEscalations = await readOpenEscalations().catch((err: unknown) => {
+    console.warn(`[finance-agent] WARNING, logs/pending: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   });
 

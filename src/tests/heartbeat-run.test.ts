@@ -144,6 +144,8 @@ describe("runHeartbeat", () => {
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "strategies"), { recursive: true });
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "1.0"\n---\n`, "utf8");
+    await mkdir(join(vaultDir, "routines"), { recursive: true });
+    await writeFile(join(vaultDir, "routines", "execution-analysis.md"), "Reasoner instructions.\n", "utf8");
     await writeFile(join(vaultDir, "watchlist.md"), WATCHLIST_MD, "utf8");
     await setPortfolio(MSFT_ROW, [MSFT_LOT]);
   });
@@ -297,6 +299,137 @@ describe("runHeartbeat", () => {
       assert.doesNotMatch(emails[0].body, /bad\.yaml/);
       assert.doesNotMatch(emails[0].subject, /lote rechazado/);
       assert.deepEqual(await readdir(join(vaultDir, "inbox", "rejected")), ["bad.yaml"]);
+    });
+
+    it("a pending escalation is named in every digest until a resolve command closes it (#141)", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const id = "2026-11-20-xom";
+      await mkdir(join(vaultDir, "logs", "pending"), { recursive: true });
+      await writeFile(join(vaultDir, "logs", "pending", `${id}.md`), "---\nticker: XOM\n---\n", "utf8");
+      await heartbeat();
+      await heartbeat();
+      let emails = await outbox();
+      assert.equal(emails.length, 2, "it is not deduplicated");
+      for (const email of emails) {
+        assert.match(email.subject, /escalado pendiente/);
+        assert.match(email.body, /- `logs\/pending\/2026-11-20-xom\.md`/);
+        assert.match(email.body, /comando `resolve`/);
+      }
+
+      const { ingestInbox } = await import("../inbox.js");
+      await drop("close.yaml", batch(`command: resolve\nid: ${id}\noutcome: resolved`));
+      const quiet = mock.method(console, "log", () => {});
+      const quietWarn = mock.method(console, "warn", () => {});
+      try {
+        assert.equal((await ingestInbox()).exitCode, 0);
+      } finally {
+        quiet.mock.restore();
+        quietWarn.mock.restore();
+      }
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+      await heartbeat();
+      emails = await outbox();
+      assert.equal(emails.length, 1);
+      assert.doesNotMatch(emails[0].body, /2026-11-20-xom/);
+      assert.doesNotMatch(emails[0].subject, /escalado pendiente/);
+      assert.deepEqual(await readdir(join(vaultDir, "logs", "pending")), [`${id}.md`], "the file stays as the record");
+    });
+
+    describe("the silo and the broker (#138)", () => {
+      const day = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+      /** The store made from portfolio.md, its USD silo carrying `reconciled` (none: no snapshot was ever recorded). */
+      const storeWith = async (reconciled?: PortfolioSnapshot<"USD">["reconciled"], syncedAt?: string) => {
+        const { storeFromPortfolioFile, saveStore } = await import("../portfolio-store.js");
+        const seeded = await storeFromPortfolioFile();
+        const usd = seeded.silos.USD!;
+        const { reconciled: _none, ...rest } = usd;
+        await saveStore({
+          ...seeded,
+          silos: { USD: { ...rest, ...(syncedAt ? { syncedAt } : {}), ...(reconciled ? { reconciled } : {}) } },
+        });
+      };
+
+      it("names a silo with no snapshot stale, once a day, and keeps watching the stops", async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        await storeWith();
+        await heartbeat();
+        const [first] = await outbox();
+        assert.match(first.subject, /stop cruzado: CAT/);
+        assert.match(first.subject, /cartera desactualizada/);
+        assert.match(first.body, /no tiene ninguna instantánea del bróker/);
+        await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+        await heartbeat();
+        const [second] = await outbox();
+        assert.doesNotMatch(second.subject, /cartera desactualizada/, "told once a day");
+      });
+
+      it("does not name a silo stale while its snapshot is recent, even if nothing else changed it for months", async () => {
+        await storeWith({ date: day(2), differences: [] }, "2026-01-01T00:00:00.000Z");
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /desactualizada/);
+      });
+
+      it("names a silo whose latest snapshot is older than the limit, with its date", async () => {
+        await storeWith({ date: day(30), differences: [] });
+        await heartbeat();
+        const [email] = await outbox();
+        assert.match(email.subject, /cartera desactualizada/);
+        assert.ok(email.body.includes(`**${day(30)}**`), email.body);
+      });
+
+      it("lists the differences of the latest snapshot in every digest, until a later one shows none", async () => {
+        const { money } = await import("../money.js");
+        const differences = [{ kind: "cash" as const, broker: money(1010.5, "USD"), engine: money(1000, "USD") }];
+        await storeWith({ date: day(2), differences }, "2026-01-01T00:00:00.000Z");
+        await heartbeat();
+        await heartbeat();
+        let emails = await outbox();
+        const withDifferences = emails.filter((e) => e.subject.includes("diferencia con el bróker"));
+        assert.equal(withDifferences.length, 2, "it is not deduplicated");
+        assert.match(
+          withDifferences[0].body,
+          /Efectivo: el bróker tiene 1\.010,50 USD, el motor 1\.000,00 USD \(\+10,50 USD\)/,
+        );
+
+        await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+        await storeWith({ date: day(1), differences: [] }, "2026-01-01T00:00:00.000Z");
+        await heartbeat();
+        emails = await outbox();
+        for (const email of emails) assert.doesNotMatch(email.subject, /diferencia|instantánea/);
+      });
+
+      it("a snapshot with no difference recorded today says so once", async () => {
+        await storeWith({ date: day(0), recordedOn: day(0), differences: [] });
+        await heartbeat();
+        await heartbeat();
+        const emails = (await outbox()).filter((e) => e.subject.includes("instantánea sin diferencias"));
+        assert.equal(emails.length, 1);
+      });
+
+      it("a snapshot with no difference recorded earlier is not confirmed again when a later batch moved syncedAt", async () => {
+        await storeWith({ date: day(5), recordedOn: day(5), differences: [] }, new Date().toISOString());
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /instantánea sin diferencias/);
+      });
+
+      it("a corrupt state file never stops risk watch: the stops of the last readable state are checked and the digest names the corruption (ADR-0015, #139)", async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        await storeWith({ date: day(0), recordedOn: day(0), differences: [] });
+        await writeFile(join(vaultDir, "state", "portfolio.json"), '{"silos": {', "utf8");
+        await heartbeat();
+        const [email] = await outbox();
+        assert.match(email.subject, /stop cruzado: CAT/, "the stop of the last readable state is still checked");
+        assert.match(email.subject, /archivo de estado/);
+        assert.match(email.body, /state\/portfolio\.json/);
+        assert.match(email.body, /npm run state:repair/);
+        // The corrupt file is left as it is: the repair is the way back, the heartbeat does not write over it.
+        assert.equal(await readFile(join(vaultDir, "state", "portfolio.json"), "utf8"), '{"silos": {');
+      });
+
+      it("while the state is still the old portfolio.md, nothing is judged stale in the digest", async () => {
+        await heartbeat();
+        for (const email of await outbox()) assert.doesNotMatch(email.subject, /desactualizada/);
+      });
     });
 
     it("a rejected batch is named even when there is nothing else to watch", async () => {
@@ -839,6 +972,114 @@ describe("runHeartbeat", () => {
       } finally {
         await rm(join(vaultDir, "inbox"), { force: true });
       }
+    });
+  });
+
+  describe("a configuration file that does not validate never stops risk watch (#142, ADR-0015, ADR-0018)", () => {
+    const strategy = join("strategies", "base.md");
+    const prompt = join("routines", "execution-analysis.md");
+    const edit = (file: string, text: string) => writeFile(join(vaultDir, file), text, "utf8");
+    const stored = (file: string) => readFile(join(vaultDir, "state", "config", file), "utf8");
+    const crossed = () => setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+    const decisionsRulesVersions = async () =>
+      (await readFile(join(vaultDir, "logs", "decisions.jsonl"), "utf8"))
+        .split("\n")
+        .filter((l) => l.includes('"setup"'))
+        .map((l) => JSON.parse(l).rules_version);
+
+    it("an invalid strategy: every stop is checked on the last valid version and the digest warns with the errors", async () => {
+      await crossed();
+      await heartbeat(); // a valid run saves the copy
+      assert.match(await stored(strategy), /version: "1.0"/);
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true });
+      await rm(join(vaultDir, "logs", "heartbeat-sent-USD.json"), { force: true });
+      await edit(strategy, "# the version line was deleted\n");
+
+      const warnings = await heartbeat();
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is checked and sent");
+      assert.match(email.subject, /configuración que no valida/);
+      assert.match(email.body, /## Un archivo de configuración no valida/);
+      assert.match(email.body, /`strategies\/base\.md`: el motor trabaja con su \*\*última versión válida\*\*/);
+      assert.match(email.body, /- frontmatter: missing: the file must start with a `---` block holding `version`/);
+      assert.ok(warnings.some((w) => /configuration.*strategies\/base\.md is not valid/.test(w)));
+      assert.ok(
+        (await decisionsRulesVersions()).every((v) => v === "1.0"),
+        "the rules version is the stored one",
+      );
+      assert.match(await stored(strategy), /version: "1.0"/, "the bad file never replaces the copy");
+    });
+
+    it("the warning is in every digest while the file is invalid and goes on the first run after a valid edit", async () => {
+      await crossed();
+      await heartbeat();
+      await edit(strategy, "# broken\n");
+      await heartbeat();
+      await heartbeat();
+      await edit(strategy, `---\nversion: "2.0"\n---\n`);
+      await heartbeat();
+
+      const emails = await outbox();
+      assert.equal(emails.length, 4, "the stop is repeated on every run, and the warning with it while it lasts");
+      assert.doesNotMatch(emails[0].body, /configuración no valida/);
+      assert.match(emails[1].body, /configuración no valida/);
+      assert.match(emails[2].body, /configuración no valida/);
+      assert.doesNotMatch(emails[3].body, /configuración no valida/, "gone on the first run after a valid edit");
+      assert.match(await stored(strategy), /version: "2.0"/, "the valid edit is the new copy");
+    });
+
+    it("an invalid strategy on the first run: the stop check and the digest go out, and the run refuses with the errors", async () => {
+      await crossed();
+      await edit(strategy, "# broken\n");
+
+      await assert.rejects(
+        heartbeat(),
+        /strategies\/base\.md is not valid and there is no last valid version[^]*frontmatter/,
+      );
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(email.body, /\*\*aún no hay última versión válida\*\*/);
+    });
+
+    it("an invalid prompt: the escalation runs on the last valid prompt and the stops are checked", async () => {
+      const { HandoffAnalystProvider } = await import("../analyst/handoff-provider.js");
+      await crossed();
+      await heartbeat({ analyst: new HandoffAnalystProvider() });
+      assert.match(await stored(prompt), /Reasoner instructions/);
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true });
+      await rm(join(vaultDir, "logs", "heartbeat-sent-USD.json"), { force: true });
+      await rm(join(vaultDir, "logs", "pending"), { recursive: true, force: true });
+      await edit(prompt, "  \n");
+
+      await heartbeat({ analyst: new HandoffAnalystProvider() });
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(
+        email.body,
+        /`routines\/execution-analysis\.md`: el motor trabaja con su \*\*última versión válida\*\*/,
+      );
+      assert.match(email.body, /- content: empty/);
+      const pending = join(vaultDir, "logs", "pending");
+      const [file] = await readdir(pending);
+      assert.match(await readFile(join(pending, file), "utf8"), /Reasoner instructions/, "the stored prompt was used");
+    });
+
+    it("an invalid prompt on the first run: the stop is in the digest that goes out before the run refuses", async () => {
+      const { HandoffAnalystProvider } = await import("../analyst/handoff-provider.js");
+      await crossed();
+      await edit(prompt, "");
+
+      await assert.rejects(
+        heartbeat({ analyst: new HandoffAnalystProvider() }),
+        /routines\/execution-analysis\.md is not valid and there is no last valid version/,
+      );
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(email.body, /## Un archivo de configuración no valida/);
     });
   });
 

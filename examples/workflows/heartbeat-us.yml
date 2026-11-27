@@ -51,6 +51,6 @@ jobs:
           # Change the finance-agent/ prefix together with data-path.
           # The price refresh writes the store and the view generated from it (state-paths): if another run
           # committed state since this one started, the refresh is dropped and the rest is committed.
-          paths: finance-agent/logs/ finance-agent/inbox/ finance-agent/portfolio.md finance-agent/state/portfolio.json
+          paths: finance-agent/logs/ finance-agent/inbox/ finance-agent/portfolio.md finance-agent/state/portfolio.json finance-agent/state/config/
           state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat USD"

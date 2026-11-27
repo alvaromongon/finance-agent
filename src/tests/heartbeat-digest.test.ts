@@ -78,6 +78,11 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   unreadableCells: [],
   noStop: [],
   rejectedBatches: [],
+  pendingEscalations: [],
+  storeProblem: null,
+  configurationProblems: [],
+  staleness: null,
+  snapshot: null,
   tightStops: [],
   armed: [],
   escalated: [],
@@ -251,12 +256,134 @@ describe("onlyNew / digestKeys", () => {
     assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
   });
 
+  it("a configuration file that does not validate is named in every digest, with every error, and is never marked as sent (#142)", () => {
+    const configurationProblems = [
+      {
+        file: "strategies/base.md" as const,
+        errors: [
+          { field: "version", reason: "missing or empty" },
+          { field: "frontmatter", reason: "x\n## injected\u001b[31m" },
+        ],
+        usingLastValid: true,
+      },
+      {
+        file: "screening-universe.md" as const,
+        errors: [{ field: "universe.eur", reason: "missing" }],
+        usingLastValid: false,
+      },
+    ];
+    const withProblems = digest({ configurationProblems });
+    const email = renderHeartbeatDigest(withProblems)!;
+
+    assert.match(email.subject, /configuración que no valida/);
+    assert.match(email.body, /## Un archivo de configuración no valida/);
+    assert.match(email.body, /- `strategies\/base\.md`: el motor trabaja con su \*\*última versión válida\*\*/);
+    assert.match(email.body, /- `screening-universe\.md`: \*\*aún no hay última versión válida\*\*/);
+    assert.match(email.body, /\n {2}- version: missing or empty/);
+    assert.match(email.body, /\n {2}- universe\.eur: missing/);
+    assert.ok(!email.body.includes("\n## injected"), "a reason cannot start a heading");
+    assert.ok(!email.body.includes("\u001b"));
+    assert.deepEqual(digestKeys(withProblems), []);
+    assert.deepEqual(onlyNew(withProblems, new Set(["anything"])).configurationProblems, configurationProblems);
+    assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
+  });
+
+  it("a pending escalation is named in every digest, by its file, and is never marked as sent (#141)", () => {
+    const pendingEscalations = ["2026-11-20-xom", "2026-11-21-ko"];
+    const withPending = digest({ pendingEscalations });
+    const email = renderHeartbeatDigest(withPending)!;
+
+    assert.match(email.subject, /escalado pendiente/);
+    assert.match(email.body, /## Escalados pendientes a la espera de respuesta/);
+    assert.ok(email.body.includes("- `logs/pending/2026-11-20-xom.md`"));
+    assert.ok(email.body.includes("- `logs/pending/2026-11-21-ko.md`"));
+    assert.match(email.body, /comando `resolve`/);
+    assert.deepEqual(digestKeys(withPending), []);
+    assert.deepEqual(onlyNew(withPending, new Set(["anything"])).pendingEscalations, pendingEscalations);
+  });
+
+  it("a pending escalation id is written inside its code span safely (#141)", () => {
+    const email = renderHeartbeatDigest(digest({ pendingEscalations: ["a`b\n## injected\u001b[31m"] }))!;
+    assert.ok(email.body.includes("- `logs/pending/a\\u0060b\\n## injected\\u001b[31m.md`"), email.body);
+    assert.ok(!email.body.includes("\n## injected"));
+    assert.ok(!email.body.includes("\u001b"));
+  });
+
   it("a rejected file name is written inside its code span safely: a backtick or a control character cannot end it or reach the email (#152)", () => {
     const hostile = "a`b\n## injected\u001b[31m.yaml";
     const email = renderHeartbeatDigest(digest({ rejectedBatches: [hostile] }))!;
     assert.ok(email.body.includes("- `inbox/rejected/a\\u0060b\\n## injected\\u001b[31m.yaml`"), email.body);
     assert.ok(!email.body.includes("\n## injected"));
     assert.ok(!email.body.includes("\u001b"));
+  });
+
+  describe("the silo and the broker (#138)", () => {
+    const cash = { kind: "cash", broker: money(510.5, "USD"), engine: money(500, "USD") } as const;
+    const units = { kind: "position", ticker: tk("KO"), broker: 3, engine: 5 } as const;
+    const stale = { asOf: null, ageDays: null, stale: true } as const;
+
+    it("names a silo with no snapshot stale, and one whose latest is too old with its date and age", () => {
+      const none = renderHeartbeatDigest(digest({ staleness: stale }))!;
+      assert.match(none.subject, /cartera desactualizada/);
+      assert.match(none.body, /## Silo USD: desactualizado/);
+      assert.match(none.body, /no tiene ninguna instantánea del bróker/);
+      assert.match(none.body, /comando `snapshot`/);
+      const old = renderHeartbeatDigest(digest({ staleness: { asOf: "2026-11-10", ageDays: 16.5, stale: true } }))!;
+      assert.match(old.body, /La última instantánea del silo USD es del \*\*2026-11-10\*\*, de hace 16,5 días/);
+    });
+
+    it("says nothing of a silo that is fresh, or whose staleness is not judged (the old portfolio.md)", () => {
+      assert.equal(
+        renderHeartbeatDigest(digest({ staleness: { asOf: "2026-11-25", ageDays: 1.5, stale: false } })),
+        null,
+      );
+      assert.equal(renderHeartbeatDigest(digest({ staleness: null })), null);
+    });
+
+    it("lists the differences of the latest snapshot, each with what the broker and the engine hold and its size", () => {
+      const email = renderHeartbeatDigest(
+        digest({ snapshot: { date: "2026-11-20", differences: [cash, units], recordedToday: false } }),
+      )!;
+      assert.match(email.subject, /diferencia con el bróker: KO/);
+      assert.match(email.body, /## Silo USD: diferencias con el bróker/);
+      assert.match(email.body, /instantánea del silo USD del \*\*2026-11-20\*\*/);
+      assert.ok(
+        email.body.includes("- Efectivo: el bróker tiene 510,50 USD, el motor 500,00 USD (+10,50 USD)"),
+        email.body,
+      );
+      assert.ok(email.body.includes("- KO: el bróker tiene 3 unidades, el motor 5 (-2)"), email.body);
+      assert.match(email.body, /El motor no cambió su estado/);
+    });
+
+    it("repeats the differences in every digest until a later snapshot shows none: they are never marked as sent", () => {
+      const withDifferences = digest({ snapshot: { date: "2026-11-20", differences: [cash], recordedToday: false } });
+      assert.deepEqual(digestKeys(withDifferences), []);
+      assert.deepEqual(onlyNew(withDifferences, new Set(["anything"])).snapshot?.differences, [cash]);
+      // A later snapshot with none, recorded some days ago: nothing to say.
+      assert.equal(
+        renderHeartbeatDigest(digest({ snapshot: { date: "2026-11-24", differences: [], recordedToday: false } })),
+        null,
+      );
+    });
+
+    it("a snapshot with no difference says so on the day it is recorded, once", () => {
+      const clean = digest({ snapshot: { date: "2026-11-25", differences: [], recordedToday: true } });
+      const email = renderHeartbeatDigest(clean)!;
+      assert.match(email.subject, /instantánea sin diferencias/);
+      assert.match(email.body, /## Silo USD: instantánea sin diferencias/);
+      assert.match(email.body, /del \*\*2026-11-25\*\* coincide con el estado del motor/);
+      const keys = digestKeys(clean);
+      assert.equal(keys.length, 1);
+      assert.equal(renderHeartbeatDigest(onlyNew(clean, new Set(keys))), null, "the second run of the day is silent");
+    });
+
+    it("a stale silo is told once a day: it leaves a key, and a new snapshot date is news again", () => {
+      const old = digest({ staleness: { asOf: "2026-11-10", ageDays: 16.5, stale: true } });
+      const keys = digestKeys(old);
+      assert.equal(keys.length, 1);
+      assert.equal(renderHeartbeatDigest(onlyNew(old, new Set(keys))), null);
+      assert.notDeepEqual(digestKeys(digest({ staleness: stale })), keys);
+    });
   });
 
   it("the crossed stop leaves no key: there is nothing to remember", () => {

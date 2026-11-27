@@ -61,8 +61,9 @@ Every variable is documented in [`.env.example`](.env.example). Copy it to `.env
 In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
-   - `portfolio.md`, your starting portfolio, kept in sync with your broker: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a stop change with a `set_stop` command (the engine drops its own stop proposals there too, [below](#the-engines-stop-proposals)), a cash flow with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
+   - `portfolio.md`, your starting portfolio, kept in sync with your broker: [Portfolio sync](examples/brain/routines/portfolio-sync.md). The first `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`); from then on every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a split with a `split` command, a stop change with a `set_stop` command (the engine drops its own stop proposals there too, [below](#the-engines-stop-proposals)), a cash flow with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
    - `watchlist.md`, `screening-universe.md` and the theses.
+   - The configuration files (`strategies/base.md`, `portfolio-policy.md`, `screening-universe.md` and the `routines/` prompts) are validated each time a run reads them: the engine keeps the last valid version in `state/config/`, runs on it while a file you edited does not validate, and says so in every heartbeat digest and in the Monday briefing email ([the files](docs/input-format.md#configuration-files), [last valid configuration](docs/glossary.md#last-valid-configuration)).
 
    The format is a versioned contract: [`docs/input-format.md`](docs/input-format.md).
 
@@ -121,7 +122,7 @@ jobs:
       - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
-          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json finance-agent/state/config/
           state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat EUR"
 ```
@@ -144,11 +145,11 @@ runners are possible, for example Claude Code routines with `handoff` (below).
 
 | Example                                                                   | Triggers                                                                           | Commits                                                                                     |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`                                   |
-| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`                                   |
-| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`                                   |
-| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `watchlist.md`, `tesis/`         |
-| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md`                                       |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`                            |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`                            |
+| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`                            |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`, `watchlist.md`, `tesis/`  |
+| [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `watchlist.md`, `screening-log.md`, `state/config/`                      |
 | [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
 | [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                     |
 
@@ -206,9 +207,13 @@ recording anything ([ADR-0004](docs/decisions/0004-handoff-mode-for-the-reasoner
 
 | Flow                  | Commands                                                        |
 | --------------------- | --------------------------------------------------------------- |
-| Heartbeat escalations | `pending:list`, `pending:show`, `pending:resolve`               |
+| Heartbeat escalations | `pending:list`, `pending:show`, `pending:record`                |
 | Monday briefing       | `monday-briefing:prepare`, `monday-briefing:finalize`           |
 | Weekly screening      | `screening:prepare`, `screening:resolve`, `screening:summarize` |
+
+`pending:record` records the answer (decision log and email) and closes nothing: a [pending escalation](docs/glossary.md#pending-escalation) stays in every
+digest until a `resolve` command in `inbox/` closes it ([input format](docs/input-format.md#inbox),
+[flow](docs/flows.md#resolve-a-pending-escalation)).
 
 The system prompts live in your brain, under `routines/`.
 
@@ -220,22 +225,23 @@ are possible.
 
 ## Commands
 
-| Command                                 | What it does                                          |
-| --------------------------------------- | ----------------------------------------------------- |
-| `npm run demo -- --currency EUR\|USD`   | One heartbeat against the example brain, offline      |
-| `npm run heartbeat:eu` / `heartbeat:us` | One heartbeat for a silo                              |
-| `npm run weekly-screening`              | Weekly screening (API mode)                           |
-| `npm run monday-briefing`               | Monday briefing (API mode)                            |
-| `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report |
-| `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart   |
-| `npm run decision:record`               | Records a cash flow or a stop adjustment (JSON stdin) |
-| `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio |
-| `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each  |
-| `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
-| `npm run outbox:send`                   | Sends the queued emails (relay)                       |
-| `npm run smoke-test`                    | Connectivity check                                    |
+| Command                                 | What it does                                                                                                                              |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run demo -- --currency EUR\|USD`   | One heartbeat against the example brain, offline                                                                                          |
+| `npm run heartbeat:eu` / `heartbeat:us` | One heartbeat for a silo                                                                                                                  |
+| `npm run weekly-screening`              | Weekly screening (API mode)                                                                                                               |
+| `npm run monday-briefing`               | Monday briefing (API mode)                                                                                                                |
+| `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report                                                                                     |
+| `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart                                                                                       |
+| `npm run decision:record`               | Records a cash flow or a stop adjustment (JSON stdin)                                                                                     |
+| `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio                                                                                     |
+| `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each                                                                                      |
+| `npm run state:repair`                  | Rebuilds a corrupt `state/portfolio.json` from the decision log and `inbox/applied/`, or refuses ([flow](docs/flows.md#repair-the-state)) |
+| `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security                                                                                             |
+| `npm run outbox:send`                   | Sends the queued emails (relay)                                                                                                           |
+| `npm run smoke-test`                    | Connectivity check                                                                                                                        |
 
-`decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit` or `withdrawal`; a buy, a sale and a currency [conversion](docs/glossary.md#conversion) are no longer recorded there but with the `buy`, `sale` and `convert` commands of a batch in `inbox/`. The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
+`decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit` or `withdrawal`; a buy, a sale and a currency [conversion](docs/glossary.md#conversion) are no longer recorded there but with the `buy`, `sale` and `convert` commands of a batch in `inbox/` (so is a split, with `split`). The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
 gives the JSON for each and the order that keeps the P&L right. What to delete, move and archive
 in `logs/`, and how `DECISIONS_ARCHIVE_DIR` reads old quarters back: [Log retention](docs/log-retention.md).
 

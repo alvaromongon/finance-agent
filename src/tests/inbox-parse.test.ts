@@ -140,6 +140,155 @@ describe("inbox format", () => {
     });
   });
 
+  describe("a split (#137)", () => {
+    it("reads the ticker, the date and the ratio as two plain decimals: new units for old", () => {
+      const { commands, issues } = parseBatch(
+        batch(
+          "command: split\nticker: NVDA\ndate: 2026-06-10\nratio: 4 for 1",
+          "command: split\nticker: sap.de\ndate: 2026-06-10\nratio: 1 for 10",
+          "command: split\nticker: KO\ndate: 2026-06-10\nratio: 3 for 2",
+          "command: split\nticker: KO\ndate: 2026-06-10\nratio:   1.5   for   1.0 ",
+        ),
+      );
+      assert.deepEqual(issues, []);
+      assert.deepEqual(
+        commands.map(({ command }) => command),
+        [
+          { kind: "split", ticker: "NVDA", date: "2026-06-10", ratio: { new: 4, old: 1 } },
+          { kind: "split", ticker: "SAP.DE", date: "2026-06-10", ratio: { new: 1, old: 10 } },
+          { kind: "split", ticker: "KO", date: "2026-06-10", ratio: { new: 3, old: 2 } },
+          { kind: "split", ticker: "KO", date: "2026-06-10", ratio: { new: 1.5, old: 1 } },
+        ],
+      );
+    });
+
+    it("needs the ticker, the date and the ratio", () => {
+      assert.match(problem("command: split\ndate: 2026-06-10\nratio: 4 for 1"), /missing field "ticker"/);
+      assert.match(problem("command: split\nticker: NVDA\nratio: 4 for 1"), /missing field "date"/);
+      assert.match(problem("command: split\nticker: NVDA\ndate: 2026-06-10"), /missing field "ratio"/);
+      assert.match(
+        problem("command: split\nticker: NVDA\ndate: 2026-6-10\nratio: 4 for 1"),
+        /"date" must be a calendar date/,
+      );
+    });
+
+    it("writes the ratio as <new> for <old>, each a plain decimal number greater than zero", () => {
+      const bad = (ratio: string) => problem(`command: split\nticker: NVDA\ndate: 2026-06-10\nratio: ${ratio}`);
+      for (const ratio of ["4", "4:1", "4 to 1", "4 for", "for 1", "4 for 1 for 2", "4 For 1"]) {
+        assert.match(bad(ratio), /"ratio" must be written as <new> for <old>, such as 4 for 1 or 1 for 10/, ratio);
+      }
+      assert.match(bad("-4 for 1"), /"ratio" must be a plain decimal number/);
+      assert.match(bad("4 for -1"), /"ratio" must be a plain decimal number/);
+      assert.match(bad("1e1 for 1"), /"ratio" must be a plain decimal number/);
+      assert.match(bad("0 for 1"), /"ratio" must be greater than zero/);
+      assert.match(bad("4 for 0"), /"ratio" must be greater than zero/);
+    });
+
+    it("reads a ratio of 1 and leaves refusing it to the handler, with the command's position", () => {
+      const { commands, issues } = parseBatch(batch("command: split\nticker: KO\ndate: 2026-06-10\nratio: 2 for 2"));
+      assert.deepEqual(issues, []);
+      assert.deepEqual(commands[0].command, {
+        kind: "split",
+        ticker: "KO",
+        date: "2026-06-10",
+        ratio: { new: 2, old: 2 },
+      });
+    });
+
+    it("takes no currency, amount or other field of another command", () => {
+      assert.match(
+        problem("command: split\nticker: KO\ndate: 2026-06-10\nratio: 2 for 1\nprice: 5 USD"),
+        /unknown field "price" for a split/,
+      );
+    });
+
+    it("a split that does not read is listed as unread with its ticker, with no currency", () => {
+      const { unread } = parseBatch(batch("command: split\nticker: KO\ndate: 2026-06-10\nratio: nope"));
+      assert.deepEqual(unread, [{ position: 1, currencies: [], kind: "split", ticker: "KO" }]);
+    });
+  });
+
+  describe("a snapshot of the broker (#138)", () => {
+    const snap = (extra = "positions:\n  - ticker: sap.de\n    units: 10\n  - ticker: KO\n    units: 2.5") =>
+      `command: snapshot\ndate: 2026-11-20\ncash: 1234.56 EUR${extra === "" ? "" : `\n${extra}`}`;
+
+    it("reads the date, the cash with its currency and the positions as ticker and units", () => {
+      const { commands, issues } = parseBatch(batch(snap()));
+      assert.deepEqual(issues, []);
+      assert.deepEqual(commands[0].command, {
+        kind: "snapshot",
+        currency: "EUR",
+        date: "2026-11-20",
+        cash: 1234.56,
+        positions: [
+          { ticker: "SAP.DE", units: 10 },
+          { ticker: "KO", units: 2.5 },
+        ],
+      });
+    });
+
+    it("reads a broker that holds nothing: no positions, and zero cash", () => {
+      const { commands, issues } = parseBatch(batch("command: snapshot\ndate: 2026-11-20\ncash: 0 USD\npositions: []"));
+      assert.deepEqual(issues, []);
+      assert.deepEqual(commands[0].command, {
+        kind: "snapshot",
+        currency: "USD",
+        date: "2026-11-20",
+        cash: 0,
+        positions: [],
+      });
+    });
+
+    it("needs the date, the cash and the list of positions", () => {
+      assert.match(problem("command: snapshot\ncash: 1 EUR\npositions: []"), /missing field "date"/);
+      assert.match(problem("command: snapshot\ndate: 2026-11-20\npositions: []"), /missing field "cash"/);
+      assert.match(problem("command: snapshot\ndate: 2026-11-20\ncash: 1 EUR"), /missing field "positions"/);
+      assert.match(problem("command: snapshot\ndate: 2026-11-20\ncash: 1 EUR\npositions:"), /"positions" is empty/);
+      assert.match(
+        problem("command: snapshot\ndate: 2026-11-20\ncash: 1 EUR\npositions: SAP.DE"),
+        /"positions" must be a list/,
+      );
+    });
+
+    it("needs the currency of the cash, the one of the silo", () => {
+      assert.match(
+        problem("command: snapshot\ndate: 2026-11-20\ncash: 10\npositions: []"),
+        /"cash" needs its currency/,
+      );
+      assert.match(
+        problem("command: snapshot\ndate: 2026-11-20\ncash: 1.234 EUR\npositions: []"),
+        /"cash" must not have more than two decimals/,
+      );
+    });
+
+    it("refuses a ticker that repeats, naming it", () => {
+      assert.match(
+        problem(snap("positions:\n  - ticker: KO\n    units: 1\n  - ticker: ko\n    units: 2")),
+        /position 2: "KO" is listed twice/,
+      );
+    });
+
+    it("refuses a position that is not a ticker and plain units greater than zero, naming its place in the list", () => {
+      const bad = (item: string) => problem(snap(`positions:\n  - ${item.replace(/\n/g, "\n    ")}`));
+      assert.match(bad("units: 1"), /position 1: missing field "ticker"/);
+      assert.match(bad("ticker: KO"), /position 1: missing field "units"/);
+      assert.match(bad("ticker: KO\nunits: -1"), /position 1: "units" must be a plain decimal number/);
+      assert.match(bad("ticker: KO\nunits: 0"), /position 1: "units" must be greater than zero/);
+      assert.match(bad("ticker: KO\nunits: 1\nprice: 5 USD"), /position 1: unknown field "price"/);
+      assert.match(bad("ticker: ..\nunits: 1"), /position 1: /);
+      assert.match(problem(snap("positions:\n  - KO")), /position 1: must be a mapping of ticker and units/);
+    });
+
+    it("takes no other field of another command", () => {
+      assert.match(problem(`${snap()}\nprice: 5 EUR`), /unknown field "price" for a snapshot/);
+    });
+
+    it("a snapshot that does not read is listed as unread with its currency and no ticker", () => {
+      const { unread } = parseBatch(batch("command: snapshot\ndate: nope\ncash: 1 USD\npositions: []"));
+      assert.deepEqual(unread, [{ position: 1, currencies: ["USD"], kind: "snapshot", ticker: undefined }]);
+    });
+  });
+
   describe("a conversion between the silos (#135)", () => {
     it("reads the amount taken out and what arrived, or the rate, with optional costs and date", () => {
       const { commands, issues } = parseBatch(

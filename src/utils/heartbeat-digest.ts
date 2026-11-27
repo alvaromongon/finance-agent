@@ -11,6 +11,9 @@
 //   question and it is no less urgent for having been asked already.
 // - Lots warnings repeat too: while the `Lots` table is wrong they are in every
 //   digest (they have no key), so the problem is not forgotten after one email.
+// - The differences of the latest snapshot of the broker repeat too (#138): they stay until a later snapshot shows none.
+// - A stale silo and a snapshot with no difference go out once a day (`digestKeys`): the first until a snapshot
+//   comes, the second only on the day it is recorded.
 // - Rejected batches repeat as well (#152): a batch the inbox refused is never forgotten, so it is in every digest
 //   until a later batch replaces or discards it.
 // - The rest goes out once a day per currency while its relevant data do not
@@ -24,7 +27,10 @@ import { describeSetup, type SetupEvaluation } from "./setups/index.js";
 import type { StopBreach } from "./stop-breach.js";
 import { printable } from "./printable.js";
 import type { Ticker } from "../ticker.js";
-import type { Currency, Signal } from "../types.js";
+import type { Currency, Difference, Signal } from "../types.js";
+import type { Staleness } from "./staleness.js";
+import type { ConfigurationProblem } from "../configuration.js";
+import { configurationWarningLines } from "./configuration-warning.js";
 
 export interface HeartbeatDigest {
   currency: Currency;
@@ -59,6 +65,34 @@ export interface HeartbeatDigest {
    * `inbox/rejected/`. Named in every digest while they last (not deduplicated): a rejected batch is never forgotten.
    */
   rejectedBatches: string[];
+  /**
+   * The ids of the pending escalations (`logs/pending/`) that no `resolve` command has closed (#141). Named in every digest
+   * while they last (not deduplicated): a signal that was escalated is never forgotten.
+   */
+  pendingEscalations: string[];
+  /**
+   * Why the engine's state file cannot be read (#139), when it cannot: the run then watches the stops of the last state that
+   * did read (`state/portfolio.last-readable.json`) and names the corruption here, in every digest while it lasts (not
+   * deduplicated). `null`: the state file reads.
+   */
+  storeProblem: string | null;
+  /**
+   * The configuration files the run read that do not validate (#142): the run goes on over their last valid version (or,
+   * on the first run with none, refuses what needs them after the stop check). Named in every digest while the file on
+   * disk is not the valid one (not deduplicated), and gone on the first run after a valid edit.
+   */
+  configurationProblems: ConfigurationProblem[];
+  /**
+   * How stale the silo is (#138): the age of its latest snapshot of the broker; a silo with none is stale. `null`: not
+   * judged (the state is still the old `portfolio.md`, which has its own warning).
+   */
+  staleness: Staleness | null;
+  /**
+   * The latest snapshot of the broker of the silo, or `null` when none was ever recorded. Its differences are named in
+   * every digest until a later snapshot shows none; one with no difference says so only the day it was recorded
+   * (`recordedToday`), so a clean reconciliation is confirmed once and then stays quiet.
+   */
+  snapshot: { date: string; differences: Difference[]; recordedToday: boolean } | null;
   tightStops: TightStop[];
   /** The day's armed breakouts (ADR-0013): the only thing actionable without the reasoner. */
   armed: SetupEvaluation[];
@@ -66,15 +100,26 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches, configuration problems and the lots, ticker and unreadable-cell warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
-  return [...d.tightStops.map(tightStopKey), ...d.armed.map(armedKey), ...d.escalated.map(escalatedKey)];
+  return [
+    ...(d.staleness?.stale ? [staleKey(d.staleness)] : []),
+    ...(cleanSnapshotToSay(d) ? [reconciledKey(d.snapshot!.date)] : []),
+    ...d.tightStops.map(tightStopKey),
+    ...d.armed.map(armedKey),
+    ...d.escalated.map(escalatedKey),
+  ];
 }
 
-/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches, configuration problems and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
+    staleness: d.staleness?.stale && sent.has(staleKey(d.staleness)) ? null : d.staleness,
+    snapshot:
+      d.snapshot !== null && d.snapshot.differences.length === 0 && sent.has(reconciledKey(d.snapshot.date))
+        ? null
+        : d.snapshot,
     tightStops: d.tightStops.filter((t) => !sent.has(tightStopKey(t))),
     armed: d.armed.filter((a) => !sent.has(armedKey(a))),
     escalated: d.escalated.filter((s) => !sent.has(escalatedKey(s))),
@@ -82,6 +127,11 @@ export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): Heartbea
 }
 
 // Each alert's relevant data: if they change, it is news again.
+const staleKey = (s: Staleness) => `stale|${s.asOf ?? "none"}`;
+const reconciledKey = (date: string) => `reconciled|${date}`;
+/** True for a snapshot with no difference that was recorded today: the one thing to say about it. */
+const cleanSnapshotToSay = (d: HeartbeatDigest): boolean =>
+  d.snapshot !== null && d.snapshot.differences.length === 0 && d.snapshot.recordedToday;
 const tightStopKey = (t: TightStop) => `tight_stop|${t.ticker}|${t.stopLoss}`;
 const armedKey = (a: SetupEvaluation) => `setup_armed|${a.ticker}|${a.setup.pattern}|${a.setup.level}`;
 // Without the price on purpose: a re-escalation by price (cooldown) creates
@@ -112,8 +162,34 @@ export function renderHeartbeatDigest(
   if (d.noStop.length > 0) {
     sections.push({ label: t.labels.noStop, tickers: d.noStop.map((p) => p.ticker), lines: noStopSection(d, m) });
   }
+  if (d.storeProblem !== null) {
+    sections.push({ label: t.labels.storeUnreadable, tickers: [], lines: storeProblemSection(d, m) });
+  }
+  if (d.configurationProblems.length > 0) {
+    sections.push({
+      label: m.configurationWarning.label,
+      tickers: [],
+      lines: configurationWarningLines(d.configurationProblems, m),
+    });
+  }
   if (d.rejectedBatches.length > 0) {
     sections.push({ label: t.labels.rejectedBatches, tickers: [], lines: rejectedBatchesSection(d, m) });
+  }
+  if (d.pendingEscalations.length > 0) {
+    sections.push({ label: t.labels.pendingEscalations, tickers: [], lines: pendingEscalationsSection(d, m) });
+  }
+  if (d.staleness?.stale) {
+    sections.push({ label: t.labels.stale, tickers: [], lines: staleSection(d, d.staleness, m) });
+  }
+  if (d.snapshot !== null && d.snapshot.differences.length > 0) {
+    sections.push({
+      label: t.labels.differences,
+      tickers: d.snapshot.differences.flatMap((x) => (x.kind === "position" ? [x.ticker] : [])),
+      lines: differencesSection(d, m),
+    });
+  }
+  if (cleanSnapshotToSay(d)) {
+    sections.push({ label: t.labels.reconciled, tickers: [], lines: t.reconciledLines(d.currency, d.snapshot!.date) });
   }
   if (d.tightStops.length > 0) {
     sections.push({
@@ -172,6 +248,12 @@ function noStopSection(d: HeartbeatDigest, m: Messages): string[] {
   return [...t.noStopIntro, ...d.noStop.map((p) => t.noStopLine(p.ticker, p.currency)), ...t.noStopOutro];
 }
 
+function storeProblemSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  // The reason quotes the file: printed escaped, so no control character reaches the email (S4).
+  return [...t.storeUnreadableIntro, `- ${printable(d.storeProblem!)}`, ...t.storeUnreadableOutro];
+}
+
 function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [
@@ -180,6 +262,54 @@ function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {
     // and a backtick, which would end the span, is written as an escape too.
     ...d.rejectedBatches.map((file) => t.rejectedBatchesLine(printable(file).replaceAll("`", "\\u0060"))),
     ...t.rejectedBatchesOutro,
+  ];
+}
+
+function pendingEscalationsSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [
+    ...t.pendingEscalationsIntro,
+    // An id comes from a file name: escaped like a rejected batch's, so no control character or backtick reaches the email.
+    ...d.pendingEscalations.map((id) => t.pendingEscalationsLine(printable(id).replaceAll("`", "\\u0060"))),
+    ...t.pendingEscalationsOutro,
+  ];
+}
+
+function staleSection(d: HeartbeatDigest, staleness: Staleness, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [
+    ...t.staleIntro(d.currency),
+    staleness.asOf === null
+      ? t.staleNone(d.currency)
+      : t.staleSince(d.currency, staleness.asOf.slice(0, 10), formatNumber(m, staleness.ageDays ?? 0, 1)),
+    ...t.staleOutro,
+  ];
+}
+
+/** `n` as the catalog writes a number, up to eight decimals (units are fractions), without trailing zeros. */
+const plain = (m: Messages, n: number): string =>
+  n.toLocaleString(m.locale, { minimumFractionDigits: 0, maximumFractionDigits: 8 });
+
+/** `+10.50` or `-2`: the sign of a size, which a zero does not have. */
+const sized = (text: string, size: number): string => `${size > 0 ? "+" : size < 0 ? "-" : ""}${text}`;
+
+function differencesSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  const { date, differences } = d.snapshot!;
+  return [
+    ...t.differencesIntro(d.currency, date),
+    ...differences.map((x) => {
+      const size = Math.round((x.broker - x.engine) * 1e8) / 1e8;
+      return x.kind === "cash"
+        ? t.differenceCash(
+            formatNumber(m, x.broker),
+            formatNumber(m, x.engine),
+            sized(formatNumber(m, Math.abs(size)), size),
+            d.currency,
+          )
+        : t.differencePosition(x.ticker, plain(m, x.broker), plain(m, x.engine), sized(plain(m, Math.abs(size)), size));
+    }),
+    ...t.differencesOutro,
   ];
 }
 

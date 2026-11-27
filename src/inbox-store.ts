@@ -43,40 +43,46 @@ export async function readInbox(): Promise<InboxFile[]> {
 }
 
 /**
- * The batches `inbox:ingest` rejected and moved to `inbox/rejected/` (#152): the regular `.yaml` and `.yml` files there,
- * with their text, sorted by name; no folder is none. A `.yaml` that cannot be read as a batch (a link, a hidden file,
- * not a regular file) is not one the engine moved there: it is returned in `unread` with the reason, to be named and
- * never followed. Throws if `inbox/` or `rejected/` is a link or not a folder.
+ * The batches in `inbox/<folder>/` (`rejected` or `applied`): the regular `.yaml` and `.yml` files there, with their text,
+ * sorted by name; no folder is none. A `.yaml` that cannot be read as a batch (a link, a hidden file, not a regular
+ * file) is not one the engine moved there: it is returned in `unread` with the reason, to be named and never followed.
+ * Throws if `inbox/` or the folder is a link or not a folder.
  */
-export async function readRejected(): Promise<{
+async function readMoved(folder: "rejected" | "applied"): Promise<{
   batches: { name: string; text: string }[];
   unread: { name: string; problem: string }[];
 }> {
   const dir = inboxDir();
   for (const [path, label] of [
     [dir, "inbox"],
-    [join(dir, "rejected"), "inbox/rejected"],
+    [join(dir, folder), `inbox/${folder}`],
   ] as const) {
-    const folder = await lstat(path).catch((err: NodeJS.ErrnoException) => {
+    const found = await lstat(path).catch((err: NodeJS.ErrnoException) => {
       if (err.code === "ENOENT") return null;
       throw err;
     });
-    if (folder === null) return { batches: [], unread: [] };
-    if (folder.isSymbolicLink() || !folder.isDirectory()) {
-      throw new Error(`${label} is not a real folder (a link or a file): the rejected batches are not read`);
+    if (found === null) return { batches: [], unread: [] };
+    if (found.isSymbolicLink() || !found.isDirectory()) {
+      throw new Error(`${label} is not a real folder (a link or a file): the ${folder} batches are not read`);
     }
   }
-  const rejected = join(dir, "rejected");
-  const names = (await readdir(rejected, { withFileTypes: true }))
+  const moved = join(dir, folder);
+  const names = (await readdir(moved, { withFileTypes: true }))
     .filter((e) => /\.ya?ml$/i.test(e.name))
     .map((e) => e.name)
     .sort();
-  const read = await Promise.all(names.map((name) => readBatch(rejected, name, "inbox/rejected")));
+  const read = await Promise.all(names.map((name) => readBatch(moved, name, `inbox/${folder}`)));
   return {
     batches: read.flatMap((file) => ("text" in file ? [{ name: file.name, text: file.text }] : [])),
     unread: read.flatMap((file) => ("problem" in file ? [{ name: file.name, problem: file.problem }] : [])),
   };
 }
+
+/** The batches `inbox:ingest` rejected and moved to `inbox/rejected/` (#152). */
+export const readRejected = (): ReturnType<typeof readMoved> => readMoved("rejected");
+
+/** The batches `inbox:ingest` applied and moved to `inbox/applied/`: the audit trail a correction and the repair replay (#139). */
+export const readApplied = (): ReturnType<typeof readMoved> => readMoved("applied");
 
 /** One batch file: a hidden file is reported, never read; the rest opened without following a link and read from the handle that was checked. */
 async function readBatch(dir: string, name: string, folder = "inbox"): Promise<InboxFile> {

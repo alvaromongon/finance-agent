@@ -225,6 +225,8 @@ describe("weekly-screening prepare/resolve/summarize", () => {
   beforeEach(async () => {
     runtimeProvider.current = fakeProvider;
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
+    // The last valid copies of the configuration files are state: one test's must not feed the next.
+    await rm(join(vaultDir, "state"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "routines"), { recursive: true });
     await mkdir(join(vaultDir, "tesis"), { recursive: true });
@@ -259,6 +261,46 @@ describe("weekly-screening prepare/resolve/summarize", () => {
       warn.mock.restore();
     }
   }
+
+  describe("a configuration file that does not validate (#142)", () => {
+    const universe = () => join(vaultDir, "screening-universe.md");
+    const BROKEN = "---\nschema_version: 1\n---\n\n```yaml\nuniverse:\n  eur: nope\n```\n";
+
+    it("prepare screens the last valid universe when the file is broken, and names the errors", async () => {
+      const { readUniverse } = await import("../weekly-screening.js");
+      await prepare();
+      const before = await readUniverse();
+      await writeFile(universe(), BROKEN, "utf8");
+      const error = mock.method(console, "error", () => {});
+      const warn = mock.method(console, "warn", () => {});
+      try {
+        await runPrepare(runtimeProvider.current, fakeHeadlines);
+        assert.deepEqual(await readUniverse(), before, "the same universe is screened");
+        const said = error.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+        assert.match(
+          said,
+          /WARNING, configuration: screening-universe\.md is not valid, running on its last valid version/,
+        );
+        assert.match(said, /universe\.eur: missing: must be a list; universe\.usd: missing: must be a list/);
+      } finally {
+        error.mock.restore();
+        warn.mock.restore();
+      }
+    });
+
+    it("prepare refuses a broken universe with every error when there is no last valid version yet", async () => {
+      await writeFile(universe(), BROKEN, "utf8");
+      const error = mock.method(console, "error", () => {});
+      try {
+        await assert.rejects(
+          runPrepare(runtimeProvider.current, fakeHeadlines),
+          /screening-universe\.md is not valid and there is no last valid version[^]*universe\.eur[^]*universe\.usd/,
+        );
+      } finally {
+        error.mock.restore();
+      }
+    });
+  });
 
   describe("screening:prepare", () => {
     for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {

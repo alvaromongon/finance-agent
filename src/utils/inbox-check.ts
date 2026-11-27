@@ -2,29 +2,48 @@
 // of the inbox in order. Pure; `inbox.ts` reads the files and the portfolio, and `inbox:check` prints what this
 // returns while `inbox:ingest` writes the state it ends with: one code path, `check` being `ingest` without the write.
 import { createHash } from "node:crypto";
-import { CURRENCIES, type Currency, type Lot } from "../types.js";
-import type { DecisionOrigin } from "../decisions.js";
+import { CURRENCIES, type Currency, type Difference, type Lot } from "../types.js";
 import type { Ticker } from "../ticker.js";
-import { zero, type Money } from "../money.js";
+import { formatMoney, zero, type Money } from "../money.js";
 import { round } from "./round.js";
+import { isDeepStrictEqual } from "node:util";
 import { uniqueDecisionIds } from "./decision-id.js";
 import type { SaleShare } from "./portfolio-lots.js";
 import {
   applyCommand,
   initialStopBreaches,
   openedKey,
+  splitLot,
   takeEntryCosts,
   type BatchContext,
   type Command,
   type EntryContext,
+  type EscalationOutcome,
   type InboxState,
   type InitialStopBreach,
   type OpenedLot,
   type OpenedLots,
+  type SplitRatio,
   type StopSource,
   type StopSources,
 } from "./inbox-handlers.js";
 import { parseBatch, type CommandKind, type InboxIssue, type ParsedBatch, type ParsedCommand } from "./inbox-parse.js";
+import {
+  pinKey,
+  type ReplayResult,
+  isCorrection,
+  isReplayFailure,
+  emptyState,
+  patchesOf,
+  replay,
+  restoreMetadata,
+  stateDifferences,
+  withTelemetry,
+  type Correction,
+  type LedgerFile,
+} from "./inbox-replay.js";
+import { entryCostsTaken as costsTakenBy } from "./portfolio-lots.js";
+import type { Decision, DecisionOrigin } from "../decisions.js";
 import { printable, quoted } from "./printable.js";
 import { stopOf } from "./stop.js";
 
@@ -55,11 +74,26 @@ export interface RejectedFile {
 export interface RunContext {
   /** The rejected batches (names in `inbox/rejected/`) awaiting a replacement or a discard when the run starts. */
   awaiting: ReadonlySet<string>;
+  /** The ids of the pending escalations (`logs/pending/`) still open when the run starts: what a `resolve` can close. */
+  escalations: ReadonlySet<string>;
   rulesVersion: string;
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
   /** What the rules of an entry read (see `EntryContext`) but the trades of the run itself: they add to `cited`. */
   entry: Omit<EntryContext, "cited">;
+  /** The day of the run, YYYY-MM-DD: a snapshot is not of a day to come. */
+  today: string;
+  /**
+   * The batches already applied, in the order they were (`inbox/applied/` and the ones applied and not yet moved): what a
+   * `correct` command replays. Absent, a correction cannot be checked and is refused for that.
+   */
+  ledger?: readonly LedgerFile[];
+  /** The silos before the first batch, from `portfolio.md` (the store's `starting`): what the ledger is replayed over. Absent: empty ones. */
+  starting?: InboxState;
+  /** A replay's own: the commands it runs in place of the ones a file holds (by file name, then command position). */
+  overrides?: ReadonlyMap<string, ReadonlyMap<number, Command>>;
+  /** A replay's own: the id the log holds for each id this run gives, by `idKey`. */
+  pins?: ReadonlyMap<string, string>;
 }
 
 /** What the files before the batch under check left behind. */
@@ -72,6 +106,8 @@ export interface Earlier {
   tickers: ReadonlySet<string>;
   /** The rejected batches still awaiting a replacement or a discard, as the clean files before this one left them. */
   awaiting: ReadonlySet<string>;
+  /** The pending escalations still open, as the clean files before this one left them. */
+  escalations: ReadonlySet<string>;
   /** The ids taken so far: the history's, and those the clean files gave to their lots. */
   takenIds: ReadonlySet<string>;
   /** The entry costs taken so far: the history's, and those the exits of the clean files took. */
@@ -80,6 +116,17 @@ export interface Earlier {
   /** The ids of the system proposals the buys of the clean files before this one cited. */
   cited: ReadonlySet<string>;
   entry: Omit<EntryContext, "cited">;
+  today: string;
+  /** The batches applied before the run and the clean files of the run so far, in order; see `RunContext.ledger`. */
+  ledger?: readonly LedgerFile[];
+  starting?: InboxState;
+  /** The file under check: a replay's pins are of one file. */
+  name?: string;
+  /** How many clean batches of the run have applied something before this one: a correction needs them applied first. */
+  appliedInRun?: number;
+  /** The commands of this file that a replay runs in another form, by position; see `RunContext.overrides`. */
+  overrides?: ReadonlyMap<number, Command>;
+  pins?: ReadonlyMap<string, string>;
 }
 
 /** A buy of a clean batch, with the lot it opened as the batch leaves it (its initial stop is the final one). */
@@ -127,8 +174,94 @@ export interface ConversionTrade {
   fxRate: number;
 }
 
-/** What a clean batch bought, sold and converted, in order: what `inbox:ingest` writes to the decision log. */
-export type Trade = BuyTrade | SaleTrade | ConversionTrade;
+/** A split of a clean batch, one per silo it changed: `ratio` is the units after it per unit before it (4 for 1: 4). */
+export interface SplitTrade {
+  kind: "split";
+  command: number;
+  line: number;
+  currency: Currency;
+  ticker: Ticker;
+  date: string;
+  ratio: number;
+}
+
+/** A snapshot of a clean batch: what the broker showed of a silo and each difference from the state (#138). */
+export interface SnapshotTrade {
+  kind: "snapshot";
+  command: number;
+  line: number;
+  currency: Currency;
+  /** YYYY-MM-DD: the day the broker's figures are as of. */
+  date: string;
+  /** None when the broker and the engine agree. */
+  differences: readonly Difference[];
+}
+
+/** A deposit or a withdrawal of a clean batch (#139: it has a line, so a correction can name it). */
+interface CashMove {
+  command: number;
+  line: number;
+  currency: Currency;
+  amount: Money;
+}
+export type CashTrade = (CashMove & { kind: "deposit" }) | (CashMove & { kind: "withdrawal" });
+
+/** A correction of a clean batch: one line of the log that changes, with the fields that do (#139). */
+export interface CorrectionTrade {
+  kind: "correction";
+  command: number;
+  line: number;
+  currency: Currency;
+  /** The id of the line corrected. */
+  id: string;
+  ticker: Ticker | null;
+  patch: NonNullable<Decision["patch"]>;
+}
+
+/**
+ * What a clean batch bought, sold, converted, split, deposited, corrected and compared with the broker, in order: what
+ * `inbox:ingest` writes to the decision log.
+ */
+export type Trade = BuyTrade | SaleTrade | ConversionTrade | SplitTrade | SnapshotTrade | CashTrade | CorrectionTrade;
+
+/**
+ * How many units a lot the batch opened holds per unit it bought, as the fraction `n / d` of the splits of the batch so
+ * far (`UNSCALED` before any). The decision log keeps a lot as it was bought and the exits of the batch carry the lot as
+ * it was when they sold, so a lot is told back from the scale it is in to the one a line needs (`atScale`).
+ */
+interface Scale {
+  n: number;
+  d: number;
+}
+const UNSCALED: Scale = { n: 1, d: 1 };
+const scaleOf = (scales: ReadonlyMap<string, Scale>, key: string): Scale => scales.get(key) ?? UNSCALED;
+
+const composed = (scale: Scale, ratio: SplitRatio): Scale => ({ n: scale.n * ratio.new, d: scale.d * ratio.old });
+
+/** `lot`, which is at the scale `from`, at the scale `to`: the same lot when they are one, else split by the difference. */
+function atScale(lot: Lot, from: Scale, to: Scale): Lot {
+  const ratio = { new: to.n * from.d, old: to.d * from.n };
+  if (ratio.new === ratio.old) return lot;
+  // Going back through a ratio leaves the noise of a division (9.000000000000002): what is told is 12 digits long.
+  const tidy = (n: number): number => Number(n.toPrecision(12));
+  const scaled = splitLot(lot, ratio);
+  return {
+    ...scaled,
+    units: tidy(scaled.units),
+    entryUnits: tidy(scaled.entryUnits),
+    entryPrice: tidy(scaled.entryPrice),
+    initialStop: scaled.initialStop === null ? null : tidy(scaled.initialStop),
+  };
+}
+
+/** A pending escalation a clean batch closed (`resolve`): what `inbox:ingest` writes to the store. */
+export interface ClosedEscalation {
+  id: string;
+  outcome: EscalationOutcome;
+  note?: string;
+  /** YYYY-MM-DD, when the command gave it; the run's day otherwise. */
+  date?: string;
+}
 
 /** A rejected batch a clean batch gave up for good: replaced (`replaces:`) or discarded (`discard`). */
 export interface Resolved {
@@ -163,6 +296,8 @@ export interface BatchCheck {
   trades: Trade[];
   /** The rejected batches a clean batch replaces or discards; none when it is not clean. */
   resolved: Resolved[];
+  /** The pending escalations a clean batch closes; none when it is not clean. */
+  closed: ClosedEscalation[];
   /** The ids taken after a clean batch (those of its lots too), and the entry costs its exits took. */
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
@@ -170,6 +305,8 @@ export interface BatchCheck {
   cited: ReadonlySet<string>;
   /** What the batch changes, for the files after it if it is rejected. */
   footprint: readonly Footprint[];
+  /** True for a batch of corrections (#139): the runner keeps it apart from the batches it replays. */
+  corrective: boolean;
 }
 
 /** The first command that left something unknown, and how. */
@@ -213,17 +350,37 @@ interface StopBlock {
  * file would have changed, and the owner will fix the file first.
  */
 export function checkBatch(state: InboxState, text: string, earlier: Earlier): BatchCheck {
-  const parsed = parseBatch(text);
+  const parsed = withOverrides(parseBatch(text), earlier.overrides);
+  // A correction replays the batches already applied: it is checked apart, over the ledger, and on its own in a batch (#139).
+  if (isCorrection(parsed)) return checkCorrections(state, parsed, earlier);
   // What this batch can discard: the rejected batches awaiting one, but the one it replaces (that one is settled by `replaces:`).
   const awaiting = new Set(earlier.awaiting);
   const discarded: string[] = [];
+  // The pending escalations this batch can close: the open ones, less what it closes as it goes (one `resolve` each).
+  const escalations = new Set(earlier.escalations);
+  const closed: ClosedEscalation[] = [];
   // The ids come from the one source of decision ids, never repeating one of the history's or the state's.
   const takenIds = new Set(earlier.takenIds);
   for (const silo of Object.values(state)) for (const l of silo.lots) takenIds.add(l.entryId);
-  const nextId = uniqueDecisionIds(takenIds, createHash("sha256").update(text).digest("hex"));
+  const newId = uniqueDecisionIds(takenIds, createHash("sha256").update(text).digest("hex"));
+  // A replay keeps the id the log holds for a record whatever day or ticker its correction gives it.
+  const nextId = (date: string, subject: string, type: string): string => {
+    const id = newId(date, subject, type);
+    return earlier.pins?.get(pinKey(earlier.name, id)) ?? id;
+  };
   const entryCostsTaken = new Map(earlier.entryCostsTaken);
   /** The lots this batch opened, as the batch leaves them: a `set_stop` later in it can change their initial stop. */
-  const lastSeen = new Map<string, Lot>();
+  const lastSeen = new Map<string, { lot: Lot; scale: Scale }>();
+  /** The splits the batch applied to each lot it opened (a key of `own`): the scale its lot is at now. */
+  const scales = new Map<string, Scale>();
+  const splits: { command: number; line: number; read: Extract<Command, { kind: "split" }>; currency: Currency }[] = [];
+  const snapshots: {
+    command: number;
+    line: number;
+    currency: Currency;
+    date: string;
+    differences: readonly Difference[];
+  }[] = [];
   const bought: {
     command: number;
     line: number;
@@ -232,17 +389,32 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     relatedId?: string;
   }[] = [];
   const converted: { command: number; line: number; read: Extract<Command, { kind: "convert" }> }[] = [];
+  const deposited: {
+    command: number;
+    line: number;
+    read: Extract<Command, { kind: "deposit" | "withdrawal" }>;
+  }[] = [];
   const sold: {
     command: number;
     line: number;
     read: Extract<Command, { kind: "sale" }>;
     exits: SaleShare[];
     origin: DecisionOrigin;
+    /** The scale of the lots of the batch when it sold: the exits carry the lot as it was then. */
+    scaleAtSale: ReadonlyMap<string, Scale>;
   }[] = [];
   /** The proposals cited by the buys so far, the earlier files' and this batch's: a proposal is followed by one buy. */
   const cited = new Set(earlier.cited);
   const trades = (): Trade[] => {
-    const final = (key: string, lot: Lot): Lot => lastSeen.get(key) ?? lot;
+    const asBought = (key: string): Lot => {
+      const seen = lastSeen.get(key)!;
+      return atScale(seen.lot, seen.scale, UNSCALED);
+    };
+    // The lot as the batch leaves it (its initial stop is the final one), at the scale of the line it goes in.
+    const final = (key: string, lot: Lot, at: Scale): Lot => {
+      const seen = lastSeen.get(key);
+      return seen === undefined ? lot : atScale(seen.lot, seen.scale, at);
+    };
     return [
       ...bought.map((b): Trade => ({
         kind: "buy",
@@ -254,7 +426,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         units: b.read.units,
         price: b.read.price,
         ...(b.read.costs !== undefined ? { costs: b.read.costs } : {}),
-        lot: lastSeen.get(b.key)!,
+        lot: asBought(b.key),
         ...(b.relatedId !== undefined ? { relatedId: b.relatedId } : {}),
       })),
       ...converted.map(({ command, line, read }): Trade => ({
@@ -267,6 +439,23 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         costs: read.costs ?? zero(read.from),
         fxRate: read.rate ?? round(read.received! / (read.amount - (read.costs ?? 0)), 6),
       })),
+      ...deposited.map(({ command, line, read }): Trade => ({
+        kind: read.kind,
+        command,
+        line,
+        currency: read.currency,
+        amount: read.amount,
+      })),
+      ...splits.map(({ command, line, read, currency }): Trade => ({
+        kind: "split",
+        command,
+        line,
+        currency,
+        ticker: read.ticker,
+        date: read.date,
+        ratio: read.ratio.new / read.ratio.old,
+      })),
+      ...snapshots.map((s): Trade => ({ kind: "snapshot", ...s })),
       ...sold.map((s): Trade => ({
         kind: "sale",
         command: s.command,
@@ -279,7 +468,11 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         origin: s.origin,
         exits: s.exits.map((share) => ({
           share,
-          lot: final(openedKey(s.read.currency, share.lot.entryId), share.lot),
+          lot: final(
+            openedKey(s.read.currency, share.lot.entryId),
+            share.lot,
+            scaleOf(s.scaleAtSale, openedKey(s.read.currency, share.lot.entryId)),
+          ),
         })),
       })),
     ].sort((a, b) => a.command - b.command);
@@ -306,6 +499,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   const touched = new Map<string, { currency: Currency; ticker: Ticker; read: ParsedCommand }>();
   const blocked = new Map<Currency, Blocker>();
   const lotsBlocks: LotsBlock[] = [];
+  /** The lots and the stop of `ticker` (any: `null`) are unknown in every silo: a split was refused, unread or not checked. */
+  const splitBlocks: LotsBlock[] = [];
   let stopBlocks: StopBlock[] = [];
   const block = (currencies: readonly Currency[], blocker: Blocker): void => {
     for (const currency of currencies) if (present(currency) && !blocked.has(currency)) blocked.set(currency, blocker);
@@ -331,6 +526,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     )?.blocker;
   const lotsBlockOf = (ticker: Ticker): Blocker | undefined =>
     lotsBlocks.find((b) => b.ticker === null || b.ticker === ticker)?.blocker;
+  const splitBlockOf = (ticker: Ticker): Blocker | undefined =>
+    splitBlocks.find((b) => b.ticker === null || b.ticker === ticker)?.blocker;
   const touch = (currency: Currency, ticker: Ticker, read: ParsedCommand): void =>
     void touched.set(openedKey(currency, ticker), { currency, ticker, read });
 
@@ -341,14 +538,16 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     const read = byPosition.get(position);
     if (read === undefined) {
       const { currencies, kind, ticker } = unread.get(position)!;
-      // A discard changes no cash, lots or stop: nothing is unknown because of it.
-      if (kind === "discard") continue;
+      // A discard or a snapshot changes no cash, lots or stop: nothing is unknown because of it.
+      if (kind === "discard" || kind === "resolve" || kind === "snapshot") continue;
       // A conversion that did not read moved cash between both silos, whatever currencies were readable in it.
       const written = currencies.length > 0 && kind !== "convert" ? currencies : CURRENCIES;
       const blocker: Blocker = { position, how: "could not be read" };
       // A stop command changes no cash or lots: only the stop of its ticker is unknown.
       if (kind === "set_stop") blockStop(written, ticker, blocker);
       else if (kind === "clear_stop") blockStop(CURRENCIES, ticker, blocker);
+      // A split changes no cash: only the lots and the stop of its ticker, in whichever silo holds it, are unknown.
+      else if (kind === "split") splitBlocks.push({ ticker: ticker ?? null, blocker });
       else {
         block(written, blocker);
         if (kind !== "deposit" && kind !== "withdrawal" && kind !== "convert") {
@@ -358,17 +557,35 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       continue;
     }
     const { command } = read;
+    // A batch with a correction is checked apart (`checkCorrections`): none is left here.
+    if (command.kind === "correct") continue;
     const currency = "currency" in command ? command.currency : undefined;
     // The silos whose cash a command changes: both for a conversion, its own for the others (`undefined`: none named).
     const silos: readonly Currency[] | undefined =
       command.kind === "convert" ? [command.from, command.to] : currency !== undefined ? [currency] : undefined;
     // A clear_stop names no currency: what it clears is the position of its ticker in whichever silo holds it, so
     // only a command that could have changed that ticker's lots, or its stop, makes it unknown.
-    const lotsBlock = command.kind === "clear_stop" ? lotsBlockOf(command.ticker) : undefined;
+    // A split names no currency either, so it reads the lots of its ticker the same way.
+    const lotsBlock =
+      command.kind === "clear_stop" || command.kind === "split" ? lotsBlockOf(command.ticker) : undefined;
     const cashBlock = silos?.map((c) => blocked.get(c)).find((b) => b !== undefined);
-    const blocker = cashBlock ?? lotsBlock ?? (command.kind === "clear_stop" ? stopBlockOf(command.ticker) : undefined);
+    // A refused split left the lots and the stop of its ticker unknown for every command that reads that ticker.
+    // A snapshot reads the units of every ticker of its silo: a split refused anywhere left some of them unknown.
+    const splitBlock =
+      command.kind === "snapshot"
+        ? splitBlocks[0]?.blocker
+        : "ticker" in command
+          ? splitBlockOf(command.ticker)
+          : undefined;
+    const blocker =
+      cashBlock ?? lotsBlock ?? splitBlock ?? (command.kind === "clear_stop" ? stopBlockOf(command.ticker) : undefined);
     if (blocker !== undefined) {
-      const unknown = unknownOf(command, silos, cashBlock === undefined && lotsBlock === undefined);
+      const unknown = unknownOf(
+        command,
+        silos,
+        cashBlock === undefined && lotsBlock === undefined && splitBlock === undefined,
+        cashBlock === undefined && lotsBlock === undefined && splitBlock !== undefined,
+      );
       notChecked.push({
         command: position,
         line: read.line,
@@ -380,6 +597,9 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       else if (command.kind === "set_stop") {
         blockStop([command.currency], command.ticker, { position, how: "was not checked" });
       }
+      // A split that was not checked may have scaled the lots and the stop of its ticker.
+      else if (command.kind === "split")
+        splitBlocks.push({ ticker: command.ticker, blocker: { position, how: "was not checked" } });
       // A conversion that was not checked may have moved the cash of both its silos, not only the one that was blocked.
       else if (command.kind === "convert") block([command.from, command.to], { position, how: "was not checked" });
       // A buy or a sale that was not checked may have opened or closed the lots of its ticker.
@@ -395,8 +615,10 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       rulesVersion: earlier.rulesVersion,
       entryCostsTaken,
       awaiting,
+      escalations,
       entry: { ...earlier.entry, cited },
       record: { at: { command: position, line: read.line }, stops },
+      today: earlier.today,
     };
     const result = applyCommand(current, command, context);
     if ("reason" in result) {
@@ -418,11 +640,28 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       if (command.kind === "set_stop") blockStop([command.currency], command.ticker, { position, how });
       else if (command.kind === "clear_stop") blockStop(CURRENCIES, command.ticker, { position, how });
       else if (command.kind === "convert") block([command.from, command.to], { position, how });
-      else if (currency !== undefined) {
+      else if (command.kind === "split") splitBlocks.push({ ticker: command.ticker, blocker: { position, how } });
+      // A snapshot changes nothing: a refused one leaves nothing unknown.
+      else if (command.kind === "snapshot") {
+        // (nothing)
+      } else if (currency !== undefined) {
         block([currency], { position, how });
         if (command.kind === "buy" || command.kind === "sale") blockLots([currency], command.ticker, { position, how });
       }
       continue;
+    }
+    // A snapshot that found differences is not told to be right when a file rejected before it could have changed what it
+    // compares (a deposit or a buy that failed explains a cash or a position the engine lacks): the owner fixes that file first.
+    if (command.kind === "snapshot" && result.snapshot !== undefined && result.snapshot.differences.length > 0) {
+      const rejected = earlier.rejected.find((r) => dependsOn(r.footprint, command));
+      if (rejected !== undefined) {
+        notChecked.push({
+          command: position,
+          line: read.line,
+          reason: `not checked: depends on inbox/${printable(rejected.file)}, which was rejected, so ${unknownOf(command, silos, false)}`,
+        });
+        continue;
+      }
     }
     current = result.state;
     if (command.kind === "clear_stop") {
@@ -436,7 +675,10 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       command.kind !== "deposit" &&
       command.kind !== "withdrawal" &&
       command.kind !== "convert" &&
-      command.kind !== "discard"
+      command.kind !== "split" &&
+      command.kind !== "snapshot" &&
+      command.kind !== "discard" &&
+      command.kind !== "resolve"
     ) {
       touch(command.currency, command.ticker, read);
       if (command.kind === "set_stop") liftStop(command.currency, command.ticker);
@@ -444,6 +686,10 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     if (result.discarded !== undefined) {
       awaiting.delete(result.discarded);
       discarded.push(result.discarded);
+    }
+    if (result.closed !== undefined) {
+      escalations.delete(result.closed.id);
+      closed.push(result.closed);
     }
     if (result.opened !== undefined && command.kind === "buy") {
       const lot = { currency: command.currency, ticker: command.ticker, command: position, line: read.line };
@@ -459,6 +705,19 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       });
     }
     if (command.kind === "convert") converted.push({ command: position, line: read.line, read: command });
+    if (command.kind === "deposit" || command.kind === "withdrawal") {
+      deposited.push({ command: position, line: read.line, read: command });
+    }
+    if (command.kind === "snapshot" && result.snapshot !== undefined) {
+      snapshots.push({ command: position, line: read.line, ...result.snapshot });
+    }
+    if (command.kind === "split" && result.split !== undefined) {
+      for (const key of result.split.lots) {
+        if (own.has(key)) scales.set(key, composed(scaleOf(scales, key), command.ratio));
+      }
+      for (const silo of result.split.silos)
+        splits.push({ command: position, line: read.line, read: command, currency: silo });
+    }
     if (result.exits !== undefined && command.kind === "sale") {
       takeEntryCosts(entryCostsTaken, result.exits, command.currency);
       sold.push({
@@ -467,13 +726,14 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         read: command,
         exits: [...result.exits],
         origin: result.origin ?? "propietario",
+        scaleAtSale: new Map(scales),
       });
     }
     // The lots of this batch as they are now: the last value of one a later command sells out is the one recorded.
     for (const key of own.keys()) {
       const [currencyOfKey, ...id] = key.split("/");
       const seen = current[currencyOfKey as Currency]?.lots.find((l) => l.entryId === id.join("/"));
-      if (seen !== undefined) lastSeen.set(key, seen);
+      if (seen !== undefined) lastSeen.set(key, { lot: seen, scale: scaleOf(scales, key) });
     }
   }
   // The initial stop of a lot is the position's stop after the whole batch, so it is judged here, not per command (#159).
@@ -492,7 +752,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       ),
     );
     const [{ lot: first }] = lots;
-    const unknown = blocked.get(currency) ?? stopBlockOf(ticker, currency);
+    const unknown = blocked.get(currency) ?? stopBlockOf(ticker, currency) ?? splitBlockOf(ticker);
     if (unknown !== undefined) {
       // After a refusal the stop a lot ends with is not known (the set_stop that sets it may be among the commands not checked).
       notChecked.push({
@@ -538,7 +798,9 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   return {
     issues,
     notChecked,
-    warnings: clean ? withoutStop(current, touched.values()) : [],
+    warnings: clean
+      ? [...withoutStop(current, touched.values()), ...differenceWarnings(snapshots)].sort(byCommand)
+      : [],
     state: clean ? current : state,
     opened: clean ? own : new Map(),
     stops: clean ? new Map([...stops].filter(([key, source]) => earlier.stops.get(key) !== source)) : new Map(),
@@ -549,10 +811,169 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
           ...discarded.map((file) => ({ file, how: "discarded" as const })),
         ]
       : [],
+    closed: clean ? closed : [],
     takenIds: clean ? takenIds : earlier.takenIds,
     cited: clean ? cited : earlier.cited,
     entryCostsTaken: clean ? entryCostsTaken : earlier.entryCostsTaken,
     footprint: footprintOf(parsed),
+    corrective: false,
+  };
+}
+
+/** The batch with the commands a replay runs in another form (a correction's) put in place of the ones the file holds. */
+function withOverrides(parsed: ParsedBatch, overrides: ReadonlyMap<number, Command> | undefined): ParsedBatch {
+  if (overrides === undefined || overrides.size === 0) return parsed;
+  return {
+    ...parsed,
+    commands: parsed.commands.map((c) => {
+      const command = overrides.get(c.position);
+      return command === undefined ? c : { ...c, command };
+    }),
+  };
+}
+
+/**
+ * Checks a batch of corrections (#139) against `state`, the one the batches already applied left. Each `correct` command
+ * names a record by the id the engine gave it; the applied batches are replayed with the correction and the state they
+ * give is the state of the correction, so a later sale without lots or a cash below zero refuses it, in the words of
+ * the command that would fail (`replay`). The corrections go on their own in a batch, and after the batches of the
+ * run have been applied: what they rebuild is the applied history, which the log is written from.
+ */
+function checkCorrections(state: InboxState, parsed: ParsedBatch, earlier: Earlier): BatchCheck {
+  const issues = [...parsed.issues];
+  const awaiting = new Set(earlier.awaiting);
+  const fail = (command: number | null, line: number | null, reason: string): void =>
+    void issues.push({ command, line, reason });
+  const footprint = footprintOf(parsed);
+  const rejected = (): BatchCheck => ({
+    issues: issues.sort(byCommand),
+    notChecked: [],
+    warnings: [],
+    state,
+    opened: new Map(),
+    stops: new Map(),
+    trades: [],
+    resolved: [],
+    closed: [],
+    takenIds: earlier.takenIds,
+    entryCostsTaken: earlier.entryCostsTaken,
+    cited: earlier.cited,
+    footprint,
+    corrective: true,
+  });
+  let resolved: Resolved[] = [];
+  if (parsed.replaces !== undefined) {
+    if (awaiting.has(parsed.replaces.file)) resolved = [{ file: parsed.replaces.file, how: "replaced" }];
+    else {
+      fail(
+        null,
+        parsed.replaces.line,
+        `cannot replace ${quoted(parsed.replaces.file)}: no rejected batch of that name is awaiting a replacement or a discard in inbox/rejected/`,
+      );
+    }
+  }
+  const corrections: Correction[] = [];
+  for (const { position, line, command } of parsed.commands) {
+    if (command.kind === "correct") corrections.push({ file: "", command: position, line, fix: command });
+    else
+      fail(
+        position,
+        line,
+        `a correction goes in a batch of corrections only: command ${position} is a ${command.kind}`,
+      );
+  }
+  const [firstAt] = corrections;
+  if (earlier.ledger === undefined) {
+    fail(
+      firstAt?.command ?? null,
+      firstAt?.line ?? null,
+      "a correction cannot be checked: the batches already applied (inbox/applied/) were not read",
+    );
+    return rejected();
+  }
+  if ((earlier.appliedInRun ?? 0) > 0) {
+    fail(
+      firstAt?.command ?? null,
+      firstAt?.line ?? null,
+      "a correction goes after the batches of the run are applied: run inbox:ingest, then send the correction",
+    );
+    return rejected();
+  }
+
+  const { ledger } = earlier;
+  const options = {
+    initial: earlier.starting ?? emptyState(state),
+    history: earlier.entry.history,
+    rulesVersion: earlier.rulesVersion,
+    today: earlier.today,
+  };
+  const base = replay(runFiles, ledger, [], options);
+  if (isReplayFailure(base)) {
+    fail(
+      firstAt?.command ?? null,
+      firstAt?.line ?? null,
+      `the batches already applied do not rebuild the state: inbox/applied/${printable(base.file ?? "")}${base.command === null ? "" : `, command ${base.command}`}: ${base.reason}`,
+    );
+    return rejected();
+  }
+  const drift = stateDifferences(state, base.state, "the state", "the applied batches");
+  if (drift.length > 0) {
+    fail(
+      firstAt?.command ?? null,
+      firstAt?.line ?? null,
+      `the state is not what the batches already applied give (${drift.slice(0, 3).join("; ")}${drift.length > 3 ? `; and ${drift.length - 3} more` : ""}): rebuild it first with state:repair (docs/input-format.md › \`state:repair\`)`,
+    );
+    return rejected();
+  }
+
+  // One correction at a time, so that the one that fails is named; the ones accepted before it stay in the replay.
+  const accepted: Correction[] = [];
+  let latest = base;
+  const shown = (r: ReplayResult) => patchesOf(r.lines, earlier.entry.history, r.undated);
+  for (const correction of corrections) {
+    const next = replay(runFiles, ledger, [...accepted, correction], options);
+    if (isReplayFailure(next)) fail(correction.command, correction.line, next.reason);
+    else if (isDeepStrictEqual(shown(next), shown(latest))) {
+      fail(
+        correction.command,
+        correction.line,
+        `cannot correct ${quoted(correction.fix.id)}: it changes nothing in the record`,
+      );
+    } else {
+      accepted.push(correction);
+      latest = next;
+    }
+  }
+  if (issues.length > 0) return rejected();
+
+  const last = corrections[corrections.length - 1];
+  const known = CURRENCIES.flatMap((c) => (state[c]?.lots ?? []) as Lot[]);
+  const rebuilt = withTelemetry(restoreMetadata(latest.state, known, earlier.entry.history), state);
+  const taken = new Map(earlier.entryCostsTaken);
+  for (const [id, amount] of costsTakenBy(latest.lines)) taken.set(id, amount);
+  return {
+    issues: [],
+    notChecked: [],
+    warnings: [],
+    state: rebuilt,
+    opened: new Map(),
+    stops: new Map(),
+    trades: patchesOf(latest.lines, earlier.entry.history, latest.undated).map(({ line, patch }): Trade => ({
+      kind: "correction",
+      command: last.command,
+      line: last.line ?? 1,
+      currency: line.currency,
+      id: line.id,
+      ticker: line.ticker,
+      patch,
+    })),
+    resolved,
+    closed: [],
+    takenIds: earlier.takenIds,
+    entryCostsTaken: taken,
+    cited: earlier.cited,
+    footprint,
+    corrective: true,
   };
 }
 
@@ -560,7 +981,18 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
  * What a command not checked would have changed and is unknown, for the reason of its `not checked`: a stop command
  * changes no cash or lots, only a stop (`stopBlocked`: only the stop of the ticker is what the blocker left unknown).
  */
-function unknownOf(command: Command, silos: readonly Currency[] | undefined, stopBlocked: boolean): string {
+function unknownOf(
+  command: Command,
+  silos: readonly Currency[] | undefined,
+  stopBlocked: boolean,
+  splitBlocked = false,
+): string {
+  if (command.kind === "correct") return "the state it would rebuild is unknown";
+  if (command.kind === "snapshot") return `the ${command.currency} cash and positions it would compare are unknown`;
+  // A split that failed scaled the lots and the stop of its ticker, whatever command now reads them.
+  if (splitBlocked && "ticker" in command)
+    return `the lots and the stop of ${printable(command.ticker)} it would change are unknown`;
+  if (command.kind === "split") return "the lots of the ticker it would change are unknown";
   if (command.kind === "set_stop" || command.kind === "clear_stop") {
     return stopBlocked ? "the stop it would change is unknown" : "the position it would change is unknown";
   }
@@ -584,17 +1016,22 @@ function footprintOf(parsed: ParsedBatch): Footprint[] {
       currencies:
         command.kind === "convert"
           ? [command.from, command.to]
-          : "currency" in command
+          : "currency" in command && command.currency !== undefined
             ? [command.currency]
             : CURRENCIES,
       kind: command.kind,
-      ticker: "ticker" in command ? command.ticker : undefined,
+      // A correction can change any ticker's lots and stop.
+      ticker: command.kind === "correct" ? null : "ticker" in command ? command.ticker : undefined,
     })),
     ...parsed.unread.map((u) => ({
       currencies: u.currencies.length > 0 && u.kind !== "convert" ? u.currencies : CURRENCIES,
       kind: u.kind ?? null,
       ticker:
-        u.kind === "deposit" || u.kind === "withdrawal" || u.kind === "convert" || u.kind === "discard"
+        u.kind === "deposit" ||
+        u.kind === "withdrawal" ||
+        u.kind === "convert" ||
+        u.kind === "discard" ||
+        u.kind === "resolve"
           ? undefined
           : (u.ticker ?? null),
     })),
@@ -610,7 +1047,11 @@ const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean
   sale: { cash: true, lots: true, stop: false },
   set_stop: { cash: false, lots: false, stop: true },
   clear_stop: { cash: false, lots: false, stop: true },
+  split: { cash: false, lots: true, stop: true },
+  snapshot: { cash: false, lots: false, stop: false },
   discard: { cash: false, lots: false, stop: false },
+  resolve: { cash: false, lots: false, stop: false },
+  correct: { cash: true, lots: true, stop: true },
 };
 
 /**
@@ -622,17 +1063,31 @@ const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean
  */
 function dependsOn(footprint: readonly Footprint[], command: Command): boolean {
   const currencies =
-    command.kind === "convert" ? [command.from, command.to] : "currency" in command ? [command.currency] : CURRENCIES;
-  const ticker = "ticker" in command ? command.ticker : undefined;
+    command.kind === "convert"
+      ? [command.from, command.to]
+      : "currency" in command && command.currency !== undefined
+        ? [command.currency]
+        : CURRENCIES;
+  const ticker = command.kind === "correct" ? undefined : "ticker" in command ? command.ticker : undefined;
   const reads = {
-    cash: command.kind === "withdrawal" || command.kind === "convert" || command.kind === "buy",
-    lots: command.kind === "sale" || command.kind === "set_stop" || command.kind === "clear_stop",
+    cash:
+      command.kind === "withdrawal" ||
+      command.kind === "convert" ||
+      command.kind === "buy" ||
+      command.kind === "snapshot",
+    lots:
+      command.kind === "sale" ||
+      command.kind === "set_stop" ||
+      command.kind === "clear_stop" ||
+      command.kind === "split",
     stop: command.kind === "clear_stop",
   };
   return footprint.some((f) => {
     if (!f.currencies.some((c) => currencies.includes(c))) return false;
     const changes = f.kind === null ? { cash: true, lots: true, stop: true } : CHANGES[f.kind];
     if (reads.cash && changes.cash) return true;
+    // A snapshot reads the units of every ticker of its silo, so a file that changed the lots of any is what explains it.
+    if (command.kind === "snapshot" && changes.lots) return true;
     const sameTicker = f.ticker === null || f.ticker === ticker;
     return sameTicker && ((reads.lots && changes.lots) || (reads.stop && changes.stop));
   });
@@ -670,6 +1125,34 @@ function withoutStop(
     .sort(byCommand);
 }
 
+/** One warning per difference a snapshot found: it does not stop the batch, the owner corrects the state with a command. */
+function differenceWarnings(
+  snapshots: readonly {
+    command: number;
+    line: number;
+    currency: Currency;
+    date: string;
+    differences: readonly Difference[];
+  }[],
+): InboxIssue[] {
+  return snapshots.flatMap(({ command, line, currency, date, differences }) =>
+    differences.map((d): InboxIssue => ({ command, line, reason: describeDifference(currency, date, d) })),
+  );
+}
+
+const signed = (n: number, text: string): string => `${n > 0 ? "+" : n < 0 ? "-" : ""}${text}`;
+
+/** A difference in words, as the check and the ingest tell it; its size is what the broker holds less what the engine does. */
+export function describeDifference(currency: Currency, date: string, d: Difference): string {
+  const head = `the ${currency} snapshot as of ${date} differs from the state in`;
+  if (d.kind === "cash") {
+    const size = round(d.broker - d.engine, 2);
+    return `${head} the cash: the broker has ${formatMoney(d.broker)} ${currency}, the engine ${formatMoney(d.engine)} ${currency} (${signed(size, `${formatMoney(Math.abs(size))} ${currency}`)})`;
+  }
+  const size = round(d.broker - d.engine, 8);
+  return `${head} ${printable(d.ticker)}: the broker has ${d.broker} units, the engine ${d.engine} (${signed(size, String(Math.abs(size)))})`;
+}
+
 /** A file of the inbox: its text, or why it could not be read (a symbolic link, which is reported and never followed). */
 export type InboxFile = { name: string; text: string } | { name: string; problem: string };
 
@@ -685,6 +1168,8 @@ export interface FileCheck {
   trades: Trade[];
   /** The rejected batches a clean file replaces or discards. */
   resolved: Resolved[];
+  /** The pending escalations a clean file closes. */
+  closed: ClosedEscalation[];
   /** The text of the file, absent for one that could not be read. */
   text?: string;
 }
@@ -708,10 +1193,14 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
   const stops = new Map<string, StopSource | null>();
   const rejected: RejectedFile[] = [];
   let awaiting: ReadonlySet<string> = run.awaiting;
+  let escalations: ReadonlySet<string> = run.escalations;
   let takenIds: ReadonlySet<string> = run.takenIds;
   let entryCostsTaken: ReadonlyMap<string, Money> = run.entryCostsTaken;
   // What the history already cites is in `run.entry.history`; these are the proposals cited by this run's own buys.
   let cited: ReadonlySet<string> = new Set();
+  // The batches applied so far, in order: those before the run, then each clean file (a correction replays them).
+  const ledger = run.ledger === undefined ? undefined : [...run.ledger];
+  let appliedInRun = 0;
   const checks = files.map((file): FileCheck => {
     const { name } = file;
     if ("problem" in file) {
@@ -724,6 +1213,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
         clean: false,
         trades: [],
         resolved: [],
+        closed: [],
       };
     }
     const { text } = file;
@@ -733,18 +1223,29 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       rejected,
       tickers,
       awaiting,
+      escalations,
       takenIds,
       entryCostsTaken,
       rulesVersion: run.rulesVersion,
       cited,
       entry: run.entry,
+      today: run.today,
+      ...(ledger !== undefined ? { ledger } : {}),
+      ...(run.starting !== undefined ? { starting: run.starting } : {}),
+      name,
+      appliedInRun,
+      ...(run.overrides?.get(name) !== undefined ? { overrides: run.overrides.get(name) } : {}),
+      ...(run.pins !== undefined ? { pins: run.pins } : {}),
     });
     const clean = checked.issues.length === 0 && checked.notChecked.length === 0;
     if (!clean) {
       rejected.push({ file: name, footprint: checked.footprint });
     } else {
       current = checked.state;
+      ledger?.push({ name, text });
+      if (!checked.corrective) appliedInRun += 1;
       awaiting = new Set([...awaiting].filter((name) => !checked.resolved.some((r) => r.file === name)));
+      escalations = new Set([...escalations].filter((id) => !checked.closed.some((c) => c.id === id)));
       takenIds = checked.takenIds;
       entryCostsTaken = checked.entryCostsTaken;
       cited = checked.cited;
@@ -770,6 +1271,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       clean,
       trades: checked.trades,
       resolved: checked.resolved,
+      closed: checked.closed,
       text,
     };
   });

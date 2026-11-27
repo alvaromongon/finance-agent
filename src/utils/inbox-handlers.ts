@@ -8,6 +8,7 @@
 import {
   CURRENCIES,
   type Currency,
+  type Difference,
   type Lot,
   type PortfolioSnapshot,
   type Position,
@@ -124,6 +125,49 @@ export interface Conversion<F extends Currency = Currency, T extends Currency = 
   date?: string;
 }
 
+/** A split ratio: `new` units after the split for each `old` units before it (4 for 1; 1 for 10 is a reverse split). */
+export interface SplitRatio {
+  new: number;
+  old: number;
+}
+
+/**
+ * A split (or reverse split) of a ticker (#137): the units of every open lot of it are multiplied by `ratio.new / ratio.old`
+ * and its entry price and stop divided by it, in every silo that holds it. It changes no cash, so it has no amount and
+ * no currency (as a `clear_stop`, the silo is the one that holds the ticker). A corporate action other than a split is
+ * a different command (the glossary's *Corporate action*).
+ */
+export interface Split {
+  kind: "split";
+  ticker: Ticker;
+  /** YYYY-MM-DD: the day the split took effect. */
+  date: string;
+  ratio: SplitRatio;
+}
+
+/** A position as the broker lists it in a snapshot: a ticker and the units held. */
+export interface BrokerPosition {
+  ticker: Ticker;
+  units: number;
+}
+
+/**
+ * What the broker shows of one silo on a date (#138): its cash and the units of each position it holds. It is the
+ * owner's way to say "this is what the broker has": the handler compares it with the engine's state, tells each
+ * difference and changes no cash, lot or stop; the owner corrects a difference with a command. It records the day it is
+ * as of, which is what the silo's staleness is measured from.
+ */
+export interface Snapshot<C extends Currency = Currency> {
+  kind: "snapshot";
+  currency: C;
+  /** YYYY-MM-DD: the day the broker's figures are as of; not in the future. */
+  date: string;
+  /** The broker's available cash. */
+  cash: number;
+  /** Every position the broker holds; a ticker that is not listed is one the broker does not hold. */
+  positions: readonly BrokerPosition[];
+}
+
 /**
  * Gives up a rejected batch for good (#152): it stays in `inbox/rejected/` as the audit trail and is not named in the
  * digest any more. It changes no cash, lot or stop, so it has no currency.
@@ -134,8 +178,67 @@ export interface Discard {
   file: string;
 }
 
+/** What a pending escalation is closed as: `resolved` (it was answered) or `discarded` (it is given up unanswered). */
+export const ESCALATION_OUTCOMES = ["resolved", "discarded"] as const;
+export type EscalationOutcome = (typeof ESCALATION_OUTCOMES)[number];
+
+/** The id of a pending escalation: the name of its file in `logs/pending/` without `.md` (`<date>-<ticker>`). */
+export const ESCALATION_ID = /^\d{4}-\d{2}-\d{2}-[a-z0-9.-]+$/;
+
+/** The longest note a `resolve` may carry: it is kept in the store, not a place for a report. */
+export const NOTE_MAX_LENGTH = 500;
+
+/**
+ * Closes a pending escalation (#141): the signal the engine escalated and left in `logs/pending/` for the reasoner. It
+ * stays in every digest until a `resolve` closes it, answered (`resolved`) or given up (`discarded`). It changes no cash,
+ * lot or stop, so it has no currency; the file stays in `logs/pending/` as the record and the store remembers it was closed.
+ */
+export interface Resolve {
+  kind: "resolve";
+  id: string;
+  outcome: EscalationOutcome;
+  note?: string;
+  /** YYYY-MM-DD: the day it was closed; the day of the run when absent. Not in the future. */
+  date?: string;
+}
+
+/**
+ * Corrects a mistaken record (#139): the buy, the sale, the deposit or the withdrawal that the engine gave `id`, with the
+ * values it should have had. What is left out stays as it was told. The engine does not edit the state: it applies the
+ * batches that were applied again with the corrected record, so every later command is judged against it, and it
+ * writes a `correction` line that points at the original, which stays in the log. It is run by the inbox over the applied
+ * batches (`inbox-replay.ts`), on its own in a batch, and not by a handler of the state: `applyCommand` refuses it.
+ */
+export interface Correct {
+  kind: "correct";
+  /** The id of the record in the decision log: the entry of a buy, the exit of a sale, the line of a deposit or a withdrawal. */
+  id: string;
+  /** The currency the amounts of the command are in: the silo of the record, which a correction does not move. */
+  currency?: Currency;
+  ticker?: Ticker;
+  /** YYYY-MM-DD. */
+  date?: string;
+  units?: number;
+  price?: number;
+  /** A buy or a sale's costs; zero takes the costs away. */
+  costs?: Money;
+  /** A deposit or a withdrawal's amount. */
+  amount?: Money;
+}
+
 export type Command<C extends Currency = Currency> =
-  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Discard;
+  | Deposit<C>
+  | Withdrawal<C>
+  | Conversion
+  | Buy<C>
+  | Sale<C>
+  | SetStop<C>
+  | ClearStop
+  | Split
+  | Snapshot<C>
+  | Discard
+  | Resolve
+  | Correct;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -146,8 +249,8 @@ export type InboxState = { readonly [C in Currency]?: PortfolioSnapshot<C> };
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
  * (`opened`, see `openedKey`, and `lot`, the lot itself): the batch records those, so a `set_stop` knows which
  * lots are the batch's own and `inbox:ingest` has the lot to write down. A sale says the exit of each lot it
- * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again. A discard
- * says which rejected batch it gave up (`discarded`).
+ * touched (`exits`), which `inbox:ingest` records and whose entry costs the next sale must not take again. A split says
+ * which silos it changed and which lots it scaled (`split`). A discard says which rejected batch it gave up (`discarded`).
  */
 export type HandlerResult =
   | {
@@ -160,6 +263,12 @@ export type HandlerResult =
       /** A sale: `sistema` when it follows a sell proposal of the system, `propietario` otherwise (ADR-0009 §8). */
       origin?: DecisionOrigin;
       discarded?: string;
+      /** A resolve: the escalation it closed. */
+      closed?: { id: string; outcome: EscalationOutcome; note?: string; date?: string };
+      /** A split: the silos it changed and the lots it scaled (`openedKey`), so the batch can follow the lots it opened. */
+      split?: { silos: readonly Currency[]; lots: readonly string[] };
+      /** A snapshot: the silo, the day it is as of and each difference found (none when the broker and the engine agree). */
+      snapshot?: { currency: Currency; date: string; differences: readonly Difference[] };
     }
   | { reason: string };
 
@@ -203,10 +312,14 @@ export interface BatchContext {
   entryCostsTaken: ReadonlyMap<string, Money>;
   /** The rejected batches (names in `inbox/rejected/`) still awaiting a replacement or a discard: what a `discard` can name. */
   awaiting: ReadonlySet<string>;
+  /** The ids of the pending escalations (`logs/pending/`) still open: what a `resolve` can name. */
+  escalations: ReadonlySet<string>;
   /** What the rules of an entry read, see `EntryContext`. */
   entry: EntryContext;
   /** Where a `set_stop` or `clear_stop` writes who changed the stop. */
   record?: StopRecord;
+  /** The day of the run, YYYY-MM-DD: a snapshot is not of a day that has not come (the one clock the handlers read). */
+  today: string;
 }
 
 /** Identifies a lot across silos: entry ids are only unique within one. */
@@ -376,7 +489,7 @@ export function convert(state: InboxState, command: Conversion): HandlerResult {
 }
 
 /** The rule an entry id must follow before it reaches a path or a cell: what `newDecisionId` writes, and the example ids. */
-const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+export const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 /**
  * The rule violations of a lot once its initial stop is `stop`: the ones it was opened with that do not depend on the
@@ -715,6 +828,147 @@ export function sale<C extends Currency>(
   };
 }
 
+/** True for a whole number of units, within the units tolerance. */
+const isWhole = (units: number): boolean => Math.abs(units - Math.round(units)) <= UNITS_TOLERANCE;
+
+/**
+ * `lot` after a split of `new` units for `old`: the units open and bought are multiplied by it, the entry price and the
+ * initial stop divided, so what was invested (units x price) and R in cents (units x (price - stop)) are the same. The
+ * entry costs are money paid and do not change. Multiplies first and divides last, so a ratio that divides the units
+ * evenly gives them exactly (30 units, 1 for 10: 3, not 3.0000000000000004).
+ */
+export function splitLot<C extends Currency>(lot: Lot<C>, ratio: SplitRatio): Lot<C> {
+  return {
+    ...lot,
+    units: (lot.units * ratio.new) / ratio.old,
+    entryUnits: (lot.entryUnits * ratio.new) / ratio.old,
+    entryPrice: (lot.entryPrice * ratio.old) / ratio.new,
+    initialStop: lot.initialStop === null ? null : (lot.initialStop * ratio.old) / ratio.new,
+  };
+}
+
+/**
+ * Applies a split to every silo that holds the ticker, all or none: a refusal in one silo returns no state. A lot is
+ * scaled whole (open and bought units); a position follows its lots (volume, average price, current price and stop),
+ * its P/L is an amount and stays. Only units that are whole and would stop being so are refused (a reverse split):
+ * the owner settles the cash in lieu of the fraction with a sale (#137).
+ */
+export function split(state: InboxState, command: Split): HandlerResult {
+  const { ticker, date, ratio } = command;
+  // The parser refuses these too, but the handler is also run by whoever builds a command without it (#132).
+  if (!(ratio.new > 0 && ratio.old > 0 && Number.isFinite(ratio.new) && Number.isFinite(ratio.old))) {
+    return refused(`the split ratio must be greater than zero; got: ${ratio.new} for ${ratio.old}`);
+  }
+  if (ratio.new === ratio.old) {
+    return refused(`a ratio of 1 changes nothing: ${ratio.new} for ${ratio.old} is not a split`);
+  }
+  // A silo the portfolio does not have holds nothing. One that fails to read may hold the ticker, so its error is
+  // what the command reports when no silo that reads has the ticker (as `clear_stop` does).
+  const holding: PortfolioSnapshot[] = [];
+  let unreadable: { reason: string } | undefined;
+  for (const currency of CURRENCIES) {
+    if (state[currency] === undefined) continue;
+    const silo = siloOf(state, currency);
+    if (isRefusal(silo)) unreadable ??= silo;
+    else if (silo.lots.some((l) => l.ticker === ticker && l.units > 0)) holding.push(silo);
+  }
+  if (holding.length === 0) {
+    return unreadable ?? refused(`cannot split ${printable(ticker)}: there is no open lot of it in the portfolio`);
+  }
+  const lots = holding.flatMap((silo) => silo.lots.filter((l) => l.ticker === ticker));
+  const oldest = lots.reduce((min, l) => (l.date < min ? l.date : min), lots[0].date);
+  if (date < oldest) {
+    return refused(
+      `cannot split ${printable(ticker)}: its date ${date} is before the day the oldest open lot was bought (${oldest})`,
+    );
+  }
+  const after = lots.find((l) => l.date > date);
+  if (after !== undefined) {
+    return refused(
+      `cannot split ${printable(ticker)}: lot ${quoted(after.entryId)} was bought on ${after.date}, after the split's date ${date}: it is already at the prices after the split`,
+    );
+  }
+  for (const l of lots) {
+    const scaled = splitLot(l, ratio).units;
+    if (isWhole(l.units) && !isWhole(scaled)) {
+      return refused(
+        `cannot split ${printable(ticker)} ${ratio.new} for ${ratio.old}: lot ${quoted(l.entryId)} would be left with ${scaled} units, not a whole number: sell the fraction first (the cash in lieu is settled with a sale)`,
+      );
+    }
+  }
+  let next = state;
+  for (const silo of holding) {
+    const position = (p: Position): Position =>
+      p.ticker !== ticker
+        ? p
+        : {
+            ...p,
+            volume: (p.volume * ratio.new) / ratio.old,
+            avgPrice: (p.avgPrice * ratio.old) / ratio.new,
+            currentPrice: (p.currentPrice * ratio.old) / ratio.new,
+            // A position with no stop (`stopOf`) keeps whatever it holds in its cell.
+            stopLoss: stopOf(p) === null ? p.stopLoss : (p.stopLoss! * ratio.old) / ratio.new,
+          };
+    next = withSilo(next, {
+      ...silo,
+      lots: silo.lots.map((l) => (l.ticker === ticker ? splitLot(l, ratio) : l)),
+      positions: silo.positions.map(position),
+    });
+  }
+  return {
+    state: next,
+    split: {
+      silos: holding.map((silo) => silo.currency),
+      lots: holding.flatMap((silo) =>
+        silo.lots.filter((l) => l.ticker === ticker).map((l) => openedKey(silo.currency, l.entryId)),
+      ),
+    },
+  };
+}
+
+/** The units the silo holds of `ticker`, the sum of its positions. */
+const heldUnits = (silo: PortfolioSnapshot, ticker: Ticker): number =>
+  silo.positions.filter((p) => p.ticker === ticker).reduce((sum, p) => sum + p.volume, 0);
+
+/**
+ * Compares what the broker shows of a silo with the engine's state (#138) and records the day and the differences on
+ * the silo. It changes no cash, position or lot: the broker is the owner's fact, but applying it silently would hide a
+ * missed or wrongly entered trade, so the owner corrects a difference with a command. The differences are the cash
+ * (to the cent) and each ticker either side holds whose units differ by more than the units tolerance.
+ */
+export function snapshot<C extends Currency>(
+  state: InboxState,
+  command: Snapshot<C>,
+  { today }: Pick<BatchContext, "today">,
+): HandlerResult {
+  const silo = siloOf(state, command.currency);
+  if (isRefusal(silo)) return silo;
+  if (command.date > today) {
+    return refused(`the snapshot's date ${command.date} is in the future (today is ${today})`);
+  }
+  // The parser refuses a repeated ticker too, but the handler is also run by whoever builds a command without it (#132).
+  const listed = new Set<Ticker>();
+  for (const { ticker } of command.positions) {
+    if (listed.has(ticker))
+      return refused(`${quoted(ticker)} is listed twice in the snapshot: a ticker is one position`);
+    listed.add(ticker);
+  }
+  const differences: Difference<C>[] = [];
+  const broker = countedInCents(command.cash, `the ${command.currency} cash of the snapshot`, command.currency);
+  if (broker !== silo.cash) differences.push({ kind: "cash", broker, engine: silo.cash });
+  const tickers = [...listed, ...silo.positions.map((p) => p.ticker).filter((t) => !listed.has(t))];
+  for (const ticker of new Set(tickers)) {
+    const units = command.positions.find((p) => p.ticker === ticker)?.units ?? 0;
+    const engine = heldUnits(silo, ticker);
+    if (Math.abs(units - engine) > UNITS_TOLERANCE)
+      differences.push({ kind: "position", ticker, broker: units, engine });
+  }
+  return {
+    state: withSilo(state, { ...silo, reconciled: { date: command.date, recordedOn: today, differences } }),
+    snapshot: { currency: command.currency, date: command.date, differences },
+  };
+}
+
 export function discard(
   command: Discard,
   { awaiting }: Pick<BatchContext, "awaiting">,
@@ -726,6 +980,30 @@ export function discard(
     );
   }
   return { state, discarded: command.file };
+}
+
+export function resolve(
+  command: Resolve,
+  { escalations, today }: Pick<BatchContext, "escalations" | "today">,
+  state: InboxState,
+): HandlerResult {
+  if (!escalations.has(command.id)) {
+    return refused(
+      `cannot resolve ${quoted(command.id)}: no pending escalation of that id is open (it does not exist in logs/pending/ or it is already closed)`,
+    );
+  }
+  if (command.date !== undefined && command.date > today) {
+    return refused(`the date ${command.date} is in the future (today is ${today})`);
+  }
+  return {
+    state,
+    closed: {
+      id: command.id,
+      outcome: command.outcome,
+      ...(command.note !== undefined ? { note: command.note } : {}),
+      ...(command.date !== undefined ? { date: command.date } : {}),
+    },
+  };
 }
 
 /** A lot the batch opened whose initial stop is not below its entry price, so its R would be zero or negative. */
@@ -788,8 +1066,17 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return setStop(state, command, context);
       case "clear_stop":
         return clearStop(state, command, context);
+      case "split":
+        return split(state, command);
+      case "snapshot":
+        return snapshot(state, command, context);
       case "discard":
         return discard(command, context, state);
+      case "resolve":
+        return resolve(command, context, state);
+      case "correct":
+        // The runner of the inbox applies it over the applied batches (`checkCorrections`); there is no state to hand it.
+        return refused("a correct command is run on its own in a batch, over the batches already applied");
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

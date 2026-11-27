@@ -1,10 +1,17 @@
 // CLI of the inbox (#131, #132, spec #124): `inbox:check` runs the batches in `inbox/` over the current portfolio and
 // changes nothing; `inbox:ingest` applies them. Both run the same code, `runFiles` over the same plan: `check` is
 // `ingest` without the write, so the batches one accepts and refuses are the batches the other does.
+import { openEscalationsOf } from "./inbox-escalations.js";
 import { awaitingOf, sha256 } from "./inbox-rejected.js";
-import { moveBatch, readInbox, readRejected } from "./inbox-store.js";
+import { moveBatch, readApplied, readInbox, readRejected } from "./inbox-store.js";
 import { readStoreIfAny, saveStore, storeFromPortfolioFile, type PortfolioStore } from "./portfolio-store.js";
-import { appendDecisions, readDecisionHistory, readRulesVersion, readWatchlist } from "./vault-io.js";
+import {
+  appendDecisions,
+  readDecisionHistory,
+  readPendingEscalations,
+  readRulesVersion,
+  readWatchlist,
+} from "./vault-io.js";
 import { config } from "./config.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { validateDecision, type Decision } from "./decisions.js";
@@ -13,6 +20,7 @@ import type { Ticker } from "./ticker.js";
 import type { PriceSource } from "./utils/benchmark.js";
 import { atr14d } from "./utils/technicals.js";
 import { parseBatch } from "./utils/inbox-parse.js";
+import { isCorrection, ledgerOrder, type LedgerFile } from "./utils/inbox-replay.js";
 import { entryCostsTaken } from "./utils/portfolio-lots.js";
 import { decisionsOf } from "./utils/inbox-decisions.js";
 import {
@@ -26,6 +34,7 @@ import {
 import type { EntryContext, InboxState } from "./utils/inbox-handlers.js";
 import { printable } from "./utils/printable.js";
 import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
+import { describeProblems, resolveConfiguration } from "./configuration.js";
 
 export interface InboxOutcome {
   lines: string[];
@@ -45,6 +54,9 @@ interface Plan {
   awaiting: string[];
   /** Why `inbox/rejected/` or a file in it was not read; said, never a reason to stop the run (the batches are not rejected for it). */
   rejectedProblems: string[];
+  /** The pending escalations (`logs/pending/`) with their text, and which of them are still open before this run's batches. */
+  pending: { id: string; text: string }[];
+  escalations: string[];
   run: InboxRun;
 }
 
@@ -120,6 +132,21 @@ async function readRejectedBatches(): Promise<{ batches: { name: string; text: s
 }
 
 /**
+ * The batches already applied, in the order they were, for a correction to replay (#139): `inbox/applied/` and the ones an
+ * earlier run applied and could not move. Read only when a file of the run corrects something. A folder that cannot be
+ * read is said and gives no ledger, so the correction is refused for that (the batches are not rejected for it).
+ */
+async function readLedger(waiting: readonly InboxFile[]): Promise<{ ledger?: LedgerFile[]; problems: string[] }> {
+  try {
+    const { batches, unread } = await readApplied();
+    const apart = waiting.flatMap((file) => ("text" in file ? [{ name: file.name, text: file.text }] : []));
+    return { ledger: ledgerOrder([...batches, ...apart]), problems: unread.map((u) => u.problem) };
+  } catch (err) {
+    return { problems: [`inbox/applied could not be read: ${err instanceof Error ? err.message : String(err)}`] };
+  }
+}
+
+/**
  * Runs the files of the inbox over `store`. The state is read once per run, by the caller; what is read here is the
  * history of the decision log and the `version` of `strategies/base.md`, which a batch cannot be applied without:
  * `check` goes on without it (it cannot change what a batch accepts) and `ingest` refuses with the reason.
@@ -128,26 +155,37 @@ async function plan(
   all: InboxFile[],
   store: PortfolioStore,
   mustKnowRules: boolean,
+  now: Date,
   atrSource?: PriceSource,
 ): Promise<Plan> {
-  const [history, rulesVersion, { batches: rejected, problems: rejectedProblems }] = await Promise.all([
+  const [history, rulesVersion, { batches: rejected, problems: rejectedProblems }, pending] = await Promise.all([
     readDecisionHistory(),
     readRulesVersion().catch((err) => {
       if (mustKnowRules) throw err;
       return "";
     }),
     readRejectedBatches(),
+    readPendingEscalations(),
   ]);
   const isWaiting = (file: InboxFile): boolean =>
     "text" in file && store.unmoved.some((u) => u.file === file.name && u.sha256 === sha256(file.text));
   const awaiting = awaitingOf(rejected, store.resolvedRejections);
+  const escalations = openEscalationsOf(pending, store.closedEscalations);
   const toRun = all.filter((file) => !isWaiting(file));
+  const corrects = toRun.some((file) => "text" in file && isCorrection(parseBatch(file.text)));
+  const { ledger, problems: ledgerProblems } = corrects
+    ? await readLedger(all.filter(isWaiting))
+    : { ledger: undefined, problems: [] };
   const run = runFiles(stateOf(store), toRun, {
     awaiting: new Set(awaiting),
+    escalations: new Set(escalations),
     rulesVersion,
     takenIds: new Set(history.map((d) => d.id)),
     entryCostsTaken: entryCostsTaken(history),
     entry: await entryContext(toRun, store, history, mustKnowRules, atrSource),
+    today: now.toISOString().slice(0, 10),
+    ...(ledger !== undefined ? { ledger } : {}),
+    ...(store.starting !== undefined ? { starting: store.starting } : {}),
   });
   return {
     waiting: all.filter(isWaiting).map((file) => file.name),
@@ -156,7 +194,9 @@ async function plan(
     rulesVersion,
     rejected,
     awaiting,
-    rejectedProblems,
+    rejectedProblems: [...rejectedProblems, ...ledgerProblems],
+    pending,
+    escalations,
     run,
   };
 }
@@ -177,26 +217,39 @@ const awaitingLine = (awaiting: readonly string[]): string[] =>
       ]
     : [];
 
+/** Not an error of the inbox: the pending escalations (`logs/pending/`) no command has closed are named until one does. */
+const escalationsLine = (open: readonly string[]): string[] =>
+  open.length > 0
+    ? [
+        `${open.length} pending escalation(s) awaiting a resolve command: ${open.map((id) => `logs/pending/${printable(id)}.md`).join(", ")}.`,
+      ]
+    : [];
+
 /**
  * Checks the inbox and returns what to print and the exit code: 0 for a clean inbox, 1 for any error. It makes no
  * network call: the ATR the stop distance of a buy is judged with is for `ingest` (which writes the flag), and a flag
  * changes no verdict.
  */
-export async function checkInbox(): Promise<InboxOutcome> {
+export async function checkInbox(now: Date = new Date()): Promise<InboxOutcome> {
   const all = await readInbox();
   if (all.length === 0) {
     // An empty inbox can still have a rejected batch waiting: it is named, as with any other run.
-    const [{ batches, problems }, existing] = await Promise.all([readRejectedBatches(), readStoreIfAny()]);
+    const [{ batches, problems }, existing, pending] = await Promise.all([
+      readRejectedBatches(),
+      readStoreIfAny(),
+      readPendingEscalations(),
+    ]);
     return {
       lines: [
         "Inbox is empty: nothing to check.",
         ...problems,
         ...awaitingLine(awaitingOf(batches, existing?.resolvedRejections ?? [])),
+        ...escalationsLine(openEscalationsOf(pending, existing?.closedEscalations ?? [])),
       ],
       exitCode: 0,
     };
   }
-  const planned = await plan(all, (await readStoreIfAny()) ?? (await storeFromPortfolioFile()), false);
+  const planned = await plan(all, (await readStoreIfAny()) ?? (await storeFromPortfolioFile()), false, now);
   const { checks } = planned.run;
   const problems = renderIssues(checks);
   // Warnings never change the exit code: a position without a stop is for the owner to know, not a rejected batch.
@@ -207,9 +260,11 @@ export async function checkInbox(): Promise<InboxOutcome> {
       : [];
   // The ones a clean file of this inbox replaces or discards are settled by it, so they are not waiting.
   const settled = new Set(checks.flatMap((c) => (c.clean ? c.resolved.map((r) => r.file) : [])));
+  const closing = new Set(checks.flatMap((c) => (c.clean ? c.closed.map((x) => x.id) : [])));
   const awaiting = [
     ...planned.rejectedProblems,
     ...awaitingLine(planned.awaiting.filter((name) => !settled.has(name))),
+    ...escalationsLine(planned.escalations.filter((id) => !closing.has(id))),
   ];
   if (problems.length === 0) {
     return {
@@ -225,7 +280,7 @@ export async function checkInbox(): Promise<InboxOutcome> {
  * log does not hold by id, and returns the store without them. The store has them so that the state and the lines it
  * needs are committed together (see `PortfolioStore.pendingDecisions`).
  */
-async function writePendingDecisions(store: PortfolioStore): Promise<PortfolioStore> {
+export async function writePendingDecisions(store: PortfolioStore): Promise<PortfolioStore> {
   if (store.pendingDecisions.length === 0) return store;
   const known = new Set((await readDecisionHistory()).map((d) => d.id));
   await appendDecisions(
@@ -255,6 +310,11 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
     return { lines: ["Inbox is empty: nothing to apply."], exitCode: 0 };
   }
 
+  // The strategy's rules version is configuration (#142): an invalid file is named in the outcome while the batches are applied
+  // with the last valid version (or refused, with the errors, with none). A valid one is saved as the last valid version
+  // together with the state, below: a run that applies nothing writes nothing.
+  const { problems: configurationProblems } = await resolveConfiguration(["strategies/base.md"], { save: false });
+
   const {
     run,
     history,
@@ -263,7 +323,8 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
     store,
     rejected: inRejected,
     rejectedProblems,
-  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true, atrSource);
+    pending,
+  } = await plan(all, stored ?? (await storeFromPortfolioFile()), true, now, atrSource);
   const clean = run.checks.filter((c) => c.clean);
   const rejected = run.checks.filter((c) => !c.clean && c.text !== undefined);
   const unreadable = run.checks.filter((c) => !c.clean && c.text === undefined);
@@ -307,8 +368,24 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
           })),
         ),
       ],
+      // What a clean batch closed is closed with the state it was applied with; the file stays in `logs/pending/`.
+      closedEscalations: [
+        ...store.closedEscalations,
+        ...clean.flatMap((c) =>
+          c.closed.map(({ id, outcome, note, date }) => ({
+            id,
+            sha256: sha256(pending.find((p) => p.id === id)?.text ?? ""),
+            outcome,
+            ...(note !== undefined ? { note } : {}),
+            date: date ?? now.toISOString().slice(0, 10),
+            by: c.name,
+            at: now.toISOString(),
+          })),
+        ),
+      ],
     };
     await saveStore(committed);
+    await resolveConfiguration(["strategies/base.md"]);
     await appendDecisions(lines);
   }
 
@@ -327,11 +404,14 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
     await saveStore({ ...committed, unmoved: [], pendingDecisions: [] });
   }
 
+  const closedCount = clean.reduce((sum, c) => sum + c.closed.length, 0);
   const files = (names: readonly string[]): string => names.map((n) => `inbox/${printable(n)}`).join(", ");
   const lines = [
+    ...describeProblems(configurationProblems).map((line) => `WARNING, configuration: ${line}.`),
     ...rejectedProblems,
     ...(applied.length > 0 ? [`Applied ${applied.length} batch(es): ${files(applied)}.`] : []),
     ...renderWarnings(clean),
+    ...(closedCount > 0 ? [`Closed ${closedCount} pending escalation(s).`] : []),
     ...(rejected.length > 0
       ? [
           ...renderIssues(rejected),

@@ -57,6 +57,10 @@ export const DECISION_TYPES = [
   "deposit",
   "withdrawal",
   "fx_conversion",
+  "split",
+  "reconcile",
+  "correction",
+  "repair",
 ] as const;
 
 export type DecisionOrigin = (typeof DECISION_ORIGINS)[number];
@@ -69,7 +73,7 @@ export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx
 /**
  * What the owner narrates and records with `decision:record`. A buy and a sale (the `entry` and `exit` decisions) are
  * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry. A currency
- * conversion is the `convert` command of the inbox too (#135).
+ * conversion is the `convert` command of the inbox too (#135), a split is the `split` command (#137) and a reconciliation with the broker is the `snapshot` command (#138).
  */
 export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
@@ -95,6 +99,32 @@ export interface Decision {
   amount?: number;
   /** `fx_conversion`: target currency per unit of source, before fee. */
   fx_rate?: number;
+  /**
+   * `split`: the units after the split per unit before it (4 for a 4 for 1 split, 0.1 for a 1 for 10 reverse split).
+   * The line carries the ticker, the silo (`currency`) whose lots it scaled and the date it took effect (#137).
+   */
+  split_ratio?: number;
+  /**
+   * `reconcile`: one difference a snapshot of the broker showed (#138). `broker` and `engine` are what each side held on
+   * the line's date (the cash in the silo currency when the ticker is null, the units of the ticker otherwise) and
+   * `difference` is `broker - engine`, positive when the broker held more. The state was not changed by it.
+   */
+  broker?: number;
+  engine?: number;
+  difference?: number;
+  /**
+   * `correction` (#139): the id of the line it corrects. The line never replaces the original in the file: the history
+   * holds both, and `withCorrections` is how a reader sees the original with the corrected values.
+   */
+  corrects?: string;
+  /**
+   * `correction`: the fields of the corrected line that change, with their new value; `null` removes one (costs, an
+   * initial stop). Only the fields of `PATCH_FIELDS`: what a correction of a trade or a deposit can move.
+   */
+  patch?: Partial<Record<PatchField, string | number | null>>;
+  /** `repair` (#139): how the run of the repair ended, and what it found different (one text each). */
+  result?: RepairResult;
+  differences?: string[];
   /** Costs in the silo currency (FX fee, transaction tax). */
   costs?: Money;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
@@ -176,6 +206,36 @@ export interface Decision {
 /** How a candidate entered the screening (ADR-0012); carried by the candidate, the result and the decision. */
 export type ScreeningSelection = Pick<Decision, "rank" | "score" | "exploration">;
 
+/** How a run of the repair (#139) ended: it rebuilt the store, found it as the audit trail gives it, or refused. */
+export const REPAIR_RESULTS = ["rebuilt", "unchanged", "refused"] as const;
+export type RepairResult = (typeof REPAIR_RESULTS)[number];
+
+/**
+ * What a `correction` can change in the line it corrects (#139): the fields a mistaken buy, sale or deposit sets, and the
+ * ones of the lines they move (the exits of a lot a corrected buy changes). Nothing else (the id, the type, the origin and
+ * the rules) is ever corrected.
+ */
+export const PATCH_FIELDS = [
+  "ticker",
+  "date",
+  "price",
+  "amount",
+  "units",
+  "costs",
+  "pnl",
+  "stop_initial",
+  "entry_price",
+  "entry_units",
+  "entry_costs",
+  "entry_date",
+  "lot_units_left",
+] as const;
+export type PatchField = (typeof PATCH_FIELDS)[number];
+/** The fields that are text in a patch; the rest are numbers (`null` removes any of them but the ticker and the date). */
+const PATCH_TEXT_FIELDS: readonly PatchField[] = ["ticker", "date", "entry_date"];
+/** The fields a correction may remove: an entry with no costs and no stop is a valid line. */
+const PATCH_REMOVABLE: readonly PatchField[] = ["costs", "stop_initial", "entry_costs"];
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const KNOWN_FIELDS = new Set<string>([
@@ -191,6 +251,14 @@ const KNOWN_FIELDS = new Set<string>([
   "regime",
   "amount",
   "fx_rate",
+  "split_ratio",
+  "broker",
+  "engine",
+  "difference",
+  "corrects",
+  "patch",
+  "result",
+  "differences",
   "costs",
   "pnl",
   "stop_initial",
@@ -239,6 +307,8 @@ const REQUIRED_NUMBERS: Partial<Record<DecisionType, readonly (keyof Decision)[]
   deposit: ["amount"],
   withdrawal: ["amount"],
   fx_conversion: ["amount", "fx_rate", "costs"],
+  split: ["split_ratio"],
+  reconcile: ["broker", "engine", "difference"],
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -346,6 +416,10 @@ export function validateDecision(raw: unknown): Decision {
   const type = raw.type as DecisionType;
   if (FLOW_TYPES.includes(type)) {
     if (raw.ticker != null) errors.push(`ticker must be null in ${type}`);
+  } else if ((type === "reconcile" || type === "correction") && raw.ticker == null) {
+    // The difference of a snapshot in the cash of the silo, and the correction of a deposit, have no ticker.
+  } else if (type === "repair") {
+    if (raw.ticker != null) errors.push("ticker must be null in repair");
   } else {
     const checked = checkTicker(raw.ticker);
     if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
@@ -355,6 +429,7 @@ export function validateDecision(raw: unknown): Decision {
     "price",
     "amount",
     "fx_rate",
+    "split_ratio",
     "stop_initial",
     "stop",
     "target",
@@ -382,6 +457,35 @@ export function validateDecision(raw: unknown): Decision {
     }
   }
   if (raw.units != null && type !== "entry" && type !== "exit") errors.push("units only goes in entry or exit");
+  if (raw.split_ratio != null && type !== "split") errors.push("split_ratio only goes in split");
+  // What a snapshot found is a number of any size: the units or cash a side holds may be zero, the difference negative.
+  for (const field of ["broker", "engine", "difference"] as const) {
+    const v = raw[field];
+    if (v == null) continue;
+    if (type !== "reconcile") errors.push(`${field} only goes in reconcile`);
+    else if (typeof v !== "number" || !Number.isFinite(v) || (field !== "difference" && v < 0)) {
+      errors.push(`${field} must be a number${field === "difference" ? "" : " >= 0"}; got: ${JSON.stringify(v)}`);
+    }
+  }
+  if (type === "correction") {
+    if (typeof raw.corrects !== "string" || raw.corrects.trim() === "")
+      errors.push("corrects is required in correction");
+    errors.push(...patchProblems(raw.patch));
+  } else {
+    if (raw.corrects != null) errors.push("corrects only goes in correction");
+    if (raw.patch != null) errors.push("patch only goes in correction");
+  }
+  if (type === "repair") {
+    if (!REPAIR_RESULTS.includes(raw.result as RepairResult)) {
+      errors.push(`result must be one of [${REPAIR_RESULTS.join(", ")}]; got: ${JSON.stringify(raw.result)}`);
+    }
+    if (raw.differences != null && !isStringList(raw.differences)) {
+      errors.push("differences must be a list of non-empty strings");
+    }
+  } else {
+    if (raw.result != null) errors.push("result only goes in repair");
+    if (raw.differences != null) errors.push("differences only goes in repair");
+  }
   if (raw.pnl != null) {
     if (typeof raw.pnl !== "number" || !Number.isFinite(raw.pnl))
       errors.push(`pnl must be a number; got: ${JSON.stringify(raw.pnl)}`);
@@ -514,6 +618,9 @@ export function validateDecision(raw: unknown): Decision {
   return {
     ...rest,
     ...(decision.ticker != null ? { ticker: parseTicker(decision.ticker) } : {}),
+    ...(decision.patch?.ticker != null
+      ? { patch: { ...decision.patch, ticker: parseTicker(decision.patch.ticker) } }
+      : {}),
     // Settled money is whole cents from here on, whatever the line or the owner wrote.
     ...(decision.costs != null ? { costs: money(decision.costs, decision.currency) } : {}),
     ...(decision.pnl != null ? { pnl: money(decision.pnl, decision.currency) } : {}),
@@ -522,6 +629,53 @@ export function validateDecision(raw: unknown): Decision {
       ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
       : {}),
   };
+}
+
+/** What is wrong with the `patch` of a correction, one text per problem: empty for a patch a reader can apply. */
+function patchProblems(patch: unknown): string[] {
+  if (!isObj(patch) || Object.keys(patch).length === 0)
+    return ["patch is required in correction: the fields that change"];
+  const errors: string[] = [];
+  for (const [field, value] of Object.entries(patch)) {
+    if (!(PATCH_FIELDS as readonly string[]).includes(field)) {
+      errors.push(`patch.${field} cannot be corrected (one of [${PATCH_FIELDS.join(", ")}])`);
+    } else if (value === null) {
+      if (!PATCH_REMOVABLE.includes(field as PatchField)) errors.push(`patch.${field} cannot be removed`);
+    } else if (PATCH_TEXT_FIELDS.includes(field as PatchField)) {
+      if (field === "ticker") {
+        const checked = checkTicker(value);
+        if ("problem" in checked) errors.push(`patch.ticker: ${checked.problem}`);
+      } else if (typeof value !== "string" || !DATE_RE.test(value)) {
+        errors.push(`patch.${field} must be YYYY-MM-DD; got: ${JSON.stringify(value)}`);
+      }
+    } else if (typeof value !== "number" || !Number.isFinite(value) || (field !== "pnl" && value < 0)) {
+      errors.push(`patch.${field} must be a number${field === "pnl" ? "" : " >= 0"}; got: ${JSON.stringify(value)}`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * The history with every `correction` applied (#139): each line a correction names reads as it reads after the correction,
+ * the later correction of a line winning over the earlier. The correction lines stay in the list, in their place, and
+ * the file they are read from keeps the original lines: nothing is erased. A correction of a line that is not in the
+ * list (an archived quarter that is not readable, a line that was never written) changes nothing.
+ */
+export function withCorrections(decisions: readonly Decision[]): Decision[] {
+  if (!decisions.some((d) => d.type === "correction")) return [...decisions];
+  const effective = new Map<string, Decision>();
+  for (const d of decisions) if (d.type !== "correction") effective.set(d.id, d);
+  for (const c of decisions) {
+    const target = c.type === "correction" && c.corrects !== undefined ? effective.get(c.corrects) : undefined;
+    if (target === undefined || c.patch === undefined) continue;
+    const next: Record<string, unknown> = { ...target };
+    for (const [field, value] of Object.entries(c.patch)) {
+      if (value === null) delete next[field];
+      else next[field] = value;
+    }
+    effective.set(target.id, next as unknown as Decision);
+  }
+  return decisions.map((d) => (d.type === "correction" ? d : effective.get(d.id)!));
 }
 
 export { newDecisionId };
@@ -547,7 +701,7 @@ export function asHorizon(h: unknown): Horizon | undefined {
 
 /**
  * System decision from a reasoner recommendation (heartbeat via API or
- * pending:resolve) and the ticket the engine computed. A blocked
+ * pending:record) and the ticket the engine computed. A blocked
  * BUY is recorded as `buy_blocked` with its reasons: not acting is a decision
  * too. A SELL or ADJUST_STOP the engine cannot carry out leaves the position
  * as it was, so it is a `hold`, as in the Monday Briefing. Without an open
@@ -700,7 +854,7 @@ export interface OwnerDecisionInput {
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
-  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion";
+  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion" | "split" | "reconcile";
 
   if (type === "entry" || type === "exit") {
     errors.push(
@@ -709,6 +863,14 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   } else if (type === "fx_conversion") {
     errors.push(
       `a currency conversion is told to the engine with a convert command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (type === "split") {
+    errors.push(
+      `a split is told to the engine with a split command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (type === "reconcile") {
+    errors.push(
+      `a reconciliation is told to the engine with a snapshot command in inbox/ (docs/input-format.md › \`inbox/\`), not to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
     );
   } else if (!OWNER_TYPES.includes(type)) {
     errors.push(`type must be one of [${OWNER_TYPES.join(", ")}]; got: ${JSON.stringify(raw.type)}`);

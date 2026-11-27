@@ -87,6 +87,28 @@ export const en = {
     blocked: (reasons: string) => `BLOCKED (${reasons})`,
   },
 
+  /** The warning for a configuration file that does not validate (#142): in every heartbeat digest and the briefing email. */
+  configurationWarning: {
+    label: "configuration that does not validate",
+    intro: [
+      `## A configuration file does not validate`,
+      ``,
+      `The engine refused the file(s) below, with every error it found. A refused file changes nothing: the engine does not`,
+      `read it.`,
+      ``,
+    ],
+    usingLastValid: (file: string) =>
+      `- \`${file}\`: the engine runs on its **last valid version** (\`state/config/${file}\`).`,
+    noLastValid: (file: string) =>
+      `- \`${file}\`: there is **no last valid version yet**, so what needs this file refuses to run.`,
+    error: (field: string, reason: string) => `  - ${field}: ${reason}`,
+    outro: [
+      ``,
+      `Fix the file (\`docs/input-format.md#configuration-files\`). The notice stays in every digest until the first run after a`,
+      `valid edit.`,
+    ],
+  },
+
   heartbeatDigest: {
     subject: (currency: string, sections: string) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
@@ -96,6 +118,11 @@ export const en = {
       unreadableCells: "cell that cannot be counted",
       noStop: "position without a stop",
       rejectedBatches: "rejected batch",
+      pendingEscalations: "pending escalation",
+      storeUnreadable: "state file that does not read",
+      stale: "stale portfolio",
+      differences: "difference with the broker",
+      reconciled: "snapshot without differences",
       tightStops: "tight stop",
       armed: "armed breakout",
       escalated: "to analysis",
@@ -158,6 +185,68 @@ export const en = {
       `Replace each with a new batch that starts with \`replaces: <file>\`, or give it up with a \`discard\` command`,
       `(\`file: <file>\`) in \`inbox/\` (see \`docs/input-format.md\`). The file stays in \`inbox/rejected/\` as the audit`,
       `trail. The notice stays in every digest until you do.`,
+    ],
+    pendingEscalationsIntro: [
+      `## Pending escalations awaiting an answer`,
+      ``,
+      `The engine escalated these signals and left them in \`logs/pending/\` for the reasoner. A pending escalation is never`,
+      `forgotten: it stays here until you close it:`,
+      ``,
+    ],
+    pendingEscalationsLine: (id: string) => `- \`logs/pending/${id}.md\``,
+    pendingEscalationsOutro: [
+      ``,
+      `Close each with a \`resolve\` command (\`id: <id>\`, \`outcome: resolved\` or \`discarded\`) in \`inbox/\` (see`,
+      `\`docs/input-format.md\`). The file stays in \`logs/pending/\` as the record. The notice stays in every digest until you do.`,
+    ],
+    storeUnreadableIntro: [
+      `## The state file does not read`,
+      ``,
+      `The engine cannot read \`state/portfolio.json\`. The heartbeat keeps watching the stops, but over the **last state`,
+      `that did read** (\`state/portfolio.last-readable.json\`), so a batch applied after it is not in what was checked:`,
+      ``,
+    ],
+    storeUnreadableOutro: [
+      ``,
+      `Rebuild the file with \`npm run state:repair\`, which rebuilds it from the decision log and \`inbox/applied/\` and`,
+      `refuses if they disagree (\`docs/input-format.md\`). The notice stays in every digest until the file reads.`,
+    ],
+    staleIntro: (currency: string) => [
+      `## ${currency} silo: stale`,
+      ``,
+      `The engine integrates with no broker: it can be sure of its state of a silo only up to the last time you compared`,
+      `it with your broker with a \`snapshot\`. A silo with no snapshot is stale, never fresh by default.`,
+      ``,
+    ],
+    staleNone: (currency: string) => `The ${currency} silo has no snapshot of the broker yet.`,
+    staleSince: (currency: string, date: string, days: string) =>
+      `The latest snapshot of the ${currency} silo is as of **${date}**, ${days} days ago.`,
+    staleOutro: [
+      ``,
+      `Send a \`snapshot\` command in \`inbox/\` with the cash and the positions your broker shows (guide:`,
+      `\`routines/portfolio-sync.md\`; format in \`docs/input-format.md\`). The notice stays until you do.`,
+    ],
+    differencesIntro: (currency: string, date: string) => [
+      `## ${currency} silo: differences with the broker`,
+      ``,
+      `The latest snapshot of the ${currency} silo, as of **${date}**, shows these differences between your broker and the`,
+      `state of the engine (the size is what the broker holds less what the engine does):`,
+      ``,
+    ],
+    differenceCash: (broker: string, engine: string, size: string, currency: string) =>
+      `- Cash: the broker has ${broker} ${currency}, the engine ${engine} ${currency} (${size} ${currency})`,
+    differencePosition: (ticker: string, broker: string, engine: string, size: string) =>
+      `- ${ticker}: the broker has ${broker} units, the engine ${engine} (${size})`,
+    differencesOutro: [
+      ``,
+      `The engine did not change its state: the broker is your fact, but applying it silently would hide a trade you`,
+      `missed or entered wrongly. Find it and tell the engine with a command in \`inbox/\`; the notice stays in every`,
+      `digest until a later snapshot shows no difference.`,
+    ],
+    reconciledLines: (currency: string, date: string) => [
+      `## ${currency} silo: snapshot without differences`,
+      ``,
+      `The snapshot of the ${currency} silo as of **${date}** matches the engine's state: the cash and every position.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` or \`watchlist.md\`: ticker that does not read`,

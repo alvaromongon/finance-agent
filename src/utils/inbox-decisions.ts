@@ -1,5 +1,6 @@
 // The decision-log lines of the trades a clean batch applied (#132): one `entry` per buy and one `exit` per lot a sale
-// touched and one `fx_conversion` per conversion, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
+// touched, one `fx_conversion` per conversion, one `split` per silo a split scaled and one `reconcile` per difference
+// a snapshot of the broker found, so the lots check and the evaluation read one history. Since #152 the inbox is the only way a trade is
 // recorded; the lines are telemetry: the state is what the batch changed. A trade that follows a proposal of the
 // system carries its origin (`sistema`), so it stays in the system's expectancy (ADR-0009 §8). Pure; the ids of the exits come from the one
 // source of decision ids (`uniqueDecisionIds`).
@@ -8,13 +9,19 @@ import { buildDecision, type Decision } from "../decisions.js";
 import { exactAmount } from "../money.js";
 import type { Trade } from "./inbox-check.js";
 import { uniqueDecisionIds } from "./decision-id.js";
+import { pinKey } from "./inbox-replay.js";
+import { round } from "./round.js";
 
 export interface DecisionContext {
   rulesVersion: string;
   /** Every id taken: the history's and the lots'. The ids of the exits are added to it. */
   takenIds: Set<string>;
-  /** The day of the run, YYYY-MM-DD: the date of a conversion that gave none. */
+  /** The day of the run, YYYY-MM-DD: the date of a conversion that gave none, of a deposit and of a correction. */
   today: string;
+  /** A replay's own (#139): the id the log holds for each id given, by `idKey`, so a corrected record keeps its id. */
+  pins?: ReadonlyMap<string, string>;
+  /** A replay's own: the file the trades are of, which scopes `pins`. */
+  file?: string;
 }
 
 /**
@@ -24,12 +31,51 @@ export interface DecisionContext {
  * stay open in the log and lock `decisions:evaluate` out of the silo.
  */
 export function decisionsOf(trades: readonly Trade[], text: string, context: DecisionContext): Decision[] {
-  const nextId = uniqueDecisionIds(context.takenIds, createHash("sha256").update(text).digest("hex"));
+  const newId = uniqueDecisionIds(context.takenIds, createHash("sha256").update(text).digest("hex"));
+  const nextId = (date: string, subject: string, type: string): string => {
+    const id = newId(date, subject, type);
+    return context.pins?.get(pinKey(context.file, id)) ?? id;
+  };
   return trades.flatMap((trade): Decision[] => {
+    // A deposit or a withdrawal moved the cash of a silo (#139): its line is what a correction names, and the shadow
+    // portfolio replays. The command has no date: the line is of the day of the run.
+    if (trade.kind === "deposit" || trade.kind === "withdrawal") {
+      return [
+        buildDecision({
+          id: nextId(context.today, trade.currency, trade.kind),
+          date: context.today,
+          ticker: null,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: trade.kind,
+          amount: trade.amount,
+        }),
+      ];
+    }
+    // A correction (#139): the fields of a line of the log that change; the line itself stays as it was written.
+    if (trade.kind === "correction") {
+      return [
+        buildDecision({
+          id: nextId(context.today, trade.ticker ?? trade.currency, "correction"),
+          date: context.today,
+          ticker: trade.ticker,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: "correction",
+          corrects: trade.id,
+          patch: trade.patch,
+        }),
+      ];
+    }
     // A conversion moves cash between the silos (ADR-0009 §1): the line is what the shadow portfolio replays.
     if (trade.kind === "convert") {
       return [
         buildDecision({
+          id: nextId(trade.date ?? context.today, trade.currency, "fx_conversion"),
           date: trade.date ?? context.today,
           ticker: null,
           currency: trade.currency,
@@ -42,6 +88,40 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
           fx_rate: trade.fxRate,
         }),
       ];
+    }
+    // A split scaled the lots of its ticker in one silo (#137): the line says it, with the ratio and the date it took effect.
+    if (trade.kind === "split") {
+      return [
+        buildDecision({
+          id: nextId(trade.date, trade.ticker, "split"),
+          date: trade.date,
+          ticker: trade.ticker,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: "split",
+          split_ratio: trade.ratio,
+        }),
+      ];
+    }
+    // A snapshot changed nothing: each difference it found is a line, of the ticker or (no ticker) of the cash (#138).
+    if (trade.kind === "snapshot") {
+      return trade.differences.map((d) =>
+        buildDecision({
+          id: nextId(trade.date, d.kind === "cash" ? trade.currency : d.ticker, "reconcile"),
+          date: trade.date,
+          ticker: d.kind === "cash" ? null : d.ticker,
+          currency: trade.currency,
+          source: "portfolio-sync",
+          rules_version: context.rulesVersion,
+          origin: "propietario",
+          type: "reconcile",
+          broker: d.broker,
+          engine: d.engine,
+          difference: round(d.broker - d.engine, d.kind === "cash" ? 2 : 8),
+        }),
+      );
     }
     const common = {
       date: trade.date,

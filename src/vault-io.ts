@@ -3,7 +3,8 @@ import { messages } from "./i18n/index.js";
 import { writeFile, readdir, mkdir, unlink, appendFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { config } from "./config.js";
-import { validateDecision, type Decision, type ScreeningSelection } from "./decisions.js";
+import { readConfiguration } from "./configuration.js";
+import { validateDecision, withCorrections, type Decision, type ScreeningSelection } from "./decisions.js";
 import { describeTicket } from "./utils/sizing.js";
 import { describeConviction } from "./utils/conviction.js";
 import { parseLastLog, type LastLog } from "./utils/cooldown.js";
@@ -48,6 +49,7 @@ import type {
 // Import and re-export the type from vault-parser (single source of truth)
 import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { readTextFile } from "./utils/fs-text.js";
+import { printable } from "./utils/printable.js";
 import { checkTicker, tickerFileStem, tickerSlug, type Ticker } from "./ticker.js";
 export type { ScreeningLogEntry };
 
@@ -55,22 +57,13 @@ export type { ScreeningLogEntry };
 const projectDir = () => config.paths.vaultProjectDir;
 
 /**
- * Reads a reasoning prompt from `routines/<name>.md`. There are no built-in
- * defaults: a missing prompt fails with the example to copy.
+ * Reads a reasoning prompt from `routines/<name>.md`, through the configuration port (#142): the file when it is valid,
+ * else its last valid version, else a refusal with the errors. There are no built-in defaults.
  */
 export async function readRoutinePrompt(
   name: "monday-briefing" | "weekly-screening" | "execution-analysis",
 ): Promise<string> {
-  const path = join(projectDir(), "routines", `${name}.md`);
-  try {
-    const prompt = await readTextFile(path);
-    if (prompt.trim() !== "") return prompt;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  throw new Error(
-    `routines/${name}.md not found or empty: copy examples/brain/routines/${name}.md into your brain and adapt it`,
-  );
+  return (await readConfiguration(`routines/${name}.md`))!;
 }
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
@@ -89,7 +82,7 @@ export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[
 }
 
 /**
- * `readWatchlist` for every other reader (heartbeat, `pending:resolve`, the Monday briefing, the weekly
+ * `readWatchlist` for every other reader (heartbeat, `pending:record`, the Monday briefing, the weekly
  * screening): an entry whose ticker does not parse is skipped and reported to `onSkip` (a warning by
  * default), and the rest keeps working (ADR-0016).
  */
@@ -257,7 +250,7 @@ export async function writePendingSignal(
     `---`,
     ``,
     // Queue file read by the Routine, not by the owner: fixed in English like the prompts.
-    `> Resolve with: \`npm run pending:show -- ${filename}\` and \`npm run pending:resolve -- ${filename}\``,
+    `> Answer with: \`npm run pending:show -- ${filename.slice(0, -3)}\` and \`npm run pending:record -- ${filename.slice(0, -3)}\`; close it with a \`resolve\` command in inbox/`,
     `> (see README › Handoff mode for these commands and the agent session that runs them)`,
     ``,
     `## System prompt`,
@@ -375,7 +368,7 @@ export async function listPendingFiles(): Promise<string[]> {
 
 /**
  * Reads logs/pending/<filename>: returns the full content (for
- * `pending:show`) and the parsed frontmatter (for `pending:resolve`, which
+ * `pending:show`) and the parsed frontmatter (for `pending:record`, which
  * rebuilds the real Signal from it instead of trusting what the caller
  * repeats). It validates the frontmatter — a corrupt pending file must not
  * propagate a silent NaN/undefined down to validateTicket.
@@ -421,9 +414,27 @@ export async function readPendingSignal(filename: string): Promise<{ meta: Pendi
   };
 }
 
-/** Deletes a logs/pending/ file once resolved. */
-export async function deletePendingFile(filename: string): Promise<void> {
-  await unlink(pendingFilePath(filename));
+/**
+ * The pending escalations of logs/pending/ with their text (#141): the id is the file name without `.md`, which a `resolve`
+ * command names. A file whose name the engine does not write (`PENDING_FILENAME_RE`) or that cannot be read is not an
+ * escalation and is left out, said on the console: the digest and the commands must never stop for a stray file.
+ */
+export async function readPendingEscalations(): Promise<{ id: string; text: string }[]> {
+  const found: { id: string; text: string }[] = [];
+  for (const file of (await listPendingFiles()).sort()) {
+    if (!PENDING_FILENAME_RE.test(file)) {
+      console.warn(
+        `[vault-io] WARNING, logs/pending/${printable(file)} is not a name the engine writes: not an escalation`,
+      );
+      continue;
+    }
+    try {
+      found.push({ id: file.slice(0, -".md".length), text: await readTextFile(pendingFilePath(file)) });
+    } catch (err) {
+      console.warn(`[vault-io] WARNING, logs/pending/${file} could not be read: ${(err as Error).message}`);
+    }
+  }
+  return found;
 }
 
 /**
@@ -508,6 +519,11 @@ export async function appendDecisions(decisions: Decision[]): Promise<void> {
  * preventing new decisions from being recorded.
  */
 export async function readDecisions(): Promise<Decision[]> {
+  return withCorrections(await readLiveLines());
+}
+
+/** The lines of the live log as they are in the file: the corrections (#139) are not applied. */
+async function readLiveLines(): Promise<Decision[]> {
   return parseDecisionLines(await readTextFile(decisionsPath()).catch(() => ""), "logs/decisions.jsonl");
 }
 
@@ -535,13 +551,14 @@ export async function readDecisionHistory(archiveDir: string | undefined = decis
     }
   }
   const seen = new Set<string>();
-  return [...archived, ...(await readDecisions())]
-    .filter((d) => {
+  // The corrections (#139) are applied once the quarters are together: a correction can sit in another quarter than its line.
+  return withCorrections(
+    [...archived, ...(await readLiveLines())].filter((d) => {
       if (seen.has(d.id)) return false;
       seen.add(d.id);
       return true;
-    })
-    .sort((a, b) => a.date.localeCompare(b.date));
+    }),
+  ).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 let archiveDirUnsetNoted = false;
@@ -615,19 +632,13 @@ export async function readAccountEnv(): Promise<string | undefined> {
 }
 
 /**
- * `version` from the strategies/base.md frontmatter (ADR-0009 §5). Without it no
- * decision is recorded: a decision without a rules version cannot be
+ * `version` from the strategies/base.md frontmatter (ADR-0009 §5), read through the configuration port (#142). Without
+ * one (the file invalid and no last valid version) no decision is recorded: a decision without a rules version cannot be
  * attributed to any system when measured.
  */
 export async function readRulesVersion(): Promise<string> {
-  const raw = await readTextFile(join(projectDir(), "strategies", "base.md")).catch(() => "");
-  const version = extractFrontmatter(raw)?.version;
-  if (typeof version === "number" || (typeof version === "string" && version.trim() !== "")) {
-    return String(version);
-  }
-  throw new Error(
-    "strategies/base.md has no `version` in its frontmatter: the decision cannot be recorded (ADR-0009 §5)",
-  );
+  const text = (await readConfiguration("strategies/base.md"))!;
+  return String(extractFrontmatter(text)!.version);
 }
 
 // ─── Watchlist — writing ──────────────────────────────────────────────────────

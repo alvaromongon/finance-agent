@@ -289,6 +289,222 @@ describe("inbox:check", () => {
     });
   });
 
+  describe("a split (#137)", () => {
+    // The fixture holds 5 SAP.DE in the USD silo, bought on 2026-06-15 at 180.
+    const SPLIT = (over = "", ticker = "SAP.DE", ratio = "2 for 1") =>
+      `command: split\nticker: ${ticker}\ndate: 2026-07-01\nratio: ${ratio}${over}`;
+    const lineOf = (lines: string[], n: number) => lines.find((l) => l.includes(`command ${n},`));
+
+    it("is clean for a held ticker, and a sale after it can sell the units the split gave", async () => {
+      // 5 units cannot pay for 8; after 2 for 1 the lot holds 10.
+      const SELL_8 = "command: sale\nticker: SAP.DE\ndate: 2026-07-02\nunits: 8\nprice: 100 USD";
+      await drop("a.yaml", batch(SPLIT(), SELL_8));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+      await drop("a.yaml", batch(SELL_8));
+      assert.equal((await checkInbox()).exitCode, 1, "without the split the sale is refused");
+    });
+
+    it("is refused, with its position, for a ticker with no open lot", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 1 USD", SPLIT("", "KO")));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 1);
+      assert.match(
+        lines[0],
+        /^inbox\/a\.yaml: command 2, line 5: cannot split KO: there is no open lot of it in the portfolio$/,
+      );
+    });
+
+    it("is refused for a ratio of 1, a date before the lot was bought and units that would not stay whole", async () => {
+      await drop("a.yaml", batch(SPLIT("", "SAP.DE", "3 for 3")));
+      assert.match((await checkInbox()).lines[0], /^inbox\/a\.yaml: command 1, line 3: a ratio of 1 changes nothing/);
+      await drop("a.yaml", batch(SPLIT("").replace("2026-07-01", "2026-06-14")));
+      assert.match(
+        (await checkInbox()).lines[0],
+        /command 1, line 3: cannot split SAP\.DE: its date 2026-06-14 is before the day the oldest open lot was bought \(2026-06-15\)/,
+      );
+      await drop("a.yaml", batch(SPLIT("", "SAP.DE", "1 for 2")));
+      assert.match(
+        (await checkInbox()).lines[0],
+        /command 1, line 3: cannot split SAP\.DE 1 for 2: lot ".*" would be left with 2\.5 units, not a whole number/,
+      );
+    });
+
+    it("a refused split leaves the lots and the stop of its ticker unknown, and nothing else", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          SPLIT("", "SAP.DE", "3 for 3"),
+          "command: sale\nticker: SAP.DE\ndate: 2026-07-02\nunits: 99\nprice: 100 USD",
+          "command: set_stop\nticker: SAP.DE\nprice: 90 USD",
+          "command: split\nticker: SAP.DE\ndate: 2026-07-01\nratio: 2 for 1",
+          "command: withdrawal\namount: 99999 USD",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /a ratio of 1 changes nothing/);
+      for (const n of [2, 3]) {
+        assert.match(
+          lineOf(lines, n)!,
+          /not checked: command 1 was refused, so the lots and the stop of SAP\.DE it would change are unknown/,
+        );
+      }
+      assert.match(
+        lineOf(lines, 4)!,
+        /not checked: command 1 was refused, so the lots of the ticker it would change are unknown/,
+      );
+      assert.match(lineOf(lines, 5)!, /the withdrawal of 99999\.00 USD exceeds the available cash/);
+    });
+
+    it("one that does not read leaves the lots of its ticker unknown, so the sale of the units it gives is not checked", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: split\nticker: SAP.DE\ndate: 2026-07-01\nratio: nope",
+          "command: sale\nticker: SAP.DE\ndate: 2026-07-02\nunits: 8\nprice: 100 USD",
+          "command: withdrawal\namount: 99999 USD",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /"ratio" must be written as <new> for <old>/);
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 could not be read, so the lots and the stop of SAP\.DE it would change/,
+      );
+      assert.match(lineOf(lines, 3)!, /the withdrawal of 99999\.00 USD exceeds the available cash/);
+    });
+
+    it("one blocked by a refused buy of its ticker is not checked: what the buy would have opened is unknown", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: buy\nticker: KO\ndate: 2026-06-20\nunits: 99999\nprice: 100 USD", SPLIT("", "KO")),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /the buy of KO costs/);
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 was refused, so the lots of the ticker it would change are unknown/,
+      );
+    });
+
+    it("what a rejected file before it would have bought explains a refusal, so the split is not checked", async () => {
+      await drop("a.yaml", batch("command: buy\nticker: KO\ndate: 2026-06-20\nunits: 1\nprice: 10 USD\nbogus: 1"));
+      await drop("b.yaml", batch(SPLIT("", "KO")));
+      const { lines } = await checkInbox();
+      assert.match(
+        lines.find((l) => l.startsWith("inbox/b"))!,
+        /^inbox\/b\.yaml: command 1, line 3: not checked: depends on inbox\/a\.yaml, which was rejected, so the lots of the ticker it would change are unknown$/,
+      );
+    });
+
+    it("a split of the lots the batch itself opened, and a sale of them, is clean", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: KO\ndate: 2026-06-20\nunits: 2\nprice: 100 USD",
+          "command: set_stop\nticker: KO\nprice: 90 USD",
+          SPLIT("", "KO", "3 for 1"),
+          "command: sale\nticker: KO\ndate: 2026-07-02\nunits: 6\nprice: 40 USD",
+        ),
+      );
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+    });
+  });
+
+  describe("a snapshot of the broker (#138)", () => {
+    // The fixture holds EUR cash 1000 and USD cash 500 with 5 SAP.DE in the USD silo.
+    const SNAP = (cash = "500 USD", positions = "positions:\n  - ticker: SAP.DE\n    units: 5", date = "2026-11-20") =>
+      `command: snapshot\ndate: ${date}\ncash: ${cash}\n${positions}`;
+    const lineOf = (lines: string[], n: number) => lines.find((l) => l.includes(`command ${n},`));
+
+    it("is clean when the broker and the engine agree, and a difference is a warning, never an error", async () => {
+      await drop("a.yaml", batch(SNAP()));
+      assert.deepEqual(await checkInbox(), { lines: ["Inbox is clean: 1 batch(es) would apply."], exitCode: 0 });
+      await drop("a.yaml", batch(SNAP("510.50 USD", "positions: []")));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0, lines.join("\n"));
+      assert.deepEqual(lines.slice(1, 3), [
+        "inbox/a.yaml: command 1, line 3: warning: the USD snapshot as of 2026-11-20 differs from the state in the cash: the broker has 510.50 USD, the engine 500.00 USD (+10.50 USD)",
+        "inbox/a.yaml: command 1, line 3: warning: the USD snapshot as of 2026-11-20 differs from the state in SAP.DE: the broker has 0 units, the engine 5 (-5)",
+      ]);
+    });
+
+    it("compares with the state after the commands before it", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 10 USD", SNAP("510 USD")));
+      const { lines, exitCode } = await checkInbox();
+      assert.equal(exitCode, 0);
+      assert.deepEqual(lines, ["Inbox is clean: 1 batch(es) would apply."]);
+    });
+
+    it("changes nothing: the files of the vault are the same after the check", async () => {
+      await drop("a.yaml", batch(SNAP("1 USD", "positions: []")));
+      const before = await snapshot();
+      await checkInbox();
+      assert.deepEqual(await snapshot(), before);
+    });
+
+    it("is refused for a silo the portfolio lacks, a date in the future and a ticker listed twice", async () => {
+      await writeFile(join(vaultDir, "portfolio.md"), portfolioMd().split("## USD — Cash")[0], "utf8");
+      await drop("a.yaml", batch(SNAP("1 USD", "positions: []")));
+      assert.match((await checkInbox()).lines[0], /command 1, line 3: there is no USD silo in the portfolio$/);
+      await drop("a.yaml", batch(SNAP("1 EUR", "positions: []", "2099-01-01")));
+      assert.match((await checkInbox()).lines[0], /command 1, line 3: the snapshot's date 2099-01-01 is in the future/);
+      await drop(
+        "a.yaml",
+        batch(SNAP("1 EUR", "positions:\n  - ticker: KO\n    units: 1\n  - ticker: KO\n    units: 2")),
+      );
+      assert.match((await checkInbox()).lines[0], /command 1, line 3: position 2: "KO" is listed twice/);
+    });
+
+    it("is not checked after a refused command that would have changed the cash or the lots of its silo", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: withdrawal\namount: 99999 USD", SNAP(), "command: withdrawal\namount: 99999 EUR"),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 1)!, /exceeds the available cash/);
+      assert.match(
+        lineOf(lines, 2)!,
+        /not checked: command 1 was refused, so the USD cash and positions it would compare are unknown/,
+      );
+      assert.match(lineOf(lines, 3)!, /exceeds the available cash/, "the other silo is checked");
+    });
+
+    it("is not checked after a split that was refused, which left the units of a ticker unknown", async () => {
+      await drop("a.yaml", batch("command: split\nticker: SAP.DE\ndate: 2026-07-01\nratio: 3 for 3", SNAP()));
+      assert.match(
+        lineOf((await checkInbox()).lines, 2)!,
+        /not checked: command 1 was refused, so the USD cash and positions/,
+      );
+    });
+
+    it("what a rejected file before it would have changed explains it, a rejected set_stop does not", async () => {
+      await drop("a.yaml", batch("command: deposit\namount: 5 USD\nbogus: 1"));
+      await drop("b.yaml", batch(SNAP("505 USD")));
+      assert.match(
+        (await checkInbox()).lines.find((l) => l.startsWith("inbox/b"))!,
+        /^inbox\/b\.yaml: command 1, line 3: not checked: depends on inbox\/a\.yaml, which was rejected, so the USD cash and positions it would compare are unknown$/,
+      );
+      await drop("a.yaml", batch("command: set_stop\nticker: SAP.DE\nprice: 1 USD\nbogus: 1"));
+      assert.ok(!(await checkInbox()).lines.some((l) => l.includes("not checked")));
+    });
+
+    it("a snapshot that was refused or did not read leaves nothing unknown for the commands after it", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          SNAP("1 USD", "positions: []", "2099-01-01"),
+          "command: snapshot\ndate: nope\ncash: 1 USD\npositions: []",
+          "command: withdrawal\namount: 99999 USD",
+        ),
+      );
+      const { lines } = await checkInbox();
+      assert.match(lineOf(lines, 3)!, /exceeds the available cash/);
+      assert.ok(!lines.some((l) => l.includes("not checked")), lines.join("\n"));
+    });
+  });
+
   it("reports every error of the batch, not only the first: command, line and reason", async () => {
     await drop(
       "a.yaml",
@@ -1079,10 +1295,14 @@ describe("inbox:check", () => {
         // The engine as a writer of the inbox (#136): it drops its stop proposals there, after the stops are checked.
         "stop-proposals.ts",
         "utils/stop-proposals.ts",
+        "inbox-escalations.ts",
         "utils/inbox-check.ts",
         "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",
         "utils/inbox-handlers.ts",
+        "utils/inbox-replay.ts",
+        "utils/state-repair.ts",
+        "state-repair.ts",
       ]);
       const walk = (dir: string): string[] =>
         readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
@@ -1095,13 +1315,16 @@ describe("inbox:check", () => {
               : [],
         );
       // The one thing the heartbeat reads of the inbox is the list of the rejected batches still awaiting an answer
-      // (`inbox-rejected.ts`, #152), to name them in its digest: it never runs a batch nor reads `inbox/` itself.
+      // (`inbox-rejected.ts`, #152) and of the pending escalations no command closed (`inbox-escalations.ts`, #141),
+      // to name them in its digest: it never runs a batch nor reads `inbox/` itself. `pending.ts` asks the second which
+      // escalations are left to work on.
       const importers = walk(SRC)
         .filter((file) => !inboxModules.has(file))
         .flatMap((file) =>
           [...readFileSync(join(SRC, file), "utf8").matchAll(/from\s+["']([^"']*inbox[^"']*)["']/g)]
             .map((m) => m[1])
             .filter((from) => !(file === "heartbeat-run.ts" && from === "./inbox-rejected.js"))
+            .filter((from) => !(["heartbeat-run.ts", "pending.ts"].includes(file) && from === "./inbox-escalations.js"))
             .map((from) => `${file} -> ${from}`),
         );
       assert.deepEqual(importers, []);

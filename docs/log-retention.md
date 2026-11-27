@@ -9,26 +9,25 @@ to `VAULT_PROJECT_DIR`, except `DECISIONS_ARCHIVE_DIR`, which must be absolute (
 Queues. Each file is removed once its content has moved to its final place, so a healthy
 repository holds none of them between runs. A file that lingers is work not done.
 
-| Path                                               | Written by                                                                                | Deleted by                | When                                                                  |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------- |
-| `logs/pending/<date>-<ticker>.md`                  | [heartbeat](glossary.md#heartbeat) ([handoff mode](glossary.md#reasoner-api-and-handoff)) | `pending:resolve`         | The answer is validated and recorded, blocked or not                  |
-| `logs/pending-screening/<date>-<ticker>.md`        | `screening:prepare`                                                                       | `screening:resolve`       | The candidate's result is recorded                                    |
-| `logs/pending-screening/results.jsonl`, `run.json` | `screening:resolve`, `prepare`                                                            | `screening:summarize`     | The run's summary email is sent (or email is off); kept if it was not |
-| `logs/outbox/*.json`                               | any flow with `MAIL_TRANSPORT=outbox`                                                     | `outbox:send` (the relay) | The email was sent; a file that failed to send is kept and retried    |
-| `logs/heartbeat-sent-eur.json`, `-usd.json`        | [heartbeat](glossary.md#heartbeat)                                                        | rewritten daily           | Holds only today's alert keys, so it does not grow                    |
-
-If a `pending` file stays for days, the [reasoner](glossary.md#reasoner-api-and-handoff) did not run: resolve it, or delete it by hand if
-the signal is stale (it is not in the [decision log](glossary.md#decision-log) until resolved).
+| Path                                               | Written by                            | Deleted by                | When                                                                  |
+| -------------------------------------------------- | ------------------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| `logs/pending-screening/<date>-<ticker>.md`        | `screening:prepare`                   | `screening:resolve`       | The candidate's result is recorded                                    |
+| `logs/pending-screening/results.jsonl`, `run.json` | `screening:resolve`, `prepare`        | `screening:summarize`     | The run's summary email is sent (or email is off); kept if it was not |
+| `logs/outbox/*.json`                               | any flow with `MAIL_TRANSPORT=outbox` | `outbox:send` (the relay) | The email was sent; a file that failed to send is kept and retried    |
+| `logs/heartbeat-sent-eur.json`, `-usd.json`        | [heartbeat](glossary.md#heartbeat)    | rewritten daily           | Holds only today's alert keys, so it does not grow                    |
 
 ## Files that grow
 
-| Path                                                                 | What it is                                           | Read back by                                                                                               |
-| -------------------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `logs/decisions.jsonl`                                               | The [decision log](glossary.md#decision-log)         | Everything: recording, the two-month rule, attribution, the heartbeat, the Monday briefing, the evaluation |
-| `logs/<date>-<ticker>.md`                                            | One Markdown log per analysed signal                 | The re-analysis cooldown (latest of the ticker); the Monday briefing (last 30 days)                        |
-| `logs/<date>-monday-briefing.md`                                     | Weekly report                                        | Nobody; the decision log holds its decisions                                                               |
-| Report files of the emails not sent (see below)                      | With email off, each message as a Markdown file      | The Monday briefing, if the name starts with a date (last 30 days); otherwise nobody: you read them        |
-| `logs/decisions-evaluation.md`, `.svg`, `logs/screening-outcomes.md` | Reports, regenerated on each run: never archive them | The Monday briefing reads `decisions-evaluation.md`                                                        |
+| Path                                                                 | What it is                                                                                                                                                                  | Read back by                                                                                               |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `logs/pending/<date>-<ticker>.md`                                    | A [pending escalation](glossary.md#pending-escalation) the [heartbeat](glossary.md#heartbeat) wrote for the [reasoner](glossary.md#reasoner-api-and-handoff) (handoff mode) | The heartbeat digest, until a `resolve` command closes it                                                  |
+| `logs/decisions.jsonl`                                               | The [decision log](glossary.md#decision-log)                                                                                                                                | Everything: recording, the two-month rule, attribution, the heartbeat, the Monday briefing, the evaluation |
+| `logs/<date>-<ticker>.md`                                            | One Markdown log per analysed signal                                                                                                                                        | The re-analysis cooldown (latest of the ticker); the Monday briefing (last 30 days)                        |
+| `logs/<date>-monday-briefing.md`                                     | Weekly report                                                                                                                                                               | Nobody; the decision log holds its decisions                                                               |
+| Report files of the emails not sent (see below)                      | With email off, each message as a Markdown file                                                                                                                             | The Monday briefing, if the name starts with a date (last 30 days); otherwise nobody: you read them        |
+| `logs/decisions-evaluation.md`, `.svg`, `logs/screening-outcomes.md` | Reports, regenerated on each run: never archive them                                                                                                                        | The Monday briefing reads `decisions-evaluation.md`                                                        |
+
+Nothing deletes a `logs/pending/` file, and you must not delete one by hand: an escalation is open while its file exists and the store does not list it closed, so deleting an open one removes it from every digest with no command. Close it with a `resolve` batch in `inbox/` (see [input-format](input-format.md)); the file then stays as the record, grows with the other logs and is archived like them (only once closed).
 
 ## Report files written when email is off
 

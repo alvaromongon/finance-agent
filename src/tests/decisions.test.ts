@@ -149,6 +149,81 @@ describe("validateDecision", () => {
     );
   });
 
+  it("a split (#137) carries its ticker and its ratio, the units after it per unit before it", () => {
+    const split = buildDecision(
+      base({ type: "split", origin: "propietario", source: "portfolio-sync", currency: "EUR", split_ratio: 0.1 }),
+    );
+    assert.equal(split.split_ratio, 0.1);
+    assert.match(split.id, /^20260914-adbe-split-[0-9a-f]{8}$/);
+    assert.deepEqual(validateDecision(JSON.parse(JSON.stringify(split))), split);
+    assert.throws(() => buildDecision(base({ type: "split" })), /split_ratio is required in split/);
+    assert.throws(() => buildDecision(base({ type: "split", ticker: null, split_ratio: 2 })), /ticker/);
+    for (const bad of [0, -2, Number.NaN]) {
+      assert.throws(
+        () => buildDecision(base({ type: "split", split_ratio: bad })),
+        /split_ratio must be a number > 0/,
+        String(bad),
+      );
+    }
+    assert.throws(() => buildDecision(base({ split_ratio: 2 })), /split_ratio only goes in split/);
+  });
+
+  it("a reconcile (#138) records one difference of a snapshot: what each side holds and its size, of a ticker or of the cash", () => {
+    const units = buildDecision(
+      base({
+        type: "reconcile",
+        origin: "propietario",
+        source: "portfolio-sync",
+        broker: 8,
+        engine: 10,
+        difference: -2,
+      }),
+    );
+    assert.equal(units.difference, -2);
+    assert.deepEqual(validateDecision(JSON.parse(JSON.stringify(units))), units);
+    const cash = buildDecision(
+      base({
+        type: "reconcile",
+        ticker: null,
+        origin: "propietario",
+        source: "portfolio-sync",
+        broker: 510.5,
+        engine: 500,
+        difference: 10.5,
+      }),
+    );
+    assert.equal(cash.ticker, null);
+    assert.deepEqual(validateDecision(JSON.parse(JSON.stringify(cash))), cash);
+    // The engine or the broker may hold nothing: zero is a number of a reconcile.
+    assert.equal(buildDecision(base({ type: "reconcile", broker: 0, engine: 3, difference: -3 })).broker, 0);
+  });
+
+  it("a reconcile needs its three numbers, and they go nowhere else", () => {
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: 1, engine: 2 })),
+      /difference is required in reconcile/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", engine: 2, difference: 1 })),
+      /broker is required in reconcile/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: 1, difference: 1 })),
+      /engine is required in reconcile/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: -1, engine: 2, difference: -3 })),
+      /broker must be a number >= 0/,
+    );
+    assert.throws(
+      () => buildDecision(base({ type: "reconcile", broker: 1, engine: 2, difference: Number.NaN })),
+      /difference must be a number/,
+    );
+    assert.throws(() => buildDecision(base({ broker: 1 })), /broker only goes in reconcile/);
+    assert.throws(() => buildDecision(base({ engine: 1 })), /engine only goes in reconcile/);
+    assert.throws(() => buildDecision(base({ difference: 1 })), /difference only goes in reconcile/);
+  });
+
   it("regime: only favorable, neutral or adverso", () => {
     assert.equal(buildDecision(base({ regime: "neutral" })).regime, "neutral");
     assert.throws(
@@ -554,6 +629,25 @@ describe("validateOwnerInput", () => {
       () => validateOwnerInput({ type: "fx_conversion", currency: "EUR", amount: 100, fx_rate: 1.1 }),
       (err: Error) =>
         err.message.includes("a currency conversion is told to the engine with a convert command in inbox/") &&
+        err.message.includes("[adjust_stop, deposit, withdrawal]") &&
+        !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
+    );
+  });
+
+  it("refuses a reconcile, naming the inbox command that replaces it (#138)", () => {
+    assert.throws(
+      () => validateOwnerInput({ type: "reconcile", currency: "EUR" }),
+      (err: Error) =>
+        err.message.includes("a reconciliation is told to the engine with a snapshot command in inbox/") &&
+        err.message.includes("[adjust_stop, deposit, withdrawal]"),
+    );
+  });
+
+  it("refuses a split, naming the inbox command that replaces it (#137)", () => {
+    assert.throws(
+      () => validateOwnerInput({ type: "split", currency: "EUR", ticker: "KO" }),
+      (err: Error) =>
+        err.message.includes("a split is told to the engine with a split command in inbox/") &&
         err.message.includes("[adjust_stop, deposit, withdrawal]") &&
         !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
     );

@@ -10,7 +10,15 @@ import yaml from "js-yaml";
 import { CURRENCIES, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
-import type { Command } from "./inbox-handlers.js";
+import {
+  ENTRY_ID,
+  ESCALATION_ID,
+  ESCALATION_OUTCOMES,
+  NOTE_MAX_LENGTH,
+  type BrokerPosition,
+  type Command,
+  type Correct,
+} from "./inbox-handlers.js";
 import { quoted } from "./printable.js";
 
 /** The `schema_version` of the inbox format this engine reads. */
@@ -35,7 +43,8 @@ export interface ParsedCommand {
  * not checked against the cash and lots of `currencies`: the ones it was written in, or both silos when none of
  * its amounts read (N8: a later command must not report a cash or lot error that only this one explains). A
  * `set_stop` or `clear_stop` changes no cash or lots: only the stop of its `ticker` (any, when it did not
- * read) is unknown.
+ * read) is unknown. A `split` changes no cash either, and has no currency: the lots and the stop of its `ticker`
+ * are unknown.
  */
 export interface UnreadCommand {
   position: number;
@@ -55,7 +64,20 @@ export interface ParsedBatch {
   issues: InboxIssue[];
 }
 
-const COMMAND_KINDS = ["deposit", "withdrawal", "convert", "buy", "sale", "set_stop", "clear_stop", "discard"] as const;
+const COMMAND_KINDS = [
+  "deposit",
+  "withdrawal",
+  "convert",
+  "buy",
+  "sale",
+  "set_stop",
+  "clear_stop",
+  "split",
+  "snapshot",
+  "discard",
+  "resolve",
+  "correct",
+] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 const FIELDS: Record<CommandKind, readonly string[]> = {
   deposit: ["command", "amount"],
@@ -65,7 +87,11 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   sale: ["command", "ticker", "date", "units", "price", "costs", "lot", "stop_executed"],
   set_stop: ["command", "ticker", "date", "price"],
   clear_stop: ["command", "ticker", "date"],
+  split: ["command", "ticker", "date", "ratio"],
+  snapshot: ["command", "date", "cash", "positions"],
   discard: ["command", "file"],
+  resolve: ["command", "id", "outcome", "note", "date"],
+  correct: ["command", "id", "ticker", "date", "units", "price", "costs", "amount"],
 };
 
 /** Fields that used to exist: a command that still carries one is told where it went. */
@@ -136,6 +162,75 @@ interface Unread {
   currencies: Currency[];
   commandKind?: CommandKind;
   ticker?: Ticker;
+}
+
+/**
+ * The positions of a `snapshot`: a list of mappings with a ticker and the units held (plain decimals greater than
+ * zero), each ticker once. Every problem found goes to `problems` with the place of the item; `undefined` if any.
+ */
+function brokerPositions(raw: unknown, problems: string[]): BrokerPosition[] | undefined {
+  if (raw === undefined) {
+    problems.push('missing field "positions" (write positions: [] when the broker holds none)');
+    return undefined;
+  }
+  if (raw === null || (typeof raw === "string" && raw.trim() === "")) {
+    problems.push('field "positions" is empty: write positions: [] when the broker holds none');
+    return undefined;
+  }
+  if (!Array.isArray(raw)) {
+    problems.push('field "positions" must be a list of positions, each with a ticker and its units');
+    return undefined;
+  }
+  const found: BrokerPosition[] = [];
+  const before = problems.length;
+  raw.forEach((item: unknown, index) => {
+    const at = `position ${index + 1}`;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      problems.push(`${at}: must be a mapping of ticker and units`);
+      return;
+    }
+    const entry = item as Record<string, unknown>;
+    let bad = false;
+    const problem = (reason: string): void => {
+      problems.push(`${at}: ${reason}`);
+      bad = true;
+    };
+    for (const name of Object.keys(entry)) {
+      if (name !== "ticker" && name !== "units") problem(`unknown field ${quoted(name)} for a position`);
+    }
+    const field = (name: string): string | undefined => {
+      const value = entry[name];
+      if (value === undefined) problem(`missing field "${name}"`);
+      else if (typeof value !== "string" || value.trim() === "") problem(`field "${name}" must be a value`);
+      else return value.trim();
+      return undefined;
+    };
+    const tickerText = field("ticker");
+    const unitsText = field("units");
+    let t: Ticker | undefined;
+    if (tickerText !== undefined) {
+      const checked = checkTicker(tickerText);
+      if ("problem" in checked) problem(checked.problem);
+      else t = checked.ticker;
+    }
+    let units: number | undefined;
+    if (unitsText !== undefined) {
+      const n = decimal(unitsText, '"units"');
+      if (typeof n === "string") problem(n);
+      else if (n <= 0)
+        problem(
+          `"units" must be greater than zero (leave out a ticker the broker does not hold); got: ${quoted(unitsText)}`,
+        );
+      else units = n;
+    }
+    if (bad || t === undefined || units === undefined) return;
+    if (found.some((p) => p.ticker === t)) {
+      problem(`${quoted(t)} is listed twice: a ticker is one position`);
+      return;
+    }
+    found.push({ ticker: t, units });
+  });
+  return problems.length > before ? undefined : found;
 }
 
 /** One command's mapping read into a command, or every problem found in it. */
@@ -295,6 +390,108 @@ function readCommand(raw: unknown): Command | Unread {
     if (typeof named === "object") problems.push(named.problem);
     if (problems.length > 0 || named === undefined || typeof named === "object") return unread();
     return { kind, file: named };
+  }
+
+  if (kind === "resolve") {
+    const id = text("id", true);
+    if (id !== undefined && !ESCALATION_ID.test(id)) {
+      problems.push(
+        `"id" must be the id of a pending escalation, the name of its file in logs/pending/ without .md (as in 2026-07-15-xom); got: ${quoted(id)}`,
+      );
+    }
+    const outcomeText = text("outcome", true);
+    const outcome = ESCALATION_OUTCOMES.find((o) => o === outcomeText);
+    if (outcomeText !== undefined && outcome === undefined) {
+      problems.push(`"outcome" must be ${ESCALATION_OUTCOMES.join(" or ")}; got: ${quoted(outcomeText)}`);
+    }
+    const note = text("note", false);
+    if (note !== undefined && note.length > NOTE_MAX_LENGTH) {
+      problems.push(`"note" must be at most ${NOTE_MAX_LENGTH} characters; it has ${note.length}`);
+    }
+    const when = date(false);
+    if (problems.length > 0 || id === undefined || outcome === undefined) return unread();
+    return {
+      kind,
+      id,
+      outcome,
+      ...(note !== undefined ? { note } : {}),
+      ...(when !== undefined ? { date: when } : {}),
+    };
+  }
+
+  if (kind === "correct") {
+    const id = text("id", true);
+    if (id !== undefined && !ENTRY_ID.test(id)) {
+      problems.push(`"id" must be the id the engine gave the record (letters, digits, . _ -); got: ${quoted(id)}`);
+    }
+    const t = fields.ticker !== undefined ? ticker() : undefined;
+    const when = fields.date !== undefined ? date() : undefined;
+    const n = fields.units !== undefined ? units() : undefined;
+    const price = positive(amount("price", false, false), "price");
+    // Zero costs take the costs away: the one corrected value that may be zero.
+    const costs = amount("costs", false, true);
+    const total = positive(amount("amount", false, true), "amount");
+    const currency = sameCurrency({ price, costs, amount: total });
+    if (
+      fields.ticker === undefined &&
+      fields.date === undefined &&
+      fields.units === undefined &&
+      fields.price === undefined &&
+      fields.costs === undefined &&
+      fields.amount === undefined
+    ) {
+      problems.push(
+        'a correction needs at least one corrected value: "ticker", "date", "units", "price", "costs" or "amount"',
+      );
+    }
+    if (problems.length > 0 || id === undefined) return unread();
+    const fix: Correct = {
+      kind,
+      id,
+      ...(currency !== undefined ? { currency } : {}),
+      ...(t !== undefined ? { ticker: t } : {}),
+      ...(when !== undefined ? { date: when } : {}),
+      ...(n !== undefined ? { units: n } : {}),
+      ...(price ? { price: price.value } : {}),
+      ...(costs && currency ? { costs: money(costs.value, currency) } : {}),
+      ...(total && currency ? { amount: money(total.value, currency) } : {}),
+    };
+    return fix;
+  }
+
+  if (kind === "snapshot") {
+    const when = date();
+    // Zero cash is a broker with none: only a split or a sign is not a number.
+    const cash = amount("cash", true, true);
+    const positions = brokerPositions(fields.positions, problems);
+    if (problems.length > 0 || !when || !cash || !positions) return unread();
+    return { kind, currency: cash.currency, date: when, cash: cash.value, positions };
+  }
+
+  if (kind === "split") {
+    const t = ticker();
+    const when = date();
+    const ratioText = text("ratio", true);
+    let ratio: { new: number; old: number } | undefined;
+    if (ratioText !== undefined) {
+      const parts = ratioText.split(/\s+/);
+      if (parts.length !== 3 || parts[1] !== "for") {
+        problems.push(
+          `"ratio" must be written as <new> for <old>, such as 4 for 1 or 1 for 10 (units after the split for each unit before it); got: ${quoted(ratioText)}`,
+        );
+      } else {
+        const [newUnits, , oldUnits] = parts;
+        const n = decimal(newUnits, '"ratio"');
+        const o = decimal(oldUnits, '"ratio"');
+        if (typeof n === "string") problems.push(n);
+        else if (typeof o === "string") problems.push(o);
+        else if (n <= 0 || o <= 0)
+          problems.push(`"ratio" must be greater than zero on both sides; got: ${quoted(ratioText)}`);
+        else ratio = { new: n, old: o };
+      }
+    }
+    if (problems.length > 0 || !t || !when || !ratio) return unread();
+    return { kind, ticker: t, date: when, ratio };
   }
 
   if (kind === "set_stop" || kind === "clear_stop") {

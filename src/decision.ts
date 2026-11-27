@@ -41,7 +41,7 @@ export interface RecordDecisionOptions {
   /** Tells in the console which backend recorded the decision, with a trailing space ("[pending] "). */
   logPrefix?: string;
   /**
-   * Signal detection date, YYYY-MM-DD. `pending:resolve` passes it because it
+   * Signal detection date, YYYY-MM-DD. `pending:record` passes it because it
    * may resolve days later: price, strength and benchmark are from that day,
    * and the decision carries its date. Today by default.
    */

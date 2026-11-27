@@ -24,6 +24,7 @@ import type { Currency, Lot, PortfolioSnapshot } from "./types.js";
 import { applyPrices } from "./utils/portfolio-writer.js";
 import { decodeStore, encodeStore, renderView, withPrices, type PortfolioStore } from "./utils/portfolio-json.js";
 import { volumeMismatches } from "./utils/lots-check.js";
+import { stalenessOf, type Staleness } from "./utils/staleness.js";
 import { addCounted, countedInCents, formatMoney } from "./money.js";
 import {
   assertPortfolioSections,
@@ -40,6 +41,18 @@ import {
 
 export type { PortfolioStore };
 
+/**
+ * The store file exists and cannot be read as the store (#139): it is not valid JSON, has a field the engine does not
+ * accept, another version. The message names the file and what is wrong. The state is not guessed from it: the flows refuse it
+ * and only the heartbeat goes on, over the last state that read (`readLastReadable`), and says so in its digest.
+ */
+export class StoreUnreadableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "StoreUnreadableError";
+  }
+}
+
 /** What `readPortfolio` returns: the silo's model and what of the file could not be read into it. */
 export interface PortfolioRead<C extends Currency = Currency> {
   portfolio: PortfolioSnapshot<C>;
@@ -53,6 +66,18 @@ export interface PortfolioRead<C extends Currency = Currency> {
   skippedRows: string[];
   /** The `Positions` P/L and `Cash` cells too large to count in cents, read as 0 or absent (#86), one message each. */
   unreadableCells: string[];
+  /**
+   * Set only by a read that asked to go on over a store that does not read (`lastReadable`, the heartbeat): why the store
+   * cannot be read. The portfolio is then the last state that did read, so what it holds may be older than the
+   * store's last write. Absent when the store (or `portfolio.md`, with no store yet) reads.
+   */
+  storeProblem?: string;
+  /**
+   * How stale the silo is (#138): the age of its latest `snapshot` of the broker, and a silo with none is stale. `null`
+   * while the state is still the old `portfolio.md` (no store yet): it has no snapshot to measure, and keeps its own
+   * `last_manual_sync` warning until #143 removes that way.
+   */
+  staleness: Staleness | null;
 }
 
 const projectDir = () => config.paths.vaultProjectDir;
@@ -61,6 +86,13 @@ const portfolioPath = () => join(projectDir(), "portfolio.md");
 /** The engine's own store of the portfolio: JSON written only by the engine. */
 const storePath = () => join(projectDir(), "state", "portfolio.json");
 const STORE_WHERE = "state/portfolio.json";
+/**
+ * A copy of the store that the engine writes with every write of the store and that it read back: the last state that
+ * was readable. The heartbeat falls back to it when the store cannot be read, so risk watch never stops for a corrupt
+ * file (ADR-0015, #139). Nothing else reads it.
+ */
+const lastReadablePath = () => join(projectDir(), "state", "portfolio.last-readable.json");
+const LAST_READABLE_WHERE = "state/portfolio.last-readable.json";
 
 /** The store, or `null` while there is none (the state is still `portfolio.md`). A store that does not read is refused. */
 async function readStore(): Promise<PortfolioStore | null> {
@@ -69,9 +101,57 @@ async function readStore(): Promise<PortfolioStore | null> {
     text = await readFile(storePath(), "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
+    throw new StoreUnreadableError(`${STORE_WHERE} cannot be read: ${(err as Error).message}`, { cause: err });
   }
-  return decodeStore(text, STORE_WHERE);
+  try {
+    return decodeStore(text, STORE_WHERE);
+  } catch (err) {
+    throw new StoreUnreadableError((err as Error).message, { cause: err });
+  }
+}
+
+/**
+ * The store, or when it cannot be read the copy of the last state that was: `store` with the reason in `problem`. `null`
+ * store: there is none, or neither reads. A store that reads gives no `problem`.
+ */
+async function readLastReadable(): Promise<{ store: PortfolioStore | null; problem?: string }> {
+  try {
+    return { store: await readStore() };
+  } catch (err) {
+    if (!(err instanceof StoreUnreadableError)) throw err;
+    try {
+      return {
+        store: decodeStore(await readFile(lastReadablePath(), "utf8"), LAST_READABLE_WHERE),
+        problem: err.message,
+      };
+    } catch {
+      return { store: null, problem: err.message };
+    }
+  }
+}
+
+/**
+ * The store for the repair (#139): what reads, or why it does not. The repair rebuilds a store that does not read from
+ * the audit trail, so a store that is unreadable is an input to it, not an error.
+ */
+export async function readStoreForRepair(): Promise<{
+  store: PortfolioStore | null;
+  problem: string | null;
+  /** What the store began with, from its last readable copy when the store itself does not read. */
+  starting?: PortfolioStore["starting"];
+}> {
+  try {
+    const store = await readStore();
+    return { store, problem: null, ...(store?.starting !== undefined ? { starting: store.starting } : {}) };
+  } catch (err) {
+    if (!(err instanceof StoreUnreadableError)) throw err;
+    const { store } = await readLastReadable();
+    return {
+      store: null,
+      problem: err.message,
+      ...(store?.starting !== undefined ? { starting: store.starting } : {}),
+    };
+  }
 }
 
 /** The store, or `null` while there is none: for the run that finishes what an earlier `inbox:ingest` left in it. */
@@ -85,8 +165,9 @@ function readFromStore<C extends Currency>(store: PortfolioStore, currency: C, w
       `${STORE_WHERE}: there is no ${currency} silo in the portfolio (see docs/input-format.md)`,
     );
   }
-  if (warn) warnIfStale(portfolio.syncedAt);
-  return { portfolio, lotsProblem: null, skippedRows: [], unreadableCells: [] };
+  const staleness = stalenessOf(portfolio.reconciled?.date, new Date(), config.marketData.portfolioStaleDays);
+  if (warn) warnIfSnapshotStale(currency, staleness);
+  return { portfolio, lotsProblem: null, skippedRows: [], unreadableCells: [], staleness };
 }
 
 /** What the flows that skip a row they cannot read do with the reason (ADR-0016). */
@@ -99,9 +180,23 @@ const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING:
  * stop watching its positions). Warns if it has gone more than `PORTFOLIO_STALE_DAYS` without a manual
  * update; it does not block the run.
  */
-export async function readPortfolio<C extends Currency>(currency: C): Promise<PortfolioRead<C>> {
-  const store = await readStore();
-  if (store !== null) return readFromStore(store, currency, true);
+export async function readPortfolio<C extends Currency>(
+  currency: C,
+  { lastReadable = false }: { lastReadable?: boolean } = {},
+): Promise<PortfolioRead<C>> {
+  // The heartbeat asks to go on over the last state that read when the store does not (#139): it must keep watching the stops.
+  if (lastReadable) {
+    const { store, problem } = await readLastReadable();
+    if (store !== null) {
+      const read = readFromStore(store, currency, true);
+      return problem === undefined ? read : { ...read, storeProblem: problem };
+    }
+    // Neither the store nor its copy reads: the old file is the state while there is no store, or the error is the verdict.
+    if (problem !== undefined) throw new StoreUnreadableError(problem);
+  } else {
+    const store = await readStore();
+    if (store !== null) return readFromStore(store, currency, true);
+  }
   return parsePortfolioText(await readFile(portfolioPath(), "utf8"), currency);
 }
 
@@ -113,13 +208,8 @@ export async function readPortfolio<C extends Currency>(currency: C): Promise<Po
 export async function readBothPortfolios(): Promise<{ EUR?: PortfolioRead<"EUR">; USD?: PortfolioRead<"USD"> }> {
   const store = await readStore();
   if (store !== null) {
-    let warn = true;
-    const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined => {
-      if (store.silos[currency] === undefined) return undefined;
-      const read = readFromStore(store, currency, warn);
-      warn = false;
-      return read;
-    };
+    const silo = <C extends Currency>(currency: C): PortfolioRead<C> | undefined =>
+      store.silos[currency] === undefined ? undefined : readFromStore(store, currency, true);
     const eur = silo("EUR");
     const usd = silo("USD");
     if (eur === undefined && usd === undefined) {
@@ -164,6 +254,16 @@ function warnIfStale(lastSync: string | null | undefined): void {
   } else {
     console.warn("[vault-io] portfolio.md has no last_manual_sync field. Update it by hand.");
   }
+}
+
+/** Warns that a silo of the store is stale (#138): it has no snapshot of the broker, or its latest one is too old. */
+function warnIfSnapshotStale(currency: Currency, staleness: Staleness): void {
+  if (!staleness.stale) return;
+  const how =
+    staleness.asOf === null
+      ? `the ${currency} silo has no snapshot of the broker, so it is stale`
+      : `the ${currency} silo's latest snapshot is from ${staleness.asOf.slice(0, 10)}, ${Math.floor(staleness.ageDays!)} days ago: it is stale`;
+  console.warn(`[vault-io] WARNING: ${how}. Send a snapshot command (see routines/portfolio-sync.md).`);
 }
 
 /**
@@ -217,6 +317,7 @@ function parsePortfolioText<C extends Currency>(raw: string, currency: C, warnSt
     lotsProblem,
     skippedRows,
     unreadableCells,
+    staleness: null,
   };
 }
 
@@ -233,7 +334,7 @@ export function requireReadable<C extends Currency>(read: PortfolioRead<C>): Por
 }
 
 /**
- * The model for the flows that use positions, cash and silo value but not the lots (`pending:resolve`, the
+ * The model for the flows that use positions, cash and silo value but not the lots (`pending:record`, the
  * Monday briefing, the weekly screening): a `Lots` table that does not read does not stop them. A `Positions`
  * row whose ticker does not parse and a cell too large to count in cents are warned of, not refused.
  */
@@ -295,7 +396,15 @@ export async function changeCash(
  * or there is no `portfolio.md`.
  */
 export async function refreshPrices(currency: Currency, prices: ReadonlyMap<Ticker, number>): Promise<void> {
-  const store = await readStore();
+  let store: PortfolioStore | null;
+  try {
+    store = await readStore();
+  } catch (err) {
+    // A store that does not read is not written over with prices: the repair is the way back (#139). The heartbeat goes on.
+    if (!(err instanceof StoreUnreadableError)) throw err;
+    console.warn(`[vault-io] WARNING: prices not updated: ${err.message}`);
+    return;
+  }
   if (store !== null) {
     const silo = store.silos[currency];
     const priced = silo === undefined ? null : withPrices(silo, prices);
@@ -334,7 +443,11 @@ async function writeAtomically(text: string, target = portfolioPath()): Promise<
  * error is thrown after the state is safe, and the next write (or `rewriteView`) generates it again.
  */
 async function writeStore(store: PortfolioStore): Promise<void> {
-  await writeAtomically(encodeStore(store), storePath());
+  const text = encodeStore(store);
+  // What is written reads back, or nothing is: the copy of the last readable state must never be a bad one.
+  decodeStore(text, STORE_WHERE);
+  await writeAtomically(text, storePath());
+  await writeAtomically(text, lastReadablePath());
   await writeAtomically(renderView(store));
 }
 
@@ -381,20 +494,23 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
     raw = await readFile(portfolioPath(), "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT")
-      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [] };
+      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [], closedEscalations: [] };
     throw err;
   }
   const read = silosOfText(raw);
   const accountEnv = extractFrontmatter(raw)?.account_env;
+  const silos = {
+    ...(read.EUR ? { EUR: requireWhole(read.EUR) } : {}),
+    ...(read.USD ? { USD: requireWhole(read.USD) } : {}),
+  };
   return {
-    silos: {
-      ...(read.EUR ? { EUR: requireWhole(read.EUR) } : {}),
-      ...(read.USD ? { USD: requireWhole(read.USD) } : {}),
-    },
+    silos,
+    starting: silos,
     ...(typeof accountEnv === "string" ? { accountEnv } : {}),
     unmoved: [],
     pendingDecisions: [],
     resolvedRejections: [],
+    closedEscalations: [],
   };
 }
 
@@ -404,14 +520,21 @@ export async function saveStore(store: PortfolioStore): Promise<void> {
 }
 
 /**
- * Makes the store from the old `portfolio.md` now, with every silo synced at `syncedAt` (the demo, which runs on a
- * copy of the example brain that must not warn of a stale portfolio). A store that exists is left as it is.
+ * Makes the store from the old `portfolio.md` now, with every silo synced and reconciled with the broker as of
+ * `syncedAt` (the demo, which runs on a copy of the example brain that must not warn of a stale portfolio: it is made
+ * as if the owner had sent a snapshot with no difference that day). A store that exists is left as it is.
  */
 export async function seedStore(syncedAt: Date): Promise<void> {
   if ((await readStore()) !== null) return;
   const store = await storeFromPortfolioFile();
   const stamp = (silo: PortfolioSnapshot | undefined) =>
-    silo ? { ...silo, syncedAt: syncedAt.toISOString() } : undefined;
+    silo
+      ? {
+          ...silo,
+          syncedAt: syncedAt.toISOString(),
+          reconciled: { date: syncedAt.toISOString().slice(0, 10), differences: [] }, // no `recordedOn`: nothing to confirm
+        }
+      : undefined;
   await writeStore({
     ...store,
     silos: {

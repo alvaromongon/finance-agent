@@ -191,6 +191,11 @@ describe("English renders", () => {
       unreadableCells: [],
       noStop: [],
       rejectedBatches: [],
+      pendingEscalations: [],
+      storeProblem: null,
+      configurationProblems: [],
+      staleness: null,
+      snapshot: null,
       breaches: detectStopBreaches(
         [position({ ticker: tk("CAT"), avgPrice: 218, stopLoss: 213 })],
         new Map([["CAT", 210.77]]),
@@ -232,6 +237,60 @@ describe("English renders", () => {
   });
 });
 
+describe("English heartbeat digest, the silo and the broker (#138)", () => {
+  const digest: HeartbeatDigest = {
+    currency: "EUR",
+    syncedAt: "2026-09-02T14:10:00Z",
+    minAtr: 2,
+    lotsWarnings: [],
+    tickerWarnings: [],
+    unreadableCells: [],
+    noStop: [],
+    rejectedBatches: [],
+    pendingEscalations: [],
+    storeProblem: null,
+    configurationProblems: [],
+    staleness: { asOf: "2026-11-10", ageDays: 16.5, stale: true },
+    snapshot: {
+      date: "2026-11-20",
+      differences: [
+        { kind: "cash", broker: money(1010.5, "EUR"), engine: money(1000, "EUR") },
+        { kind: "position", ticker: tk("SAP.DE"), broker: 8, engine: 10 },
+      ],
+      recordedToday: false,
+    },
+    breaches: [],
+    tightStops: [],
+    armed: [],
+    escalated: [],
+  };
+
+  it("names the stale silo and lists each difference, in English with en-US numbers", () => {
+    const email = renderHeartbeatDigest(digest, en)!;
+    assert.match(email.subject, /stale portfolio · difference with the broker: SAP\.DE/);
+    assert.match(email.body, /## EUR silo: stale/);
+    assert.match(email.body, /The latest snapshot of the EUR silo is as of \*\*2026-11-10\*\*, 16\.5 days ago/);
+    assert.match(email.body, /## EUR silo: differences with the broker/);
+    assert.ok(
+      email.body.includes("- Cash: the broker has 1,010.50 EUR, the engine 1,000.00 EUR (+10.50 EUR)"),
+      email.body,
+    );
+    assert.ok(email.body.includes("- SAP.DE: the broker has 8 units, the engine 10 (-2)"), email.body);
+    assert.match(email.body, /The engine did not change its state/);
+    assert.doesNotMatch(`${email.subject}\n${email.body}`, SPANISH);
+  });
+
+  it("says a snapshot with no difference matches, in English", () => {
+    const email = renderHeartbeatDigest(
+      { ...digest, staleness: null, snapshot: { date: "2026-11-25", differences: [], recordedToday: true } },
+      en,
+    )!;
+    assert.match(email.body, /## EUR silo: snapshot without differences/);
+    assert.match(email.body, /as of \*\*2026-11-25\*\* matches the engine's state/);
+    assert.doesNotMatch(`${email.subject}\n${email.body}`, SPANISH);
+  });
+});
+
 describe("English heartbeat digest, lots section", () => {
   it("mirrors the owner-approved wording (#69)", () => {
     const email = renderHeartbeatDigest(
@@ -244,6 +303,11 @@ describe("English heartbeat digest, lots section", () => {
         unreadableCells: [],
         noStop: [],
         rejectedBatches: [],
+        pendingEscalations: [],
+        storeProblem: null,
+        configurationProblems: [],
+        staleness: null,
+        snapshot: null,
         breaches: [],
         tightStops: [],
         armed: [],

@@ -8,7 +8,15 @@
 // - `withPrices`: the edit the price refresh makes to a silo of the store.
 import { canCountInCents, money, type Money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
-import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
+import {
+  CURRENCIES,
+  type Currency,
+  type Difference,
+  type Lot,
+  type PortfolioSnapshot,
+  type Position,
+  type Reconciliation,
+} from "../types.js";
 import { DECISION_ORIGINS, type DecisionOrigin } from "../decisions.js";
 import { numberFormat } from "./portfolio-writer.js";
 
@@ -42,6 +50,25 @@ export interface ResolvedRejection {
   at: string;
 }
 
+/**
+ * A pending escalation that was closed (#141): a `resolve` command said it was answered or given up. The signal's file
+ * stays in `logs/pending/` as the record; the hash of its text tells it from a file written later under the same name
+ * (a new escalation). The pending escalations not listed here are the ones still open, named in every digest.
+ */
+export interface ClosedEscalationRecord {
+  /** The id of the escalation: its file in `logs/pending/` without `.md`. */
+  id: string;
+  sha256: string;
+  outcome: "resolved" | "discarded";
+  note?: string;
+  /** YYYY-MM-DD: the day it was closed. */
+  date: string;
+  /** The batch that closed it, by its file name in `inbox/`. */
+  by: string;
+  /** ISO timestamp of when it was closed. */
+  at: string;
+}
+
 /** The whole store: each silo the portfolio has, the account kind and the batches applied. */
 export interface PortfolioStore {
   silos: { readonly [C in Currency]?: PortfolioSnapshot<C> };
@@ -57,6 +84,13 @@ export interface PortfolioStore {
   pendingDecisions: string[];
   /** The rejected batches that were replaced or discarded, see `ResolvedRejection`. */
   resolvedRejections: ResolvedRejection[];
+  /** The pending escalations that were closed, see `ClosedEscalationRecord`. */
+  closedEscalations: ClosedEscalationRecord[];
+  /**
+   * The silos as the store began, from `portfolio.md` (#139): what the batches in `inbox/applied/` are replayed over by a
+   * correction and by the repair. Absent in a store that began empty.
+   */
+  starting?: { readonly [C in Currency]?: PortfolioSnapshot<C> };
 }
 
 // ─── Plain decimal ────────────────────────────────────────────────────────────
@@ -104,22 +138,39 @@ const encodePosition = (p: Position, currency: Currency) => ({
   stop_loss: decimalOrNull(p.stopLoss),
 });
 
+const encodeDifference = (d: Difference, currency: Currency) =>
+  d.kind === "cash"
+    ? { kind: "cash", broker: amountText(d.broker, currency), engine: amountText(d.engine, currency) }
+    : { kind: "position", ticker: d.ticker, broker: plainDecimal(d.broker), engine: plainDecimal(d.engine) };
+
 const encodeSilo = (silo: PortfolioSnapshot) => ({
   synced_at: silo.syncedAt,
+  ...(silo.reconciled !== undefined
+    ? {
+        reconciled: {
+          date: silo.reconciled.date,
+          ...(silo.reconciled.recordedOn !== undefined ? { recorded_on: silo.reconciled.recordedOn } : {}),
+          differences: silo.reconciled.differences.map((d) => encodeDifference(d, silo.currency)),
+        },
+      }
+    : {}),
   cash: amountText(silo.cash, silo.currency),
   ...(silo.totalCash !== undefined ? { total_cash: amountText(silo.totalCash, silo.currency) } : {}),
   positions: silo.positions.map((p) => encodePosition(p, silo.currency)),
   lots: silo.lots.map((l) => encodeLot(l, silo.currency)),
 });
 
-/** The text of the store file. */
-export function encodeStore(store: PortfolioStore): string {
-  const silos = Object.fromEntries(
+const encodeSilos = (silos: PortfolioStore["silos"]) =>
+  Object.fromEntries(
     CURRENCIES.flatMap((currency) => {
-      const silo = store.silos[currency];
+      const silo = silos[currency];
       return silo === undefined ? [] : [[currency, encodeSilo(silo)]];
     }),
   );
+
+/** The text of the store file. */
+export function encodeStore(store: PortfolioStore): string {
+  const silos = encodeSilos(store.silos);
   const document = {
     schema_version: STORE_VERSION,
     ...(store.accountEnv !== undefined ? { account_env: store.accountEnv } : {}),
@@ -132,12 +183,30 @@ export function encodeStore(store: PortfolioStore): string {
       by: r.by,
       at: r.at,
     })),
+    closed_escalations: store.closedEscalations.map((c) => ({
+      id: c.id,
+      sha256: c.sha256,
+      outcome: c.outcome,
+      ...(c.note !== undefined ? { note: c.note } : {}),
+      date: c.date,
+      by: c.by,
+      at: c.at,
+    })),
     silos,
+    ...(store.starting !== undefined ? { starting_silos: encodeSilos(store.starting) } : {}),
   };
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
 // ─── Decoding ─────────────────────────────────────────────────────────────────
+
+/** A real calendar date, YYYY-MM-DD. */
+function isCalendarDate(text: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const [y, m, d] = text.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
 
 type Json = Record<string, unknown>;
 
@@ -184,9 +253,8 @@ export function decodeStore(text: string, where: string): PortfolioStore {
   if (doc.schema_version !== STORE_VERSION) {
     fail("schema_version", `must be ${STORE_VERSION}; got: ${JSON.stringify(doc.schema_version)}`);
   }
-  const silos: { EUR?: PortfolioSnapshot<"EUR">; USD?: PortfolioSnapshot<"USD"> } = {};
-  const readSilo = <C extends Currency>(currency: C, raw: unknown): PortfolioSnapshot<C> => {
-    const at = `silos.${currency}`;
+  const readSilo = <C extends Currency>(currency: C, raw: unknown, root: string): PortfolioSnapshot<C> => {
+    const at = `${root}.${currency}`;
     const s = object(raw, at);
     const positions = array(s.positions, `${at}.positions`).map((p, i): Position<C> => {
       const path = `${at}.positions[${i}]`;
@@ -222,6 +290,36 @@ export function decodeStore(text: string, where: string): PortfolioStore {
         ),
       };
     });
+    // A silo never reconciled has no `reconciled`: it is stale until a snapshot says otherwise (#138).
+    const reconciled = (value: unknown): Reconciliation<C> => {
+      const path = `${at}.reconciled`;
+      const o = object(value, path);
+      const date = string(o.date, `${path}.date`);
+      if (!isCalendarDate(date))
+        fail(`${path}.date`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(date)}`);
+      const differences = array(o.differences, `${path}.differences`).map((d, i): Difference<C> => {
+        const at = `${path}.differences[${i}]`;
+        const entry = object(d, at);
+        if (entry.kind === "cash") {
+          return {
+            kind: "cash",
+            broker: amount(entry.broker, `${at}.broker`, currency),
+            engine: amount(entry.engine, `${at}.engine`, currency),
+          };
+        }
+        if (entry.kind !== "position") return fail(`${at}.kind`, 'must be "cash" or "position"');
+        return {
+          kind: "position",
+          ticker: ticker(entry.ticker, `${at}.ticker`),
+          broker: decimal(entry.broker, `${at}.broker`),
+          engine: decimal(entry.engine, `${at}.engine`),
+        };
+      });
+      const recordedOn = o.recorded_on === undefined ? undefined : string(o.recorded_on, `${path}.recorded_on`);
+      if (recordedOn !== undefined && !isCalendarDate(recordedOn))
+        fail(`${path}.recorded_on`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(recordedOn)}`);
+      return { date, ...(recordedOn !== undefined ? { recordedOn } : {}), differences };
+    };
     return {
       currency,
       cash: amount(s.cash, `${at}.cash`, currency),
@@ -229,14 +327,20 @@ export function decodeStore(text: string, where: string): PortfolioStore {
       positions,
       lots,
       syncedAt: string(s.synced_at, `${at}.synced_at`),
+      ...(s.reconciled !== undefined ? { reconciled: reconciled(s.reconciled) } : {}),
     };
   };
-  const rawSilos = object(doc.silos, "silos");
-  for (const key of Object.keys(rawSilos)) {
-    if (!CURRENCIES.includes(key as Currency)) fail(`silos.${key}`, "is not a silo (EUR or USD)");
-  }
-  if (rawSilos.EUR !== undefined) silos.EUR = readSilo("EUR", rawSilos.EUR);
-  if (rawSilos.USD !== undefined) silos.USD = readSilo("USD", rawSilos.USD);
+  const readSilos = (value: unknown, root: string): PortfolioStore["silos"] => {
+    const raw = object(value, root);
+    for (const key of Object.keys(raw)) {
+      if (!CURRENCIES.includes(key as Currency)) fail(`${root}.${key}`, "is not a silo (EUR or USD)");
+    }
+    return {
+      ...(raw.EUR !== undefined ? { EUR: readSilo("EUR", raw.EUR, root) } : {}),
+      ...(raw.USD !== undefined ? { USD: readSilo("USD", raw.USD, root) } : {}),
+    };
+  };
+  const silos = readSilos(doc.silos, "silos");
   const unmoved = array(doc.unmoved_batches, "unmoved_batches").map((a, i): AppliedBatch => {
     const o = object(a, `unmoved_batches[${i}]`);
     return {
@@ -264,12 +368,34 @@ export function decodeStore(text: string, where: string): PortfolioStore {
       at: string(o.at, `${path}.at`),
     };
   });
+  const closedEscalations = (
+    doc.closed_escalations === undefined ? [] : array(doc.closed_escalations, "closed_escalations")
+  ).map((r, i): ClosedEscalationRecord => {
+    const path = `closed_escalations[${i}]`;
+    const o = object(r, path);
+    const outcome = string(o.outcome, `${path}.outcome`);
+    if (outcome !== "resolved" && outcome !== "discarded") fail(`${path}.outcome`, 'must be "resolved" or "discarded"');
+    const date = string(o.date, `${path}.date`);
+    if (!isCalendarDate(date))
+      fail(`${path}.date`, `must be a calendar date as YYYY-MM-DD; got: ${JSON.stringify(date)}`);
+    return {
+      id: string(o.id, `${path}.id`),
+      sha256: string(o.sha256, `${path}.sha256`),
+      outcome: outcome as ClosedEscalationRecord["outcome"],
+      ...(o.note !== undefined ? { note: string(o.note, `${path}.note`) } : {}),
+      date,
+      by: string(o.by, `${path}.by`),
+      at: string(o.at, `${path}.at`),
+    };
+  });
   return {
     silos,
     ...(doc.account_env !== undefined ? { accountEnv: string(doc.account_env, "account_env") } : {}),
     unmoved,
     pendingDecisions,
     resolvedRejections,
+    closedEscalations,
+    ...(doc.starting_silos !== undefined ? { starting: readSilos(doc.starting_silos, "starting_silos") } : {}),
   };
 }
 

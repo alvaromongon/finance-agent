@@ -149,8 +149,12 @@ describe("inbox:ingest", () => {
     it("leaves the lot's decision-log line: the entry of the lot", async () => {
       await inbox.ingestInbox();
       const lines = await log();
-      const [entry] = lines;
-      assert.equal(lines.length, 1);
+      // The deposit has its line too (#139), so a correction can name it; the lot's is the entry.
+      assert.deepEqual(
+        lines.map((l) => l.type),
+        ["deposit", "entry"],
+      );
+      const entry = lines[1];
       const doc = JSON.parse(await storeText());
       assert.deepEqual(
         [
@@ -178,7 +182,7 @@ describe("inbox:ingest", () => {
       await assert.rejects(inbox.ingestInbox(), /inbox\/applied is not a real folder/);
       const applied = await storeText();
       assert.deepEqual(await ls("inbox"), ["2026-11-12.yaml", "applied"]);
-      assert.equal((await log()).length, 1);
+      assert.equal((await log()).length, 2); // the deposit and the entry
 
       await rm(dir("inbox", "applied"));
       const again = await inbox.ingestInbox();
@@ -189,7 +193,7 @@ describe("inbox:ingest", () => {
       assert.equal(doc.silos.EUR.lots.length, 1);
       assert.deepEqual(doc.unmoved_batches, [], "the store forgets a batch once its file has moved");
       assert.equal(JSON.parse(applied).unmoved_batches.length, 1);
-      assert.equal((await log()).length, 1, "the decision lines were not written twice");
+      assert.equal((await log()).length, 2, "the decision lines were not written twice");
     });
 
     it("an identical file dropped again later is a new batch: it is applied again", async () => {
@@ -282,6 +286,311 @@ describe("inbox:ingest", () => {
     });
   });
 
+  describe("a snapshot of the broker (#138)", () => {
+    const DAY = new Date("2026-11-26T10:00:00Z");
+    // The store is seeded with 1000.00 EUR and 500.00 USD and no position; the batch buys 2 SAP.DE for 200 EUR.
+    const SNAP = (cash: string, positions: string, date = "2026-11-25", currency = "EUR") =>
+      `command: snapshot\ndate: ${date}\ncash: ${cash} ${currency}\npositions: ${positions}`;
+    const OWN = "\n  - ticker: SAP.DE\n    units: 2";
+    const siloOf = async (currency: "EUR" | "USD" = "EUR") => JSON.parse(await storeText()).silos[currency];
+    const reconcileLines = async () => (await log()).filter((d) => d.type === "reconcile");
+
+    it("changes no cash, position or lot: it records the difference and the day, and the state is what the batch left", async () => {
+      await drop("a.yaml", batch(BUY(), STOP, SNAP("812.50", "[]")));
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const eur = await siloOf();
+      assert.equal(eur.cash, "800.00 EUR", "the engine keeps its own cash: 1000 - 200");
+      assert.equal(eur.positions.length, 1);
+      assert.equal(eur.lots.length, 1);
+      assert.deepEqual(eur.reconciled, {
+        date: "2026-11-25",
+        recorded_on: "2026-11-26",
+        differences: [
+          { kind: "cash", broker: "812.50 EUR", engine: "800.00 EUR" },
+          { kind: "position", ticker: "SAP.DE", broker: "0", engine: "2" },
+        ],
+      });
+      assert.equal((await siloOf("USD")).reconciled, undefined, "the other silo was not compared");
+      assert.deepEqual(await ls("inbox", "applied"), ["a.yaml"]);
+    });
+
+    it("says each difference in its output, as a warning that does not stop the batch", async () => {
+      await drop("a.yaml", batch(SNAP("1010.50", "[]")));
+      const { lines, exitCode } = await inbox.ingestInbox(DAY);
+      assert.equal(exitCode, 0);
+      assert.ok(
+        lines.includes(
+          "inbox/a.yaml: command 1, line 3: warning: the EUR snapshot as of 2026-11-25 differs from the state in the cash: the broker has 1010.50 EUR, the engine 1000.00 EUR (+10.50 EUR)",
+        ),
+        lines.join("\n"),
+      );
+    });
+
+    it("writes one reconcile line per difference: the ticker or no ticker for the cash, what each side holds, its size, the snapshot date", async () => {
+      await drop("a.yaml", batch(BUY(), STOP, SNAP("812.50", `\n  - ticker: KO\n    units: 3`, "2026-11-24")));
+      assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
+      const lines = await reconcileLines();
+      assert.deepEqual(
+        lines.map((d) => [
+          d.ticker ?? null,
+          d.currency,
+          d.date,
+          d.broker,
+          d.engine,
+          d.difference,
+          d.origin,
+          d.source,
+          d.rules_version,
+        ]),
+        [
+          [null, "EUR", "2026-11-24", 812.5, 800, 12.5, "propietario", "portfolio-sync", "1.4"],
+          ["KO", "EUR", "2026-11-24", 3, 0, 3, "propietario", "portfolio-sync", "1.4"],
+          ["SAP.DE", "EUR", "2026-11-24", 0, 2, -2, "propietario", "portfolio-sync", "1.4"],
+        ],
+      );
+      assert.equal(new Set(lines.map((d) => d.id)).size, 3, "each line has its own id");
+    });
+
+    it("a snapshot that agrees with the state writes no line and records an empty list of differences", async () => {
+      await drop("a.yaml", batch(BUY(), STOP, SNAP("800.00", OWN)));
+      assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
+      assert.deepEqual(await reconcileLines(), []);
+      assert.deepEqual((await siloOf()).reconciled, {
+        date: "2026-11-25",
+        recorded_on: "2026-11-26",
+        differences: [],
+      });
+    });
+
+    it("a later snapshot replaces the differences of the earlier one", async () => {
+      await drop("a.yaml", batch(SNAP("1.00", "[]", "2026-11-20")));
+      await inbox.ingestInbox(DAY);
+      assert.equal((await siloOf()).reconciled.differences.length, 1);
+      await drop("b.yaml", batch(SNAP("1000.00", "[]", "2026-11-25")));
+      await inbox.ingestInbox(DAY);
+      assert.deepEqual((await siloOf()).reconciled, {
+        date: "2026-11-25",
+        recorded_on: "2026-11-26",
+        differences: [],
+      });
+    });
+
+    it("rejects a snapshot dated in the future and keeps the state as it was", async () => {
+      await drop("a.yaml", batch(SNAP("1000.00", "[]", "2026-11-27")));
+      const { lines, exitCode } = await inbox.ingestInbox(DAY);
+      assert.equal(exitCode, 1);
+      assert.match(lines.join("\n"), /the snapshot's date 2026-11-27 is in the future \(today is 2026-11-26\)/);
+      assert.deepEqual(await ls("inbox", "rejected"), ["a.yaml", "a.yaml.errors.txt"]);
+      assert.deepEqual(await ls("state"), [], "nothing was applied, so no store was made");
+    });
+  });
+
+  describe("a split (#137)", () => {
+    const SPLIT = (ratio: string, over = "") =>
+      `command: split\nticker: SAP.DE\ndate: 2026-10-01\nratio: ${ratio}${over ? `\n${over}` : ""}`;
+    const DAY = new Date("2026-11-12T09:00:00Z");
+    const eurSilo = async () => JSON.parse(await storeText()).silos.EUR;
+    const splitLines = async () => (await log()).filter((d) => d.type === "split");
+    /** What the lots check, which the evaluation refuses a mismatch with, says of the store and the log. */
+    const mismatches = async () => {
+      const { lotsMismatches } = await import("../utils/lots-check.js");
+      const { readDecisionHistory } = await import("../vault-io.js");
+      const history = await readDecisionHistory();
+      return [
+        ...lotsMismatches((await store.readPortfolio("EUR")).portfolio, history),
+        ...lotsMismatches((await store.readPortfolio("USD")).portfolio, history),
+      ];
+    };
+    const rOfTrades = async () => {
+      const { closedTrades } = await import("../utils/decisions-evaluation.js");
+      const { readDecisionHistory } = await import("../vault-io.js");
+      return closedTrades(await readDecisionHistory()).map((t) => t.rNet);
+    };
+
+    it("scales the open lots and the position of a held ticker, and leaves the cash, the costs and the other silo alone", async () => {
+      await drop("a.yaml", batch(BUY("costs: 1.50 EUR\nunits: 5").replace("units: 2\n", ""), STOP));
+      const first = await inbox.ingestInbox(DAY);
+      assert.equal(first.exitCode, 0, first.lines.join("\n"));
+      const before = await eurSilo();
+      await drop("b.yaml", batch(SPLIT("4 for 1")));
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const after = await eurSilo();
+      const [lot] = after.lots;
+      assert.deepEqual(
+        [lot.units, lot.entry_units, lot.entry_price, lot.initial_stop, lot.entry_costs],
+        ["20", "20", "25", "22.5", "1.50 EUR"],
+      );
+      assert.deepEqual(
+        after.positions.map((p: Record<string, unknown>) => [p.ticker, p.volume, p.avg_price, p.stop_loss]),
+        [["SAP.DE", "20", "25", "22.5"]],
+      );
+      assert.equal(after.cash, before.cash);
+      assert.deepEqual(await ls("inbox", "applied"), ["a.yaml", "b.yaml"]);
+      assert.deepEqual(await mismatches(), []);
+    });
+
+    it("writes one split line, with the ticker, the silo, the ratio and the date of the split", async () => {
+      await drop("a.yaml", batch(BUY("units: 10").replace("units: 2\n", ""), STOP, SPLIT("4 for 1")));
+      assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
+      const [line, ...more] = await splitLines();
+      assert.deepEqual(more, []);
+      assert.deepEqual(
+        [
+          line.type,
+          line.ticker,
+          line.currency,
+          line.date,
+          line.split_ratio,
+          line.source,
+          line.origin,
+          line.rules_version,
+        ],
+        ["split", "SAP.DE", "EUR", "2026-10-01", 4, "portfolio-sync", "propietario", "1.4"],
+      );
+    });
+
+    it("a reverse split divides the units and multiplies the price: 1 for 10", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: SAP.DE\ndate: 2026-09-15\nunits: 100\nprice: 10 EUR",
+          "command: set_stop\nticker: SAP.DE\nprice: 9 EUR",
+        ),
+      );
+      await inbox.ingestInbox(DAY);
+      await drop("b.yaml", batch(SPLIT("1 for 10")));
+      assert.equal((await inbox.ingestInbox(DAY)).exitCode, 0);
+      const [lot] = (await eurSilo()).lots;
+      assert.deepEqual([lot.units, lot.entry_units, lot.entry_price, lot.initial_stop], ["10", "10", "100", "90"]);
+      assert.equal((await splitLines())[0].split_ratio, 0.1);
+      assert.deepEqual(await mismatches(), []);
+    });
+
+    it("a split in the same batch as the buy leaves the entry line as it was bought, and the lot split", async () => {
+      await drop(
+        "a.yaml",
+        batch("command: buy\nticker: SAP.DE\ndate: 2026-09-15\nunits: 10\nprice: 100 EUR", STOP, SPLIT("2 for 1")),
+      );
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const [lot] = (await eurSilo()).lots;
+      assert.deepEqual([lot.units, lot.entry_units, lot.entry_price, lot.initial_stop], ["20", "20", "50", "45"]);
+      const [entry] = (await log()).filter((d) => d.type === "entry");
+      assert.deepEqual([entry.units, entry.price, entry.amount, entry.stop_initial], [10, 100, 1000, 90]);
+      assert.deepEqual(await mismatches(), []);
+    });
+
+    it("a sale after the split sells the adjusted lots, oldest first, and measures R as if it had never split", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: SAP.DE\ndate: 2026-09-01\nunits: 4\nprice: 100 EUR",
+          "command: buy\nticker: SAP.DE\ndate: 2026-09-10\nunits: 4\nprice: 110 EUR",
+          "command: set_stop\nticker: SAP.DE\nprice: 90 EUR",
+        ),
+      );
+      const first = await inbox.ingestInbox(DAY);
+      assert.equal(first.exitCode, 0, first.lines.join("\n"));
+      await drop(
+        "b.yaml",
+        batch(SPLIT("2 for 1"), "command: sale\nticker: SAP.DE\ndate: 2026-10-05\nunits: 10\nprice: 60 EUR"),
+      );
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      const silo = await eurSilo();
+      assert.deepEqual(
+        silo.lots.map((l: Record<string, string>) => [l.units, l.entry_units, l.entry_price]),
+        [["6", "8", "55"]],
+      );
+      const exits = (await log()).filter((d) => d.type === "exit");
+      assert.deepEqual(
+        exits.map((e) => [e.units, e.entry_price, e.entry_units, e.lot_units_left]),
+        [
+          [8, 50, 8, 0],
+          [2, 55, 8, 6],
+        ],
+      );
+      // The first lot: entry 100, stop 90, sold at 120 (60 x 2): +2R. It is closed; the second lot is still open (6 of 8).
+      assert.deepEqual(await rOfTrades(), [2]);
+      assert.deepEqual(await mismatches(), []);
+    });
+
+    it("a sale before the split in the same batch, and one after it, are one trade of the same R", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: SAP.DE\ndate: 2026-09-15\nunits: 10\nprice: 100 EUR",
+          STOP,
+          "command: sale\nticker: SAP.DE\ndate: 2026-09-20\nunits: 4\nprice: 110 EUR",
+          SPLIT("2 for 1"),
+          "command: sale\nticker: SAP.DE\ndate: 2026-10-05\nunits: 12\nprice: 55 EUR",
+        ),
+      );
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      assert.deepEqual((await eurSilo()).lots, []);
+      const exits = (await log()).filter((d) => d.type === "exit");
+      assert.deepEqual(
+        exits.map((e) => [e.units, e.entry_units, e.entry_price, e.stop_initial, e.lot_units_left]),
+        [
+          [4, 10, 100, 90, 6],
+          [12, 20, 50, 45, 0],
+        ],
+      );
+      // 4 of 10 at +1R, and 6 of 10 (12 of 20 after the split) at +1R.
+      assert.deepEqual(await rOfTrades(), [1]);
+    });
+
+    it("refuses a ticker with no open lot, a ratio of 1 and a date before the lot, and changes nothing", async () => {
+      await drop("a.yaml", batch(BUY("units: 10").replace("units: 2\n", ""), STOP));
+      await inbox.ingestInbox(DAY);
+      const stored = await storeText();
+      const logged = await log();
+      for (const [name, command] of [
+        ["no-lot", "command: split\nticker: KO\ndate: 2026-10-01\nratio: 2 for 1"],
+        ["one", SPLIT("3 for 3")],
+        ["early", SPLIT("2 for 1").replace("2026-10-01", "2026-09-14")],
+      ] as const) {
+        await drop(`${name}.yaml`, batch("command: deposit\namount: 5 EUR", command));
+        const refused = await inbox.ingestInbox(DAY);
+        assert.equal(refused.exitCode, 1, name);
+        assert.equal(await storeText(), stored, name);
+        assert.deepEqual(await log(), logged, name);
+      }
+      assert.deepEqual(await ls("inbox", "rejected"), [
+        "early.yaml",
+        "early.yaml.errors.txt",
+        "no-lot.yaml",
+        "no-lot.yaml.errors.txt",
+        "one.yaml",
+        "one.yaml.errors.txt",
+      ]);
+    });
+
+    it("refuses a reverse split that leaves a fraction and applies all or nothing: the batch before it is not kept", async () => {
+      await drop(
+        "a.yaml",
+        batch(
+          "command: buy\nticker: SAP.DE\ndate: 2026-09-15\nunits: 15\nprice: 10 EUR",
+          "command: set_stop\nticker: SAP.DE\nprice: 9 EUR",
+        ),
+      );
+      await inbox.ingestInbox(DAY);
+      const stored = await storeText();
+      await drop("b.yaml", batch("command: deposit\namount: 5 EUR", SPLIT("1 for 10")));
+      const result = await inbox.ingestInbox(DAY);
+      assert.equal(result.exitCode, 1);
+      assert.match(
+        result.lines.join("\n"),
+        /inbox\/b\.yaml: command 2, line \d+: cannot split SAP\.DE 1 for 10: lot ".*" would be left with 1\.5 units/,
+      );
+      assert.equal(await storeText(), stored);
+      assert.deepEqual(await splitLines(), []);
+    });
+  });
+
   describe("a refused batch", () => {
     it("changes nothing: a batch that fails on its last command leaves the store byte-identical", async () => {
       await drop("a-clean.yaml", batch("command: deposit\namount: 1 EUR"));
@@ -365,7 +674,7 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await log(), []);
       await rm(dir("state"), { recursive: true });
       await inbox.ingestInbox();
-      assert.equal((await log()).length, 2); // the entry and the exit
+      assert.equal((await log()).length, 3); // the deposit, the entry and the exit
     });
 
     it("a log that cannot be written after the state was: the next run writes the lines once and applies nothing twice", async () => {
@@ -375,7 +684,7 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await ls("inbox"), ["a.yaml"], "the file stays for the next run");
       const committed = JSON.parse(await storeText());
       assert.equal(committed.silos.EUR.cash, "1010.00 EUR"); // 1000 + 100 - 200 + 110
-      assert.equal(committed.pending_decisions.length, 2);
+      assert.equal(committed.pending_decisions.length, 3);
       assert.equal(committed.unmoved_batches.length, 1);
 
       await rm(dir("logs", "decisions.jsonl"), { recursive: true });
@@ -384,18 +693,62 @@ describe("inbox:ingest", () => {
       const lines = await log();
       assert.deepEqual(
         lines.map((l) => l.type),
-        ["entry", "exit"],
+        ["deposit", "entry", "exit"],
       );
       const done = JSON.parse(await storeText());
       assert.deepEqual([done.pending_decisions, done.unmoved_batches], [[], []]);
       assert.deepEqual(await ls("inbox", "applied"), ["a.yaml"]);
-      assert.equal(lines[1].related_id, lines[0].id);
+      assert.equal(lines[2].related_id, lines[1].id);
+    });
+
+    describe("the strategy is configuration (#142): the last valid version is the one a batch is applied with", () => {
+      const storedStrategy = () => readFile(dir("state", "config", "strategies", "base.md"), "utf8");
+
+      it("saves the valid strategy as the last valid version", async () => {
+        await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
+        assert.equal((await inbox.ingestInbox()).exitCode, 0);
+        assert.equal(await storedStrategy(), `---\nversion: "1.4"\n---\n`);
+      });
+
+      it("applies the batch with the last valid version when the file is invalid, and says so", async () => {
+        await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
+        await inbox.ingestInbox();
+        await drop("b.yaml", batch("command: deposit\namount: 50 EUR"));
+        await writeFile(dir("strategies", "base.md"), "# the version line was deleted\n", "utf8");
+
+        const result = await inbox.ingestInbox();
+
+        assert.equal(result.exitCode, 0, "a bad edit of the strategy does not reject the batch");
+        assert.match(
+          result.lines.join("\n"),
+          /WARNING, configuration: strategies\/base\.md is not valid, running on its last valid version: frontmatter: missing/,
+        );
+        const lines = (await readFile(dir("logs", "decisions.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l));
+        assert.deepEqual(
+          lines.map((d) => d.rules_version),
+          ["1.4", "1.4"],
+        );
+        assert.equal(await storedStrategy(), `---\nversion: "1.4"\n---\n`, "the bad file never replaces the copy");
+      });
+
+      it("refuses with every error when the file is invalid and there is no copy yet", async () => {
+        await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
+        await writeFile(dir("strategies", "base.md"), "---\nversion: \n---\n", "utf8");
+        await assert.rejects(inbox.ingestInbox(), /strategies\/base\.md: version: missing or empty/);
+        assert.deepEqual(await ls("inbox"), ["a.yaml"]);
+      });
     });
 
     it("refuses a batch it cannot apply without the version of the rules, and check goes on without it", async () => {
       await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
       await rm(dir("strategies", "base.md"));
-      await assert.rejects(inbox.ingestInbox(), /strategies\/base\.md has no `version`/);
+      await assert.rejects(
+        inbox.ingestInbox(),
+        /strategies\/base\.md is not valid and there is no last valid version[^]*file: not found/,
+      );
       assert.deepEqual(await ls("inbox"), ["a.yaml"]);
       assert.equal((await inbox.checkInbox()).exitCode, 0);
     });
@@ -784,7 +1137,13 @@ describe("inbox:ingest", () => {
       await mkdir(dir("state"), { recursive: true });
       await writeFile(
         dir("state", "portfolio.json"),
-        encodeStore({ silos: { EUR, USD }, unmoved: [], pendingDecisions: [], resolvedRejections: [] }),
+        encodeStore({
+          silos: { EUR, USD },
+          unmoved: [],
+          pendingDecisions: [],
+          resolvedRejections: [],
+          closedEscalations: [],
+        }),
         "utf8",
       );
     }
@@ -1106,7 +1465,9 @@ describe("inbox:ingest", () => {
           rulesVersion: "1",
           entryCostsTaken: new Map(),
           awaiting: new Set(),
+          escalations: new Set(),
           entry: entryContext(),
+          today: "2026-11-26",
         },
       );
       assert.ok("reason" in result);

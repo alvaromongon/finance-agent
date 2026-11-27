@@ -97,11 +97,66 @@ trail, never retried. It awaits an answer, named in every digest of the [heartbe
 replaces it (`replaces: <file>` at its top) or discards it (a `discard` [command](#command) with `file: <file>`). A
 batch that depends on it fails its own validation.
 
+### Pending escalation
+
+A signal that was [escalated](#escalation) in `handoff` mode and that no one has closed. The engine leaves it as a file
+in `logs/pending/` (its id is the file name without `.md`, such as `2026-11-20-xom`) for the [reasoner](#reasoner-api-and-handoff).
+It stays open, and is named in every digest of the [heartbeat](#heartbeat), until a `resolve` [command](#command) closes it
+as `resolved` (answered) or `discarded` (given up). A command is the only way to close it: the file is never edited or
+deleted, and the store remembers what was closed with the hash of the file, so a new signal written later under the same
+name is open again.
+
 ### Conversion
 
 Cash moved from one [silo](#silo) to the other: the `convert` [command](#command) takes an amount out of one currency
 and gives the other what arrived, at a rate the owner got, in one step (both silos change or neither). It is the only
 way to convert, and it writes an `fx_conversion` line of the decision log, which the [shadow portfolio](#shadow-portfolio) replays.
+
+### Corporate action
+
+An event of a security that changes the units and prices of a [lot](#lot) without any trade by the owner. Today only a
+split (or reverse split) is one: the `split` [command](#command) multiplies the units of every open lot of a ticker by
+the ratio and divides its entry price and stop by it, so what was invested, the entry costs and [R](#r) do not change,
+and it writes a `split` line of the decision log. A spin-off or a merger is not a command yet.
+
+### Snapshot
+
+What the broker shows of one [silo](#silo) on a date: its cash and the units of each position, told to the engine with the
+`snapshot` [command](#command) (#138). The engine compares it with its own state and reports and records each difference
+(a `reconcile` line of the [decision log](#decision-log) per difference) without changing the state: the broker is the
+owner's fact, but applying it silently would hide a trade missed or entered wrongly, so the owner corrects the state with
+a command. The date of the latest snapshot of a silo is what its staleness is measured from, and its differences are named
+in every digest of the [heartbeat](#heartbeat) until a later snapshot shows none.
+
+### Correction
+
+How a mistaken buy, sale, deposit or withdrawal is fixed (#139): the `correct` [command](#command) names the record by the id
+the engine gave it in the [decision log](#decision-log) and gives the values it should have had. The engine applies the batches
+already applied again with the corrected record, rebuilds the [lots](#lot), cash and positions, and writes a `correction` line
+that points at the original with `corrects`. The original stays in the log and in the history: a correction supersedes, it never
+erases, and it is refused if it would leave a later sale without lots or the cash below zero.
+
+### Repair
+
+What the owner runs when the [store](#store) is corrupt (#139): `npm run state:repair` rebuilds it from the [decision log](#decision-log)
+and the batches in `inbox/applied/`, the audit trail, and refuses, changing nothing, when the two disagree, saying where. It is never
+automatic, it edits no batch and no line of the log, and every run writes a `repair` line with the date, the result and the differences.
+
+### Last valid configuration
+
+The copy of a [configuration file](input-format.md#configuration-files) (the strategy, the portfolio policy, the screening
+universe or a prompt) that the engine last found valid, kept in `state/config/<file>`, written only by the engine and committed
+with the rest of the state (#142). When the file the owner edits stops validating, the engine runs on this copy: a bad edit never
+stops risk watch. Every [heartbeat](#heartbeat) digest and the Monday briefing email warn, with every error (file, field, reason),
+until the first run after a valid edit. Until a file has validated once (the first run) there is no copy, and what needs the file
+refuses with the errors.
+
+### Stale
+
+A [silo](#silo) is stale when it has no [snapshot](#snapshot) of the broker, or its latest one is older than
+`PORTFOLIO_STALE_DAYS` (7 days). Never fresh by default: the engine integrates with no broker, so a state nobody compared
+with it may be wrong. What else changed the silo since (a trade, a deposit) does not make it fresh, and a silo with no
+trades and a recent snapshot is not stale. The [heartbeat](#heartbeat) names a stale silo in its digest.
 
 ### Stop
 

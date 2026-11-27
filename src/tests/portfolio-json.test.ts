@@ -41,13 +41,45 @@ const store = (): PortfolioStore => {
     },
   );
   return {
-    silos: { EUR: { ...EUR, totalCash: money(1300, "EUR") }, USD },
+    silos: {
+      EUR: { ...EUR, totalCash: money(1300, "EUR") },
+      USD: {
+        ...USD,
+        reconciled: {
+          date: "2026-11-20",
+          recordedOn: "2026-11-21",
+          differences: [
+            { kind: "cash", broker: money(910.5, "USD"), engine: money(900.5, "USD") },
+            { kind: "position", ticker: tk("KO"), broker: 0.00000002, engine: 0.00000001 },
+          ],
+        },
+      },
+    },
     accountEnv: "demo",
     unmoved: [{ file: "2026-11-12.yaml", sha256: "ab".repeat(32), at: "2026-11-12T10:00:00.000Z" }],
     pendingDecisions: ['{"id":"x","amount":1e-8}'],
     resolvedRejections: [
       { file: "a.yaml", sha256: "cd".repeat(32), how: "replaced", by: "b.yaml", at: "2026-11-13T10:00:00.000Z" },
       { file: "c.yaml", sha256: "ef".repeat(32), how: "discarded", by: "d.yaml", at: "2026-11-13T11:00:00.000Z" },
+    ],
+    closedEscalations: [
+      {
+        id: "2026-11-12-xom",
+        sha256: "12".repeat(32),
+        outcome: "resolved",
+        note: "bought half",
+        date: "2026-11-13",
+        by: "b.yaml",
+        at: "2026-11-13T10:00:00.000Z",
+      },
+      {
+        id: "2026-11-12-ko",
+        sha256: "34".repeat(32),
+        outcome: "discarded",
+        date: "2026-11-13",
+        by: "d.yaml",
+        at: "2026-11-13T11:00:00.000Z",
+      },
     ],
   };
 };
@@ -84,6 +116,8 @@ describe("the store text", () => {
     assert.match(text, /"cash": "1200\.00 EUR"/);
     assert.match(text, /"entry_costs": "1\.50 USD"/);
     assert.match(text, /"units": "0\.00000001"/);
+    assert.match(text, /"broker": "910\.50 USD"/);
+    assert.match(text, /"broker": "0\.00000002"/);
     assert.deepEqual(decodeStore(text, "state/portfolio.json"), store());
   });
 
@@ -93,6 +127,7 @@ describe("the store text", () => {
       unmoved: [],
       pendingDecisions: [],
       resolvedRejections: [],
+      closedEscalations: [],
     } satisfies PortfolioStore;
     const read = decodeStore(encodeStore(only), "state/portfolio.json");
     assert.deepEqual(Object.keys(read.silos), ["EUR"]);
@@ -156,6 +191,38 @@ describe("the store text", () => {
     );
   });
 
+  it("reads a silo with no snapshot as one that was never reconciled (#138), and refuses a snapshot it cannot read", () => {
+    const none = decodeStore(encodeStore(store()), "state/portfolio.json").silos.EUR!;
+    assert.equal(none.reconciled, undefined);
+    assert.doesNotMatch(JSON.stringify(JSON.parse(encodeStore(store())).silos.EUR), /reconciled/);
+    const clean = mutate((d) => (d.silos.USD.reconciled.differences = []));
+    assert.deepEqual(decodeStore(clean, "state/portfolio.json").silos.USD!.reconciled, {
+      date: "2026-11-20",
+      recordedOn: "2026-11-21",
+      differences: [],
+    });
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.recorded_on = "yesterday")),
+      /silos\.USD\.reconciled\.recorded_on: must be a calendar date as YYYY-MM-DD/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.date = "yesterday")),
+      /silos\.USD\.reconciled\.date: must be a calendar date as YYYY-MM-DD/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.differences[0].broker = "910.50 EUR")),
+      /silos\.USD\.reconciled\.differences\[0\]\.broker: is in EUR, not in the silo's USD/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.differences[1].broker = "1e-8")),
+      /silos\.USD\.reconciled\.differences\[1\]\.broker: must be a plain decimal number/,
+    );
+    refuses(
+      mutate((d) => (d.silos.USD.reconciled.differences[0].kind = "lots")),
+      /silos\.USD\.reconciled\.differences\[0\]\.kind: must be "cash" or "position"/,
+    );
+  });
+
   it("reads a store written before the rejected batches were settled as one that settled none", () => {
     const old = mutate((d) => delete d.resolved_rejections);
     assert.deepEqual(decodeStore(old, "state/portfolio.json").resolvedRejections, []);
@@ -178,7 +245,13 @@ describe("the Markdown view", () => {
   it("leaves out a silo the portfolio does not have, and makes a cell that would break a row harmless", () => {
     const { EUR } = store().silos;
     const odd = { ...EUR!, lots: [{ ...EUR!.lots[0], rulesVersion: "1.0|x\ny" }] };
-    const view = renderView({ silos: { EUR: odd }, unmoved: [], pendingDecisions: [], resolvedRejections: [] });
+    const view = renderView({
+      silos: { EUR: odd },
+      unmoved: [],
+      pendingDecisions: [],
+      resolvedRejections: [],
+      closedEscalations: [],
+    });
     assert.doesNotMatch(view, /USD/);
     assert.match(view, /\| 1\.0\/x\/y \|/);
   });

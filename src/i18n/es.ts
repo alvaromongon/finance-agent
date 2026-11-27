@@ -84,6 +84,27 @@ export const es: Messages = {
     blocked: (reasons) => `BLOQUEADO (${reasons})`,
   },
 
+  configurationWarning: {
+    label: "configuración que no valida",
+    intro: [
+      `## Un archivo de configuración no valida`,
+      ``,
+      `El motor rechazó los archivos de abajo, con todos los errores que encontró. Un archivo rechazado no cambia nada: el`,
+      `motor no lo lee.`,
+      ``,
+    ],
+    usingLastValid: (file) =>
+      `- \`${file}\`: el motor trabaja con su **última versión válida** (\`state/config/${file}\`).`,
+    noLastValid: (file) =>
+      `- \`${file}\`: **aún no hay última versión válida**, así que lo que necesita este archivo se niega a correr.`,
+    error: (field, reason) => `  - ${field}: ${reason}`,
+    outro: [
+      ``,
+      `Corrige el archivo (\`docs/input-format.md#configuration-files\`). El aviso sigue en cada resumen hasta la primera`,
+      `ejecución tras una edición válida.`,
+    ],
+  },
+
   heartbeatDigest: {
     subject: (currency, sections) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {
@@ -93,6 +114,11 @@ export const es: Messages = {
       unreadableCells: "celda que no se puede contar",
       noStop: "posición sin stop",
       rejectedBatches: "lote rechazado",
+      pendingEscalations: "escalado pendiente",
+      storeUnreadable: "archivo de estado que no se lee",
+      stale: "cartera desactualizada",
+      differences: "diferencia con el bróker",
+      reconciled: "instantánea sin diferencias",
       tightStops: "stop ceñido",
       armed: "ruptura armada",
       escalated: "a análisis",
@@ -155,6 +181,69 @@ export const es: Messages = {
       `Sustituye cada uno con un lote nuevo que empiece por \`replaces: <archivo>\`, o renuncia a él con un comando`,
       `\`discard\` (\`file: <archivo>\`) en \`inbox/\` (ver \`docs/input-format.md\`). El archivo queda en \`inbox/rejected/\``,
       `como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
+    ],
+    pendingEscalationsIntro: [
+      `## Escalados pendientes a la espera de respuesta`,
+      ``,
+      `El motor escaló estas señales y las dejó en \`logs/pending/\` para el razonador. Un escalado pendiente nunca se`,
+      `olvida: sigue aquí hasta que lo cierres:`,
+      ``,
+    ],
+    pendingEscalationsLine: (id) => `- \`logs/pending/${id}.md\``,
+    pendingEscalationsOutro: [
+      ``,
+      `Cierra cada uno con un comando \`resolve\` (\`id: <id>\`, \`outcome: resolved\` o \`discarded\`) en \`inbox/\` (ver`,
+      `\`docs/input-format.md\`). El archivo queda en \`logs/pending/\` como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
+    ],
+    storeUnreadableIntro: [
+      `## El archivo de estado no se lee`,
+      ``,
+      `El motor no puede leer \`state/portfolio.json\`. El heartbeat sigue vigilando los stops, pero sobre el **último`,
+      `estado que sí se leyó** (\`state/portfolio.last-readable.json\`), así que un lote aplicado después no está en lo que`,
+      `se comprobó:`,
+      ``,
+    ],
+    storeUnreadableOutro: [
+      ``,
+      `Reconstruye el archivo con \`npm run state:repair\`, que lo rehace desde el registro de decisiones y \`inbox/applied/\``,
+      `y se niega si no coinciden (\`docs/input-format.md\`). El aviso sigue en cada resumen hasta que el archivo se lea.`,
+    ],
+    staleIntro: (currency) => [
+      `## Silo ${currency}: desactualizado`,
+      ``,
+      `El motor no se integra con ningún bróker: solo puede fiarse de su estado de un silo hasta la última vez que lo`,
+      `comparaste con tu bróker con una \`snapshot\`. Un silo sin instantánea está desactualizado, nunca al día por defecto.`,
+      ``,
+    ],
+    staleNone: (currency) => `El silo ${currency} no tiene ninguna instantánea del bróker todavía.`,
+    staleSince: (currency, date, days) =>
+      `La última instantánea del silo ${currency} es del **${date}**, de hace ${days} días.`,
+    staleOutro: [
+      ``,
+      `Envía un comando \`snapshot\` en \`inbox/\` con el efectivo y las posiciones que muestra tu bróker (guía:`,
+      `\`routines/portfolio-sync.md\`; formato en \`docs/input-format.md\`). El aviso sigue hasta que lo hagas.`,
+    ],
+    differencesIntro: (currency, date) => [
+      `## Silo ${currency}: diferencias con el bróker`,
+      ``,
+      `La última instantánea del silo ${currency} del **${date}** muestra estas diferencias entre tu bróker y el estado`,
+      `del motor (el tamaño es lo que tiene el bróker menos lo que tiene el motor):`,
+      ``,
+    ],
+    differenceCash: (broker, engine, size, currency) =>
+      `- Efectivo: el bróker tiene ${broker} ${currency}, el motor ${engine} ${currency} (${size} ${currency})`,
+    differencePosition: (ticker, broker, engine, size) =>
+      `- ${ticker}: el bróker tiene ${broker} unidades, el motor ${engine} (${size})`,
+    differencesOutro: [
+      ``,
+      `El motor no cambió su estado: el bróker es tu hecho, pero aplicarlo en silencio ocultaría una operación que se`,
+      `te pasó o anotaste mal. Búscala y díselo al motor con un comando en \`inbox/\`; el aviso sigue en cada resumen`,
+      `hasta que una instantánea posterior no muestre diferencias.`,
+    ],
+    reconciledLines: (currency, date) => [
+      `## Silo ${currency}: instantánea sin diferencias`,
+      ``,
+      `La instantánea del silo ${currency} del **${date}** coincide con el estado del motor: el efectivo y cada posición.`,
     ],
     tickersIntro: [
       `## \`portfolio.md\` o \`watchlist.md\`: ticker que no se lee`,
