@@ -701,10 +701,54 @@ describe("inbox:ingest", () => {
       assert.equal(lines[2].related_id, lines[1].id);
     });
 
+    describe("the strategy is configuration (#142): the last valid version is the one a batch is applied with", () => {
+      const storedStrategy = () => readFile(dir("state", "config", "strategies", "base.md"), "utf8");
+
+      it("saves the valid strategy as the last valid version", async () => {
+        await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
+        assert.equal((await inbox.ingestInbox()).exitCode, 0);
+        assert.equal(await storedStrategy(), `---\nversion: "1.4"\n---\n`);
+      });
+
+      it("applies the batch with the last valid version when the file is invalid, and says so", async () => {
+        await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
+        await inbox.ingestInbox();
+        await drop("b.yaml", batch("command: deposit\namount: 50 EUR"));
+        await writeFile(dir("strategies", "base.md"), "# the version line was deleted\n", "utf8");
+
+        const result = await inbox.ingestInbox();
+
+        assert.equal(result.exitCode, 0, "a bad edit of the strategy does not reject the batch");
+        assert.match(
+          result.lines.join("\n"),
+          /WARNING, configuration: strategies\/base\.md is not valid, running on its last valid version: frontmatter: missing/,
+        );
+        const lines = (await readFile(dir("logs", "decisions.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l));
+        assert.deepEqual(
+          lines.map((d) => d.rules_version),
+          ["1.4", "1.4"],
+        );
+        assert.equal(await storedStrategy(), `---\nversion: "1.4"\n---\n`, "the bad file never replaces the copy");
+      });
+
+      it("refuses with every error when the file is invalid and there is no copy yet", async () => {
+        await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
+        await writeFile(dir("strategies", "base.md"), "---\nversion: \n---\n", "utf8");
+        await assert.rejects(inbox.ingestInbox(), /strategies\/base\.md: version: missing or empty/);
+        assert.deepEqual(await ls("inbox"), ["a.yaml"]);
+      });
+    });
+
     it("refuses a batch it cannot apply without the version of the rules, and check goes on without it", async () => {
       await drop("a.yaml", batch("command: deposit\namount: 100 EUR"));
       await rm(dir("strategies", "base.md"));
-      await assert.rejects(inbox.ingestInbox(), /strategies\/base\.md has no `version`/);
+      await assert.rejects(
+        inbox.ingestInbox(),
+        /strategies\/base\.md is not valid and there is no last valid version[^]*file: not found/,
+      );
       assert.deepEqual(await ls("inbox"), ["a.yaml"]);
       assert.equal((await inbox.checkInbox()).exitCode, 0);
     });

@@ -45,7 +45,7 @@ Chosen option: "Inbox folder of command batches, with engine-owned state", becau
 - **Public entries**: `check` and `ingest` only. `check` is `ingest` without the save, so it simulates the whole batch rather than reading its syntax.
 - **State and telemetry**: state changes only through commands, and a stop raised by the engine is a command too. Prices, logs and sent markers are telemetry that the engine writes directly. Routines submit commands and no longer commit state.
 - **Trigger and concurrency**: any trigger is valid as long as state writes never overlap. Stop detection reads the last commit and takes no lock. Only the state write is serialized, with the push to the data repository acting as a compare-and-swap with retry.
-- **Configuration**: the screening universe, strategy, portfolio policy and prompts stay in hand-edited files, validated when they change. The engine works on the last valid version, so a bad edit never stops risk watch.
+- **Configuration**: the screening universe, strategy, portfolio policy and prompts stay in hand-edited files, validated when they change. The engine works on the last valid version, so a bad edit never stops risk watch. The last valid version lives in the engine's state in the data repository (`state/config/`, written only by the engine and committed with the state), so it survives a fresh CI checkout (#142).
 
 **What we give up**: state can no longer be fixed by editing a file; instant feedback, except through `check`; reading the state files directly in a notes app, which get generated read-only views instead; and the input format, which changes without a migration because the first customer starts from scratch. Order between batches rests on file names.
 

@@ -84,6 +84,28 @@ export const en = {
     blocked: (reasons: string) => `BLOCKED (${reasons})`,
   },
 
+  /** The warning for a configuration file that does not validate (#142): in every heartbeat digest and the briefing email. */
+  configurationWarning: {
+    label: "configuration that does not validate",
+    intro: [
+      `## A configuration file does not validate`,
+      ``,
+      `The engine refused the file(s) below, with every error it found. A refused file changes nothing: the engine does not`,
+      `read it.`,
+      ``,
+    ],
+    usingLastValid: (file: string) =>
+      `- \`${file}\`: the engine runs on its **last valid version** (\`state/config/${file}\`).`,
+    noLastValid: (file: string) =>
+      `- \`${file}\`: there is **no last valid version yet**, so what needs this file refuses to run.`,
+    error: (field: string, reason: string) => `  - ${field}: ${reason}`,
+    outro: [
+      ``,
+      `Fix the file (\`docs/input-format.md#configuration-files\`). The notice stays in every digest until the first run after a`,
+      `valid edit.`,
+    ],
+  },
+
   heartbeatDigest: {
     subject: (currency: string, sections: string) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {

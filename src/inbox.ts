@@ -34,6 +34,7 @@ import {
 import type { EntryContext, InboxState } from "./utils/inbox-handlers.js";
 import { printable } from "./utils/printable.js";
 import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
+import { describeProblems, resolveConfiguration } from "./configuration.js";
 
 export interface InboxOutcome {
   lines: string[];
@@ -309,6 +310,11 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
     return { lines: ["Inbox is empty: nothing to apply."], exitCode: 0 };
   }
 
+  // The strategy's rules version is configuration (#142): an invalid file is named in the outcome while the batches are applied
+  // with the last valid version (or refused, with the errors, with none). A valid one is saved as the last valid version
+  // together with the state, below: a run that applies nothing writes nothing.
+  const { problems: configurationProblems } = await resolveConfiguration(["strategies/base.md"], { save: false });
+
   const {
     run,
     history,
@@ -379,6 +385,7 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
       ],
     };
     await saveStore(committed);
+    await resolveConfiguration(["strategies/base.md"]);
     await appendDecisions(lines);
   }
 
@@ -400,6 +407,7 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
   const closedCount = clean.reduce((sum, c) => sum + c.closed.length, 0);
   const files = (names: readonly string[]): string => names.map((n) => `inbox/${printable(n)}`).join(", ");
   const lines = [
+    ...describeProblems(configurationProblems).map((line) => `WARNING, configuration: ${line}.`),
     ...rejectedProblems,
     ...(applied.length > 0 ? [`Applied ${applied.length} batch(es): ${files(applied)}.`] : []),
     ...renderWarnings(clean),

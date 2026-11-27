@@ -81,6 +81,27 @@ export const es: Messages = {
     blocked: (reasons) => `BLOQUEADO (${reasons})`,
   },
 
+  configurationWarning: {
+    label: "configuración que no valida",
+    intro: [
+      `## Un archivo de configuración no valida`,
+      ``,
+      `El motor rechazó los archivos de abajo, con todos los errores que encontró. Un archivo rechazado no cambia nada: el`,
+      `motor no lo lee.`,
+      ``,
+    ],
+    usingLastValid: (file) =>
+      `- \`${file}\`: el motor trabaja con su **última versión válida** (\`state/config/${file}\`).`,
+    noLastValid: (file) =>
+      `- \`${file}\`: **aún no hay última versión válida**, así que lo que necesita este archivo se niega a correr.`,
+    error: (field, reason) => `  - ${field}: ${reason}`,
+    outro: [
+      ``,
+      `Corrige el archivo (\`docs/input-format.md#configuration-files\`). El aviso sigue en cada resumen hasta la primera`,
+      `ejecución tras una edición válida.`,
+    ],
+  },
+
   heartbeatDigest: {
     subject: (currency, sections) => `[Finance Agent] Heartbeat ${currency} — ${sections}`,
     labels: {

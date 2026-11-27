@@ -29,6 +29,8 @@ import { printable } from "./printable.js";
 import type { Ticker } from "../ticker.js";
 import type { Currency, Difference, Signal } from "../types.js";
 import type { Staleness } from "./staleness.js";
+import type { ConfigurationProblem } from "../configuration.js";
+import { configurationWarningLines } from "./configuration-warning.js";
 
 export interface HeartbeatDigest {
   currency: Currency;
@@ -75,6 +77,12 @@ export interface HeartbeatDigest {
    */
   storeProblem: string | null;
   /**
+   * The configuration files the run read that do not validate (#142): the run goes on over their last valid version (or,
+   * on the first run with none, refuses what needs them after the stop check). Named in every digest while the file on
+   * disk is not the valid one (not deduplicated), and gone on the first run after a valid edit.
+   */
+  configurationProblems: ConfigurationProblem[];
+  /**
    * How stale the silo is (#138): the age of its latest snapshot of the broker; a silo with none is stale. `null`: not
    * judged (the state is still the old `portfolio.md`, which has its own warning).
    */
@@ -92,7 +100,7 @@ export interface HeartbeatDigest {
   escalated: Signal[];
 }
 
-/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings have none. */
+/** "Already sent" keys of what the digest deduplicates; crossed stops, positions without a stop, rejected batches, configuration problems and the lots, ticker and unreadable-cell warnings have none. */
 export function digestKeys(d: HeartbeatDigest): string[] {
   return [
     ...(d.staleness?.stale ? [staleKey(d.staleness)] : []),
@@ -103,7 +111,7 @@ export function digestKeys(d: HeartbeatDigest): string[] {
   ];
 }
 
-/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
+/** The digest without what was already sent today. Crossed stops, positions without a stop, rejected batches, configuration problems and the lots, ticker and unreadable-cell warnings always stay: they repeat while they last. */
 export function onlyNew(d: HeartbeatDigest, sent: ReadonlySet<string>): HeartbeatDigest {
   return {
     ...d,
@@ -156,6 +164,13 @@ export function renderHeartbeatDigest(
   }
   if (d.storeProblem !== null) {
     sections.push({ label: t.labels.storeUnreadable, tickers: [], lines: storeProblemSection(d, m) });
+  }
+  if (d.configurationProblems.length > 0) {
+    sections.push({
+      label: m.configurationWarning.label,
+      tickers: [],
+      lines: configurationWarningLines(d.configurationProblems, m),
+    });
   }
   if (d.rejectedBatches.length > 0) {
     sections.push({ label: t.labels.rejectedBatches, tickers: [], lines: rejectedBatchesSection(d, m) });

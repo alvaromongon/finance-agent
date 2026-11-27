@@ -3,6 +3,7 @@ import { messages } from "./i18n/index.js";
 import { writeFile, readdir, mkdir, unlink, appendFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { config } from "./config.js";
+import { readConfiguration } from "./configuration.js";
 import { validateDecision, withCorrections, type Decision, type ScreeningSelection } from "./decisions.js";
 import { describeTicket } from "./utils/sizing.js";
 import { describeConviction } from "./utils/conviction.js";
@@ -56,22 +57,13 @@ export type { ScreeningLogEntry };
 const projectDir = () => config.paths.vaultProjectDir;
 
 /**
- * Reads a reasoning prompt from `routines/<name>.md`. There are no built-in
- * defaults: a missing prompt fails with the example to copy.
+ * Reads a reasoning prompt from `routines/<name>.md`, through the configuration port (#142): the file when it is valid,
+ * else its last valid version, else a refusal with the errors. There are no built-in defaults.
  */
 export async function readRoutinePrompt(
   name: "monday-briefing" | "weekly-screening" | "execution-analysis",
 ): Promise<string> {
-  const path = join(projectDir(), "routines", `${name}.md`);
-  try {
-    const prompt = await readTextFile(path);
-    if (prompt.trim() !== "") return prompt;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  throw new Error(
-    `routines/${name}.md not found or empty: copy examples/brain/routines/${name}.md into your brain and adapt it`,
-  );
+  return (await readConfiguration(`routines/${name}.md`))!;
 }
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
@@ -640,19 +632,13 @@ export async function readAccountEnv(): Promise<string | undefined> {
 }
 
 /**
- * `version` from the strategies/base.md frontmatter (ADR-0009 §5). Without it no
- * decision is recorded: a decision without a rules version cannot be
+ * `version` from the strategies/base.md frontmatter (ADR-0009 §5), read through the configuration port (#142). Without
+ * one (the file invalid and no last valid version) no decision is recorded: a decision without a rules version cannot be
  * attributed to any system when measured.
  */
 export async function readRulesVersion(): Promise<string> {
-  const raw = await readTextFile(join(projectDir(), "strategies", "base.md")).catch(() => "");
-  const version = extractFrontmatter(raw)?.version;
-  if (typeof version === "number" || (typeof version === "string" && version.trim() !== "")) {
-    return String(version);
-  }
-  throw new Error(
-    "strategies/base.md has no `version` in its frontmatter: the decision cannot be recorded (ADR-0009 §5)",
-  );
+  const text = (await readConfiguration("strategies/base.md"))!;
+  return String(extractFrontmatter(text)!.version);
 }
 
 // ─── Watchlist — writing ──────────────────────────────────────────────────────

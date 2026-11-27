@@ -80,6 +80,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   rejectedBatches: [],
   pendingEscalations: [],
   storeProblem: null,
+  configurationProblems: [],
   staleness: null,
   snapshot: null,
   tightStops: [],
@@ -242,6 +243,38 @@ describe("onlyNew / digestKeys", () => {
     assert.match(email.body, /discard/);
     assert.deepEqual(digestKeys(withRejected), []);
     assert.deepEqual(onlyNew(withRejected, new Set(["anything"])).rejectedBatches, rejectedBatches);
+    assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
+  });
+
+  it("a configuration file that does not validate is named in every digest, with every error, and is never marked as sent (#142)", () => {
+    const configurationProblems = [
+      {
+        file: "strategies/base.md" as const,
+        errors: [
+          { field: "version", reason: "missing or empty" },
+          { field: "frontmatter", reason: "x\n## injected\u001b[31m" },
+        ],
+        usingLastValid: true,
+      },
+      {
+        file: "screening-universe.md" as const,
+        errors: [{ field: "universe.eur", reason: "missing" }],
+        usingLastValid: false,
+      },
+    ];
+    const withProblems = digest({ configurationProblems });
+    const email = renderHeartbeatDigest(withProblems)!;
+
+    assert.match(email.subject, /configuración que no valida/);
+    assert.match(email.body, /## Un archivo de configuración no valida/);
+    assert.match(email.body, /- `strategies\/base\.md`: el motor trabaja con su \*\*última versión válida\*\*/);
+    assert.match(email.body, /- `screening-universe\.md`: \*\*aún no hay última versión válida\*\*/);
+    assert.match(email.body, /\n {2}- version: missing or empty/);
+    assert.match(email.body, /\n {2}- universe\.eur: missing/);
+    assert.ok(!email.body.includes("\n## injected"), "a reason cannot start a heading");
+    assert.ok(!email.body.includes("\u001b"));
+    assert.deepEqual(digestKeys(withProblems), []);
+    assert.deepEqual(onlyNew(withProblems, new Set(["anything"])).configurationProblems, configurationProblems);
     assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
   });
 

@@ -28,6 +28,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { config } from "./config.js";
+import { describeProblems, readConfiguration, resolveConfiguration } from "./configuration.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { fetchHeadlines } from "./providers/news-provider.js";
 import { computeTechnicals } from "./utils/technicals.js";
@@ -54,7 +55,7 @@ import {
   type ScreeningCandidateMeta,
 } from "./vault-io.js";
 import { ignoringLots, readPortfolio } from "./portfolio-store.js";
-import { assertSchemaVersion, type ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
+import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import {
   classifyIndex,
@@ -170,16 +171,11 @@ function pct(a: number, b: number): string {
 // ── Universe reading ─────────────────────────────────────────────────────────
 
 export async function readUniverse(): Promise<Universe> {
-  const vaultDir = config.paths.vaultProjectDir;
-  const raw = await readTextFile(join(vaultDir, "screening-universe.md"));
-  assertSchemaVersion(raw, "screening-universe.md");
-
-  // Extract the YAML block
-  const match = /```yaml\n([\s\S]*?)\n```/.exec(raw);
-  if (!match) throw new Error("No YAML block found in screening-universe.md");
-  const parsed = yaml.load(match[1]) as { universe?: Universe };
-  const u = parsed?.universe;
-  if (!u?.eur || !u?.usd) throw new Error("Invalid universe structure: eur or usd missing");
+  // The file when it validates, else its last valid version (#142): the structure below is what the validation checked.
+  const raw = (await readConfiguration("screening-universe.md"))!;
+  const match = /```yaml\n([\s\S]*?)\n```/.exec(raw)!;
+  const parsed = yaml.load(match[1]) as { universe: Universe };
+  const u = parsed.universe;
   // Tickers parsed: one written in lower case reads as its upper-case value; an entry that does not
   // parse is skipped with a warning (ADR-0016). Only the known pools are read.
   const rawPools: Record<UniversePool, unknown> = { ...u, commodities: u.commodities ?? [] };
@@ -205,9 +201,8 @@ export async function readUniverse(): Promise<Universe> {
 // ── Universe review check ────────────────────────────────────────────────────
 
 async function checkUniverseReviewDate(): Promise<string | null> {
-  const vaultDir = config.paths.vaultProjectDir;
-  const raw = await readTextFile(join(vaultDir, "screening-universe.md")).catch(() => "");
-  const match = /^next_review:\s*(\S+)/m.exec(raw);
+  const raw = await readConfiguration("screening-universe.md").catch(() => "");
+  const match = /^next_review:\s*(\S+)/m.exec(raw ?? "");
   if (!match) return null;
   const nextReview = match[1];
   const today = new Date().toISOString().slice(0, 10);
@@ -354,6 +349,13 @@ export async function prepareScreening(
   const vaultDir = config.paths.vaultProjectDir;
 
   console.error("[screening] Preparing the weekly screener...");
+  // The files this run reads: a valid one is saved as the last valid version, an invalid one is named (#142).
+  for (const line of describeProblems(
+    (await resolveConfiguration(["screening-universe.md", "routines/weekly-screening.md", "strategies/base.md"]))
+      .problems,
+  )) {
+    console.error(`[screening] WARNING, configuration: ${line}`);
+  }
 
   const [universe, watchlistTickers, screeningLog, systemPrompt, watchlistRaw, eurPortfolio, usdPortfolio] =
     await Promise.all([

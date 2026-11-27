@@ -141,6 +141,15 @@ What the owner runs when the [store](#store) is corrupt (#139): `npm run state:r
 and the batches in `inbox/applied/`, the audit trail, and refuses, changing nothing, when the two disagree, saying where. It is never
 automatic, it edits no batch and no line of the log, and every run writes a `repair` line with the date, the result and the differences.
 
+### Last valid configuration
+
+The copy of a [configuration file](input-format.md#configuration-files) (the strategy, the portfolio policy, the screening
+universe or a prompt) that the engine last found valid, kept in `state/config/<file>`, written only by the engine and committed
+with the rest of the state (#142). When the file the owner edits stops validating, the engine runs on this copy: a bad edit never
+stops risk watch. Every [heartbeat](#heartbeat) digest and the Monday briefing email warn, with every error (file, field, reason),
+until the first run after a valid edit. Until a file has validated once (the first run) there is no copy, and what needs the file
+refuses with the errors.
+
 ### Stale
 
 A [silo](#silo) is stale when it has no [snapshot](#snapshot) of the broker, or its latest one is older than

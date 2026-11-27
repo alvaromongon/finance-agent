@@ -63,6 +63,13 @@ parentheses so a code comment that cites it can be found here.
      `logs/pending/` whose id and text the store does not list as closed, #141) in the digest, in every run while it
      lasts (not deduplicated), at the same point and with the same guarantee: a folder that cannot be read is said in the
      log and stops nothing.
+     2'-c. Validate the [configuration files](input-format.md#configuration-files) the heartbeat reads (`strategies/base.md` and
+     `routines/execution-analysis.md`, #142), before anything can end the run: a valid one is copied to `state/config/` as the
+     [last valid configuration](glossary.md#last-valid-configuration), and one that does not validate is named in every digest, with every
+     error (file, field, reason), while it lasts (not deduplicated); the run goes on over its last valid version. A bad edit never
+     stops risk watch (ADR-0015). With **no** last valid version yet (the first run) the stops below are still checked and the digest
+     is still sent; what needs the invalid file (the rules version of the setups, step 8; the reasoner's instructions, step 11)
+     then refuses the run with the errors, after the digest is out. The heartbeat's stop check reads neither file.
      2''. Judge how stale the silo is and what its latest [snapshot](glossary.md#snapshot) found (#138), once the state is
      the [store](glossary.md#store): a silo is [stale](glossary.md#stale) by its latest snapshot alone. A console warning names it, and the digest has a section for it. The differences of the latest snapshot are in the
      digest in every run (not deduplicated) until a later snapshot shows none; a snapshot with no difference says so, once,
@@ -116,11 +123,11 @@ parentheses so a code comment that cites it can be found here.
       [Record a decision](#record-a-decision). With `handoff` the engine writes
       `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated, and as a
       [pending escalation](glossary.md#pending-escalation) in every later digest until a `resolve` command closes it.
-  12. Send the digest (crossed stops, positions without a stop, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
-      since the last send today (crossed stops, the differences of a snapshot and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
+  12. Send the digest (crossed stops, positions without a stop, a configuration file that does not validate, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
+      since the last send today (crossed stops, the differences of a snapshot, configuration problems and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `logs/decisions.jsonl`, the rules
-  `version` in `strategies/base.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
-  regenerating the view `portfolio.md`; else `portfolio.md`),
+  `version` in `strategies/base.md`, `routines/execution-analysis.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
+  regenerating the view `portfolio.md`; else `portfolio.md`), `state/config/`,
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
   and email ([delivery](#email-delivery)). Market data comes from Yahoo Finance.
 - **When it fails**: what was gathered before the failure still goes out in the digest, and the
@@ -289,7 +296,10 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   printed prompt, then `monday-briefing:finalize` with the report on stdin. With
   `ANALYST_PROVIDER=api`, `monday-briefing` (no subcommand) does both; in `handoff` it refuses, so
   the API is not spent by accident.
-- **Steps**:
+- **Steps**: 0. Both commands validate the [configuration files](input-format.md#configuration-files) the briefing reads (its prompt, the
+  portfolio policy and `strategies/base.md`, #142): a valid one is saved as the [last valid configuration](glossary.md#last-valid-configuration),
+  an invalid one is named on stderr and the run goes on over its last valid version; `finalize` also puts the warning, with the
+  errors, at the top of the email until the first run after a valid edit. With no last valid version the run refuses with the errors.
   1. `prepare` reads both portfolios and watchlists, the portfolio policy, the latest evaluation
      table and the logs of the last 30 days, and refreshes prices in the portfolio (the store, else `portfolio.md`) first so the
      prompt describes one state.
@@ -299,8 +309,8 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
      position, writes `logs/<date>-monday-briefing.md`, applies the watchlist removals the report
      asks for (never a ticker with an open position), and emails the summary.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `portfolio-policy.md`,
-  `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
-  `watchlist.md`, `tesis/`, `logs/decisions.jsonl`, the briefing log and email.
+  `routines/monday-briefing.md`, `strategies/base.md`, `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
+  `watchlist.md`, `tesis/`, `state/config/`, `logs/decisions.jsonl`, the briefing log and email.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
   In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
@@ -314,7 +324,10 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
 - **Starts with**: a weekly schedule. Handoff: `screening:prepare`, then one `screening:resolve --
 <file>` per candidate, then `screening:summarize`. `weekly-screening` with `ANALYST_PROVIDER=api`
   runs the whole thing.
-- **Steps**:
+- **Steps**: 0. `prepare` first validates the [configuration files](input-format.md#configuration-files) it reads (`screening-universe.md`,
+  `routines/weekly-screening.md`, `strategies/base.md`, #142): a valid one is saved as the
+  [last valid configuration](glossary.md#last-valid-configuration), an invalid one is named on stderr and the screening runs on its
+  last valid version (a universe with a missing pool, a broken YAML block or another `schema_version` is the usual case); with none yet it refuses with every error.
   1. `prepare` ranks the universe in `screening-universe.md` ([the funnel](#the-screening-funnel)),
      retires watchlist entries by mechanical rules, selects the candidates, and writes one context
      file per candidate in `logs/pending-screening/` plus `run.json`. Securities already on the
@@ -326,11 +339,11 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   3. `summarize` sends one aggregated email from `results.jsonl` and deletes it. Unresolved
      candidates are listed and kept. If the email did not go out, `results.jsonl` is kept for the
      relay.
-- **Reads / writes**: reads `screening-universe.md`, `watchlist.md`, both portfolios, the screening
-  log; writes `screening-log.md`, `tesis/`, `watchlist.md`, `logs/decisions.jsonl`,
+- **Reads / writes**: reads `screening-universe.md`, `routines/weekly-screening.md`, `strategies/base.md`, `watchlist.md`, both portfolios, the screening
+  log; writes `screening-log.md`, `state/config/`, `tesis/`, `watchlist.md`, `logs/decisions.jsonl`,
   `logs/pending-screening/` and email.
 - **State**: it never writes the [store](glossary.md#store) or `portfolio.md`, so its workflow gives `commit-changes`
-  no `state-paths` and commits only `logs/`, `tesis/`, `watchlist.md` and `screening-log.md`.
+  no `state-paths` and commits only `logs/`, `tesis/`, `watchlist.md`, `screening-log.md` and the copies of the configuration files it saves (`state/config/`).
 - **When it fails**: if the ranking cannot be trusted the run falls back to a random draw among
   filter-0 eligibles and the email says **NO RANKING** with the reason. A candidate that fails to
   prepare is skipped with a warning.
@@ -460,7 +473,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      there is none, `portfolio.md` read whole (a row that does not read is refused, not dropped, so a position is
      never lost on the way). First write to the decision log the lines an earlier run committed to the store and did
      not get to write (the ones the log lacks by id), then read the decision history, whose ids no new lot may take.
-     Without a `version` in `strategies/base.md` nothing is applied (the lots carry it): the run fails. When a batch
+     The rules `version` comes from `strategies/base.md` as [configuration](input-format.md#configuration-files) (#142): when the
+     file does not validate the batches are applied with its [last valid version](glossary.md#last-valid-configuration) and the output
+     names the errors; with none (and no valid file) nothing is applied (the lots carry the version): the run fails with every error.
+     A valid file is saved to `state/config/` together with the state, in the same commit, by a run that applies something. When a batch
      buys, read also what the rules of an entry judge it with: the watchlist of each silo (a `watchlist.md` that cannot
      be read fails the run, as it did `decision:record`) and the ATR of each ticker bought (a failure to get it only
      leaves the stop distance unjudged). A rejected folder that cannot be read, or a file in it that is a link or hidden, is
