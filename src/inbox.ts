@@ -2,7 +2,7 @@
 // changes nothing; `inbox:ingest` applies them. Both run the same code, `runFiles` over the same plan: `check` is
 // `ingest` without the write, so the batches one accepts and refuses are the batches the other does.
 import { awaitingOf, sha256 } from "./inbox-rejected.js";
-import { moveBatch, readInbox, readRejected } from "./inbox-store.js";
+import { moveBatch, readApplied, readInbox, readRejected } from "./inbox-store.js";
 import { readStoreIfAny, saveStore, storeFromPortfolioFile, type PortfolioStore } from "./portfolio-store.js";
 import { appendDecisions, readDecisionHistory, readRulesVersion, readWatchlist } from "./vault-io.js";
 import { config } from "./config.js";
@@ -13,6 +13,7 @@ import type { Ticker } from "./ticker.js";
 import type { PriceSource } from "./utils/benchmark.js";
 import { atr14d } from "./utils/technicals.js";
 import { parseBatch } from "./utils/inbox-parse.js";
+import { isCorrection, ledgerOrder, type LedgerFile } from "./utils/inbox-replay.js";
 import { entryCostsTaken } from "./utils/portfolio-lots.js";
 import { decisionsOf } from "./utils/inbox-decisions.js";
 import {
@@ -120,6 +121,21 @@ async function readRejectedBatches(): Promise<{ batches: { name: string; text: s
 }
 
 /**
+ * The batches already applied, in the order they were, for a correction to replay (#139): `inbox/applied/` and the ones an
+ * earlier run applied and could not move. Read only when a file of the run corrects something. A folder that cannot be
+ * read is said and gives no ledger, so the correction is refused for that (the batches are not rejected for it).
+ */
+async function readLedger(waiting: readonly InboxFile[]): Promise<{ ledger?: LedgerFile[]; problems: string[] }> {
+  try {
+    const { batches, unread } = await readApplied();
+    const apart = waiting.flatMap((file) => ("text" in file ? [{ name: file.name, text: file.text }] : []));
+    return { ledger: ledgerOrder([...batches, ...apart]), problems: unread.map((u) => u.problem) };
+  } catch (err) {
+    return { problems: [`inbox/applied could not be read: ${err instanceof Error ? err.message : String(err)}`] };
+  }
+}
+
+/**
  * Runs the files of the inbox over `store`. The state is read once per run, by the caller; what is read here is the
  * history of the decision log and the `version` of `strategies/base.md`, which a batch cannot be applied without:
  * `check` goes on without it (it cannot change what a batch accepts) and `ingest` refuses with the reason.
@@ -143,6 +159,10 @@ async function plan(
     "text" in file && store.unmoved.some((u) => u.file === file.name && u.sha256 === sha256(file.text));
   const awaiting = awaitingOf(rejected, store.resolvedRejections);
   const toRun = all.filter((file) => !isWaiting(file));
+  const corrects = toRun.some((file) => "text" in file && isCorrection(parseBatch(file.text)));
+  const { ledger, problems: ledgerProblems } = corrects
+    ? await readLedger(all.filter(isWaiting))
+    : { ledger: undefined, problems: [] };
   const run = runFiles(stateOf(store), toRun, {
     awaiting: new Set(awaiting),
     rulesVersion,
@@ -150,6 +170,7 @@ async function plan(
     entryCostsTaken: entryCostsTaken(history),
     entry: await entryContext(toRun, store, history, mustKnowRules, atrSource),
     today: now.toISOString().slice(0, 10),
+    ...(ledger !== undefined ? { ledger } : {}),
   });
   return {
     waiting: all.filter(isWaiting).map((file) => file.name),
@@ -158,7 +179,7 @@ async function plan(
     rulesVersion,
     rejected,
     awaiting,
-    rejectedProblems,
+    rejectedProblems: [...rejectedProblems, ...ledgerProblems],
     run,
   };
 }
@@ -227,7 +248,7 @@ export async function checkInbox(now: Date = new Date()): Promise<InboxOutcome> 
  * log does not hold by id, and returns the store without them. The store has them so that the state and the lines it
  * needs are committed together (see `PortfolioStore.pendingDecisions`).
  */
-async function writePendingDecisions(store: PortfolioStore): Promise<PortfolioStore> {
+export async function writePendingDecisions(store: PortfolioStore): Promise<PortfolioStore> {
   if (store.pendingDecisions.length === 0) return store;
   const known = new Set((await readDecisionHistory()).map((d) => d.id));
   await appendDecisions(

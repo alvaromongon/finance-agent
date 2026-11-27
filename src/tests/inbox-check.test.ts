@@ -1296,6 +1296,9 @@ describe("inbox:check", () => {
         "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",
         "utils/inbox-handlers.ts",
+        "utils/inbox-replay.ts",
+        "utils/state-repair.ts",
+        "state-repair.ts",
       ]);
       const walk = (dir: string): string[] =>
         readdirSync(dir, { withFileTypes: true }).flatMap((e) =>

@@ -376,6 +376,20 @@ describe("runHeartbeat", () => {
         for (const email of await outbox()) assert.doesNotMatch(email.subject, /instantánea sin diferencias/);
       });
 
+      it("a corrupt state file never stops risk watch: the stops of the last readable state are checked and the digest names the corruption (ADR-0015, #139)", async () => {
+        await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+        await storeWith({ date: day(0), recordedOn: day(0), differences: [] });
+        await writeFile(join(vaultDir, "state", "portfolio.json"), '{"silos": {', "utf8");
+        await heartbeat();
+        const [email] = await outbox();
+        assert.match(email.subject, /stop cruzado: CAT/, "the stop of the last readable state is still checked");
+        assert.match(email.subject, /archivo de estado/);
+        assert.match(email.body, /state\/portfolio\.json/);
+        assert.match(email.body, /npm run state:repair/);
+        // The corrupt file is left as it is: the repair is the way back, the heartbeat does not write over it.
+        assert.equal(await readFile(join(vaultDir, "state", "portfolio.json"), "utf8"), '{"silos": {');
+      });
+
       it("while the state is still the old portfolio.md, nothing is judged stale in the digest", async () => {
         await heartbeat();
         for (const email of await outbox()) assert.doesNotMatch(email.subject, /desactualizada/);

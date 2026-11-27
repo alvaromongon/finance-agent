@@ -118,6 +118,20 @@ owner's fact, but applying it silently would hide a trade missed or entered wron
 a command. The date of the latest snapshot of a silo is what its staleness is measured from, and its differences are named
 in every digest of the [heartbeat](#heartbeat) until a later snapshot shows none.
 
+### Correction
+
+How a mistaken buy, sale, deposit or withdrawal is fixed (#139): the `correct` [command](#command) names the record by the id
+the engine gave it in the [decision log](#decision-log) and gives the values it should have had. The engine applies the batches
+already applied again with the corrected record, rebuilds the [lots](#lot), cash and positions, and writes a `correction` line
+that points at the original with `corrects`. The original stays in the log and in the history: a correction supersedes, it never
+erases, and it is refused if it would leave a later sale without lots or the cash below zero.
+
+### Repair
+
+What the owner runs when the [store](#store) is corrupt (#139): `npm run state:repair` rebuilds it from the [decision log](#decision-log)
+and the batches in `inbox/applied/`, the audit trail, and refuses, changing nothing, when the two disagree, saying where. It is never
+automatic, it edits no batch and no line of the log, and every run writes a `repair` line with the date, the result and the differences.
+
 ### Stale
 
 A [silo](#silo) is stale when it has no [snapshot](#snapshot) of the broker, or its latest one is older than

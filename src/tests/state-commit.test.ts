@@ -342,6 +342,7 @@ describe("every writer of the engine's store", () => {
     "inbox.ts": "compare-and-swap: `ingestCommitted` (`inbox:ingest`)",
     "decision.ts":
       "compare-and-swap: `recordCommitted` in `decision-record.ts` (`decision:record`: deposits, withdrawals, conversions)",
+    "state-repair.ts": "compare-and-swap: `repairCommitted` (`state:repair`, #139)",
     "heartbeat-run.ts":
       "the price refresh: `commit-changes` drops the store's change when the store moved (state-paths)",
     "monday-briefing.ts":
