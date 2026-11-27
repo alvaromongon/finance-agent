@@ -62,6 +62,25 @@ const store = (): PortfolioStore => {
       { file: "a.yaml", sha256: "cd".repeat(32), how: "replaced", by: "b.yaml", at: "2026-11-13T10:00:00.000Z" },
       { file: "c.yaml", sha256: "ef".repeat(32), how: "discarded", by: "d.yaml", at: "2026-11-13T11:00:00.000Z" },
     ],
+    closedEscalations: [
+      {
+        id: "2026-11-12-xom",
+        sha256: "12".repeat(32),
+        outcome: "resolved",
+        note: "bought half",
+        date: "2026-11-13",
+        by: "b.yaml",
+        at: "2026-11-13T10:00:00.000Z",
+      },
+      {
+        id: "2026-11-12-ko",
+        sha256: "34".repeat(32),
+        outcome: "discarded",
+        date: "2026-11-13",
+        by: "d.yaml",
+        at: "2026-11-13T11:00:00.000Z",
+      },
+    ],
   };
 };
 
@@ -108,6 +127,7 @@ describe("the store text", () => {
       unmoved: [],
       pendingDecisions: [],
       resolvedRejections: [],
+      closedEscalations: [],
     } satisfies PortfolioStore;
     const read = decodeStore(encodeStore(only), "state/portfolio.json");
     assert.deepEqual(Object.keys(read.silos), ["EUR"]);
@@ -225,7 +245,13 @@ describe("the Markdown view", () => {
   it("leaves out a silo the portfolio does not have, and makes a cell that would break a row harmless", () => {
     const { EUR } = store().silos;
     const odd = { ...EUR!, lots: [{ ...EUR!.lots[0], rulesVersion: "1.0|x\ny" }] };
-    const view = renderView({ silos: { EUR: odd }, unmoved: [], pendingDecisions: [], resolvedRejections: [] });
+    const view = renderView({
+      silos: { EUR: odd },
+      unmoved: [],
+      pendingDecisions: [],
+      resolvedRejections: [],
+      closedEscalations: [],
+    });
     assert.doesNotMatch(view, /USD/);
     assert.match(view, /\| 1\.0\/x\/y \|/);
   });

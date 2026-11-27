@@ -93,6 +93,7 @@ export const en = {
       unreadableCells: "cell that cannot be counted",
       noStop: "position without a stop",
       rejectedBatches: "rejected batch",
+      pendingEscalations: "pending escalation",
       storeUnreadable: "state file that does not read",
       stale: "stale portfolio",
       differences: "difference with the broker",
@@ -158,6 +159,19 @@ export const en = {
       `Replace each with a new batch that starts with \`replaces: <file>\`, or give it up with a \`discard\` command`,
       `(\`file: <file>\`) in \`inbox/\` (see \`docs/input-format.md\`). The file stays in \`inbox/rejected/\` as the audit`,
       `trail. The notice stays in every digest until you do.`,
+    ],
+    pendingEscalationsIntro: [
+      `## Pending escalations awaiting an answer`,
+      ``,
+      `The engine escalated these signals and left them in \`logs/pending/\` for the reasoner. A pending escalation is never`,
+      `forgotten: it stays here until you close it:`,
+      ``,
+    ],
+    pendingEscalationsLine: (id: string) => `- \`logs/pending/${id}.md\``,
+    pendingEscalationsOutro: [
+      ``,
+      `Close each with a \`resolve\` command (\`id: <id>\`, \`outcome: resolved\` or \`discarded\`) in \`inbox/\` (see`,
+      `\`docs/input-format.md\`). The file stays in \`logs/pending/\` as the record. The notice stays in every digest until you do.`,
     ],
     storeUnreadableIntro: [
       `## The state file does not read`,

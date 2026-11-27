@@ -90,24 +90,25 @@ describe("every flow runs on the example brain", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("pending:resolve closes the escalation with a canned answer", async () => {
-    const { listPending, resolvePending } = await import("../pending.js");
+  it("pending:record records the escalation with a canned answer and leaves it open", async () => {
+    const { listPending, recordPending } = await import("../pending.js");
     logMock.mock.resetCalls();
     await listPending();
     const [file] = await readdir(join(dir, "logs", "pending"));
     assert.deepEqual(
       logMock.mock.calls.map((c) => c.arguments[0]),
-      [file],
+      [file.replace(/\.md$/, "")],
     );
     assert.match(file, /sap\.de\.md$/);
-    await resolvePending(file, {
+    await recordPending(file, {
       ticker: "SAP.DE",
       action: "HOLD",
       ticket: { direction: "HOLD", currency: "EUR" },
       thesis_summary: "Example: the stop holds.",
       triggers: ["approaching_stop"],
     });
-    assert.deepEqual(await readdir(join(dir, "logs", "pending")), []);
+    // Only a resolve command closes it: the file stays.
+    assert.deepEqual(await readdir(join(dir, "logs", "pending")), [file]);
   });
 
   it("decisions:evaluate writes the evaluation the briefing reads", async () => {

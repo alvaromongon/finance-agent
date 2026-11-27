@@ -196,9 +196,13 @@ recording anything ([ADR-0004](docs/decisions/0004-handoff-mode-for-the-reasoner
 
 | Flow                  | Commands                                                        |
 | --------------------- | --------------------------------------------------------------- |
-| Heartbeat escalations | `pending:list`, `pending:show`, `pending:resolve`               |
+| Heartbeat escalations | `pending:list`, `pending:show`, `pending:record`                |
 | Monday briefing       | `monday-briefing:prepare`, `monday-briefing:finalize`           |
 | Weekly screening      | `screening:prepare`, `screening:resolve`, `screening:summarize` |
+
+`pending:record` records the answer (decision log and email) and closes nothing: a pending escalation stays in every
+digest until a `resolve` command in `inbox/` closes it ([input format](docs/input-format.md#inbox),
+[flow](docs/flows.md#resolve-a-pending-escalation)).
 
 The system prompts live in your brain, under `routines/`.
 

@@ -494,7 +494,7 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
     raw = await readFile(portfolioPath(), "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT")
-      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [] };
+      return { silos: {}, unmoved: [], pendingDecisions: [], resolvedRejections: [], closedEscalations: [] };
     throw err;
   }
   const read = silosOfText(raw);
@@ -510,6 +510,7 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
     unmoved: [],
     pendingDecisions: [],
     resolvedRejections: [],
+    closedEscalations: [],
   };
 }
 

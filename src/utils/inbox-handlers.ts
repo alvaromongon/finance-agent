@@ -178,6 +178,30 @@ export interface Discard {
   file: string;
 }
 
+/** What a pending escalation is closed as: `resolved` (it was answered) or `discarded` (it is given up unanswered). */
+export const ESCALATION_OUTCOMES = ["resolved", "discarded"] as const;
+export type EscalationOutcome = (typeof ESCALATION_OUTCOMES)[number];
+
+/** The id of a pending escalation: the name of its file in `logs/pending/` without `.md` (`<date>-<ticker>`). */
+export const ESCALATION_ID = /^\d{4}-\d{2}-\d{2}-[a-z0-9.-]+$/;
+
+/** The longest note a `resolve` may carry: it is kept in the store, not a place for a report. */
+export const NOTE_MAX_LENGTH = 500;
+
+/**
+ * Closes a pending escalation (#141): the signal the engine escalated and left in `logs/pending/` for the reasoner. It
+ * stays in every digest until a `resolve` closes it, answered (`resolved`) or given up (`discarded`). It changes no cash,
+ * lot or stop, so it has no currency; the file stays in `logs/pending/` as the record and the store remembers it was closed.
+ */
+export interface Resolve {
+  kind: "resolve";
+  id: string;
+  outcome: EscalationOutcome;
+  note?: string;
+  /** YYYY-MM-DD: the day it was closed; the day of the run when absent. Not in the future. */
+  date?: string;
+}
+
 /**
  * Corrects a mistaken record (#139): the buy, the sale, the deposit or the withdrawal that the engine gave `id`, with the
  * values it should have had. What is left out stays as it was told. The engine does not edit the state: it applies the
@@ -213,6 +237,7 @@ export type Command<C extends Currency = Currency> =
   | Split
   | Snapshot<C>
   | Discard
+  | Resolve
   | Correct;
 
 // ─── State and result ─────────────────────────────────────────────────────────
@@ -238,6 +263,8 @@ export type HandlerResult =
       /** A sale: `sistema` when it follows a sell proposal of the system, `propietario` otherwise (ADR-0009 §8). */
       origin?: DecisionOrigin;
       discarded?: string;
+      /** A resolve: the escalation it closed. */
+      closed?: { id: string; outcome: EscalationOutcome; note?: string; date?: string };
       /** A split: the silos it changed and the lots it scaled (`openedKey`), so the batch can follow the lots it opened. */
       split?: { silos: readonly Currency[]; lots: readonly string[] };
       /** A snapshot: the silo, the day it is as of and each difference found (none when the broker and the engine agree). */
@@ -285,6 +312,8 @@ export interface BatchContext {
   entryCostsTaken: ReadonlyMap<string, Money>;
   /** The rejected batches (names in `inbox/rejected/`) still awaiting a replacement or a discard: what a `discard` can name. */
   awaiting: ReadonlySet<string>;
+  /** The ids of the pending escalations (`logs/pending/`) still open: what a `resolve` can name. */
+  escalations: ReadonlySet<string>;
   /** What the rules of an entry read, see `EntryContext`. */
   entry: EntryContext;
   /** Where a `set_stop` or `clear_stop` writes who changed the stop. */
@@ -953,6 +982,30 @@ export function discard(
   return { state, discarded: command.file };
 }
 
+export function resolve(
+  command: Resolve,
+  { escalations, today }: Pick<BatchContext, "escalations" | "today">,
+  state: InboxState,
+): HandlerResult {
+  if (!escalations.has(command.id)) {
+    return refused(
+      `cannot resolve ${quoted(command.id)}: no pending escalation of that id is open (it does not exist in logs/pending/ or it is already closed)`,
+    );
+  }
+  if (command.date !== undefined && command.date > today) {
+    return refused(`the date ${command.date} is in the future (today is ${today})`);
+  }
+  return {
+    state,
+    closed: {
+      id: command.id,
+      outcome: command.outcome,
+      ...(command.note !== undefined ? { note: command.note } : {}),
+      ...(command.date !== undefined ? { date: command.date } : {}),
+    },
+  };
+}
+
 /** A lot the batch opened whose initial stop is not below its entry price, so its R would be zero or negative. */
 export interface InitialStopBreach {
   currency: Currency;
@@ -1019,6 +1072,8 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return snapshot(state, command, context);
       case "discard":
         return discard(command, context, state);
+      case "resolve":
+        return resolve(command, context, state);
       case "correct":
         // The runner of the inbox applies it over the applied batches (`checkCorrections`); there is no state to hand it.
         return refused("a correct command is run on its own in a batch, over the batches already applied");

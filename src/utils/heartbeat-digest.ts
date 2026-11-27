@@ -64,6 +64,11 @@ export interface HeartbeatDigest {
    */
   rejectedBatches: string[];
   /**
+   * The ids of the pending escalations (`logs/pending/`) that no `resolve` command has closed (#141). Named in every digest
+   * while they last (not deduplicated): a signal that was escalated is never forgotten.
+   */
+  pendingEscalations: string[];
+  /**
    * Why the engine's state file cannot be read (#139), when it cannot: the run then watches the stops of the last state that
    * did read (`state/portfolio.last-readable.json`) and names the corruption here, in every digest while it lasts (not
    * deduplicated). `null`: the state file reads.
@@ -155,6 +160,9 @@ export function renderHeartbeatDigest(
   if (d.rejectedBatches.length > 0) {
     sections.push({ label: t.labels.rejectedBatches, tickers: [], lines: rejectedBatchesSection(d, m) });
   }
+  if (d.pendingEscalations.length > 0) {
+    sections.push({ label: t.labels.pendingEscalations, tickers: [], lines: pendingEscalationsSection(d, m) });
+  }
   if (d.staleness?.stale) {
     sections.push({ label: t.labels.stale, tickers: [], lines: staleSection(d, d.staleness, m) });
   }
@@ -239,6 +247,16 @@ function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {
     // and a backtick, which would end the span, is written as an escape too.
     ...d.rejectedBatches.map((file) => t.rejectedBatchesLine(printable(file).replaceAll("`", "\\u0060"))),
     ...t.rejectedBatchesOutro,
+  ];
+}
+
+function pendingEscalationsSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  return [
+    ...t.pendingEscalationsIntro,
+    // An id comes from a file name: escaped like a rejected batch's, so no control character or backtick reaches the email.
+    ...d.pendingEscalations.map((id) => t.pendingEscalationsLine(printable(id).replaceAll("`", "\\u0060"))),
+    ...t.pendingEscalationsOutro,
   ];
 }
 

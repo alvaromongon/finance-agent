@@ -16,7 +16,7 @@ runner uses. Everything here is an example to copy and adapt.
 
 The heartbeat still runs in GitHub Actions, with `analyst-provider: handoff`
 ([`heartbeat-eu-handoff.yml`](../examples/workflows/heartbeat-eu-handoff.yml)). The routines
-resolve what it leaves in `logs/pending/` and write to the same repository. The system prompts the
+answer what it leaves in `logs/pending/` and write to the same repository: they record each answer with `pending:record` and close the escalation by dropping a `resolve` batch in `inbox/` (never by editing `logs/pending/`). The system prompts the
 reasoning follows live in your brain, under `routines/`
 ([examples](../examples/brain/routines)); the orchestration prompts in this guide only say which
 commands to run and when to commit.
@@ -91,8 +91,8 @@ connected to the routine to push there (the routine settings have no option for 
 reads a session branch: the next heartbeat, the email relay and the Monday briefing all look at
 the default branch.
 
-The paths each flow commits are the same as in the Actions callers: `logs/` and `portfolio.md` for
-escalations; plus `watchlist.md` and `tesis/` for the briefing and the screening, and
+The paths each flow commits are the same as in the Actions callers: `logs/` and `inbox/` for
+escalations (the routine commits no state: the `resolve` batch is applied by the inbox workflow); plus `watchlist.md` and `tesis/` for the briefing and the screening, and
 `screening-log.md` for the screening.
 
 ## Waking the routine
@@ -112,6 +112,11 @@ escalations; plus `watchlist.md` and `tesis/` for the briefing and the screening
    prompts do not depend on it.
 4. Create the Monday briefing and weekly screening routines with a weekly schedule and the
    prompts in [`examples/routines/`](../examples/routines).
+
+A closed escalation keeps its file in `logs/pending/` as the record, so the `wake-routine` job of the example
+workflow, which checks only that `logs/pending/` holds a file, wakes the routine on every heartbeat once one exists;
+the routine then finds nothing open (`pending:list` prints `No pending signals.`) and stops. Making the wake
+condition read the open list is tracked apart from this guide.
 
 If the routine runs while a heartbeat is committing, the session's `git pull --rebase` handles the
 race; anything left pending is picked up by the next wake or the daily fallback. The pending item

@@ -1292,6 +1292,7 @@ describe("inbox:check", () => {
         "inbox.ts",
         "inbox-store.ts",
         "inbox-rejected.ts",
+        "inbox-escalations.ts",
         "utils/inbox-check.ts",
         "utils/inbox-decisions.ts",
         "utils/inbox-parse.ts",
@@ -1311,13 +1312,16 @@ describe("inbox:check", () => {
               : [],
         );
       // The one thing the heartbeat reads of the inbox is the list of the rejected batches still awaiting an answer
-      // (`inbox-rejected.ts`, #152), to name them in its digest: it never runs a batch nor reads `inbox/` itself.
+      // (`inbox-rejected.ts`, #152) and of the pending escalations no command closed (`inbox-escalations.ts`, #141),
+      // to name them in its digest: it never runs a batch nor reads `inbox/` itself. `pending.ts` asks the second which
+      // escalations are left to work on.
       const importers = walk(SRC)
         .filter((file) => !inboxModules.has(file))
         .flatMap((file) =>
           [...readFileSync(join(SRC, file), "utf8").matchAll(/from\s+["']([^"']*inbox[^"']*)["']/g)]
             .map((m) => m[1])
             .filter((from) => !(file === "heartbeat-run.ts" && from === "./inbox-rejected.js"))
+            .filter((from) => !(["heartbeat-run.ts", "pending.ts"].includes(file) && from === "./inbox-escalations.js"))
             .map((from) => `${file} -> ${from}`),
         );
       assert.deepEqual(importers, []);

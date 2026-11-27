@@ -362,6 +362,14 @@ function awaitingOf(parsed: readonly ParsedBatch[]): Set<string> {
   return names;
 }
 
+/** The ids of the pending escalations the applied batches closed: they were open when the batch was applied. */
+function escalationsOf(parsed: readonly ParsedBatch[]): Set<string> {
+  const ids = new Set<string>();
+  for (const batch of parsed)
+    for (const { command } of batch.commands) if (command.kind === "resolve") ids.add(command.id);
+  return ids;
+}
+
 /** True for a batch of corrections: it has a `correct` command, read or not. */
 export const isCorrection = (batch: ParsedBatch): boolean =>
   batch.commands.some((c) => c.command.kind === "correct") || batch.unread.some((u) => u.kind === "correct");
@@ -393,6 +401,7 @@ function run(
 ): Replayed | ReplayFailure {
   const result = runFiles(initial, files, {
     awaiting: awaitingOf(parsed),
+    escalations: escalationsOf(parsed),
     rulesVersion: options.rulesVersion,
     takenIds: new Set(),
     entryCostsTaken: new Map(),

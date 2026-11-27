@@ -9,7 +9,7 @@ import { writePendingDecisions } from "./inbox.js";
 import { readStoreForRepair, saveStore, type PortfolioStore } from "./portfolio-store.js";
 import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
 import { config } from "./config.js";
-import { appendDecisions, readDecisionHistory, readRulesVersion } from "./vault-io.js";
+import { appendDecisions, readDecisionHistory, readPendingEscalations, readRulesVersion } from "./vault-io.js";
 import { CURRENCIES, type Currency } from "./types.js";
 import type { InboxState } from "./utils/inbox-handlers.js";
 import type { LedgerFile } from "./utils/inbox-replay.js";
@@ -121,6 +121,7 @@ export async function repairStore(now: Date = new Date()): Promise<RepairOutcome
   }
 
   const rejected = old === null ? (await readRejected()).batches : [];
+  const pending = old === null ? await readPendingEscalations() : [];
   const at = now.toISOString();
   const committed: PortfolioStore = {
     silos: plan.state,
@@ -128,6 +129,18 @@ export async function repairStore(now: Date = new Date()): Promise<RepairOutcome
     ...(old?.accountEnv !== undefined ? { accountEnv: old.accountEnv } : {}),
     unmoved: old?.unmoved ?? [],
     pendingDecisions: lines.map((d) => JSON.stringify(d)),
+    // A store that cannot be read gets its closed escalations back from the `resolve` commands of the applied batches.
+    closedEscalations:
+      old?.closedEscalations ??
+      plan.closed.map(({ id, outcome, note, date, by }) => ({
+        id,
+        sha256: sha256(pending.find((p) => p.id === id)?.text ?? ""),
+        outcome,
+        ...(note !== undefined ? { note } : {}),
+        date: date ?? today,
+        by,
+        at,
+      })),
     resolvedRejections:
       old?.resolvedRejections ??
       plan.resolved.map(({ file, how, by }) => ({

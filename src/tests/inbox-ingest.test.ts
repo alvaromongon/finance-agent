@@ -1093,7 +1093,13 @@ describe("inbox:ingest", () => {
       await mkdir(dir("state"), { recursive: true });
       await writeFile(
         dir("state", "portfolio.json"),
-        encodeStore({ silos: { EUR, USD }, unmoved: [], pendingDecisions: [], resolvedRejections: [] }),
+        encodeStore({
+          silos: { EUR, USD },
+          unmoved: [],
+          pendingDecisions: [],
+          resolvedRejections: [],
+          closedEscalations: [],
+        }),
         "utf8",
       );
     }
@@ -1415,6 +1421,7 @@ describe("inbox:ingest", () => {
           rulesVersion: "1",
           entryCostsTaken: new Map(),
           awaiting: new Set(),
+          escalations: new Set(),
           entry: entryContext(),
           today: "2026-11-26",
         },
