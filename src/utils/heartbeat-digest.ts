@@ -64,6 +64,12 @@ export interface HeartbeatDigest {
    */
   rejectedBatches: string[];
   /**
+   * Why the engine's state file cannot be read (#139), when it cannot: the run then watches the stops of the last state that
+   * did read (`state/portfolio.last-readable.json`) and names the corruption here, in every digest while it lasts (not
+   * deduplicated). `null`: the state file reads.
+   */
+  storeProblem: string | null;
+  /**
    * How stale the silo is (#138): the age of its latest snapshot of the broker; a silo with none is stale. `null`: not
    * judged (the state is still the old `portfolio.md`, which has its own warning).
    */
@@ -143,6 +149,9 @@ export function renderHeartbeatDigest(
   if (d.noStop.length > 0) {
     sections.push({ label: t.labels.noStop, tickers: d.noStop.map((p) => p.ticker), lines: noStopSection(d, m) });
   }
+  if (d.storeProblem !== null) {
+    sections.push({ label: t.labels.storeUnreadable, tickers: [], lines: storeProblemSection(d, m) });
+  }
   if (d.rejectedBatches.length > 0) {
     sections.push({ label: t.labels.rejectedBatches, tickers: [], lines: rejectedBatchesSection(d, m) });
   }
@@ -214,6 +223,12 @@ function unreadableCellsSection(d: HeartbeatDigest, m: Messages): string[] {
 function noStopSection(d: HeartbeatDigest, m: Messages): string[] {
   const t = m.heartbeatDigest;
   return [...t.noStopIntro, ...d.noStop.map((p) => t.noStopLine(p.ticker, p.currency)), ...t.noStopOutro];
+}
+
+function storeProblemSection(d: HeartbeatDigest, m: Messages): string[] {
+  const t = m.heartbeatDigest;
+  // The reason quotes the file: printed escaped, so no control character reaches the email (S4).
+  return [...t.storeUnreadableIntro, `- ${printable(d.storeProblem!)}`, ...t.storeUnreadableOutro];
 }
 
 function rejectedBatchesSection(d: HeartbeatDigest, m: Messages): string[] {

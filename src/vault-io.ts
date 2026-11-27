@@ -3,7 +3,7 @@ import { messages } from "./i18n/index.js";
 import { writeFile, readdir, mkdir, unlink, appendFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { config } from "./config.js";
-import { validateDecision, type Decision, type ScreeningSelection } from "./decisions.js";
+import { validateDecision, withCorrections, type Decision, type ScreeningSelection } from "./decisions.js";
 import { describeTicket } from "./utils/sizing.js";
 import { describeConviction } from "./utils/conviction.js";
 import { parseLastLog, type LastLog } from "./utils/cooldown.js";
@@ -508,6 +508,11 @@ export async function appendDecisions(decisions: Decision[]): Promise<void> {
  * preventing new decisions from being recorded.
  */
 export async function readDecisions(): Promise<Decision[]> {
+  return withCorrections(await readLiveLines());
+}
+
+/** The lines of the live log as they are in the file: the corrections (#139) are not applied. */
+async function readLiveLines(): Promise<Decision[]> {
   return parseDecisionLines(await readTextFile(decisionsPath()).catch(() => ""), "logs/decisions.jsonl");
 }
 
@@ -535,13 +540,14 @@ export async function readDecisionHistory(archiveDir: string | undefined = decis
     }
   }
   const seen = new Set<string>();
-  return [...archived, ...(await readDecisions())]
-    .filter((d) => {
+  // The corrections (#139) are applied once the quarters are together: a correction can sit in another quarter than its line.
+  return withCorrections(
+    [...archived, ...(await readLiveLines())].filter((d) => {
       if (seen.has(d.id)) return false;
       seen.add(d.id);
       return true;
-    })
-    .sort((a, b) => a.date.localeCompare(b.date));
+    }),
+  ).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 let archiveDirUnsetNoted = false;

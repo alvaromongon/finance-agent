@@ -78,6 +78,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   unreadableCells: [],
   noStop: [],
   rejectedBatches: [],
+  storeProblem: null,
   staleness: null,
   snapshot: null,
   tightStops: [],

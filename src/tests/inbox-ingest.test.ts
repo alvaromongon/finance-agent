@@ -149,8 +149,12 @@ describe("inbox:ingest", () => {
     it("leaves the lot's decision-log line: the entry of the lot", async () => {
       await inbox.ingestInbox();
       const lines = await log();
-      const [entry] = lines;
-      assert.equal(lines.length, 1);
+      // The deposit has its line too (#139), so a correction can name it; the lot's is the entry.
+      assert.deepEqual(
+        lines.map((l) => l.type),
+        ["deposit", "entry"],
+      );
+      const entry = lines[1];
       const doc = JSON.parse(await storeText());
       assert.deepEqual(
         [
@@ -178,7 +182,7 @@ describe("inbox:ingest", () => {
       await assert.rejects(inbox.ingestInbox(), /inbox\/applied is not a real folder/);
       const applied = await storeText();
       assert.deepEqual(await ls("inbox"), ["2026-11-12.yaml", "applied"]);
-      assert.equal((await log()).length, 1);
+      assert.equal((await log()).length, 2); // the deposit and the entry
 
       await rm(dir("inbox", "applied"));
       const again = await inbox.ingestInbox();
@@ -189,7 +193,7 @@ describe("inbox:ingest", () => {
       assert.equal(doc.silos.EUR.lots.length, 1);
       assert.deepEqual(doc.unmoved_batches, [], "the store forgets a batch once its file has moved");
       assert.equal(JSON.parse(applied).unmoved_batches.length, 1);
-      assert.equal((await log()).length, 1, "the decision lines were not written twice");
+      assert.equal((await log()).length, 2, "the decision lines were not written twice");
     });
 
     it("an identical file dropped again later is a new batch: it is applied again", async () => {
@@ -670,7 +674,7 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await log(), []);
       await rm(dir("state"), { recursive: true });
       await inbox.ingestInbox();
-      assert.equal((await log()).length, 2); // the entry and the exit
+      assert.equal((await log()).length, 3); // the deposit, the entry and the exit
     });
 
     it("a log that cannot be written after the state was: the next run writes the lines once and applies nothing twice", async () => {
@@ -680,7 +684,7 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await ls("inbox"), ["a.yaml"], "the file stays for the next run");
       const committed = JSON.parse(await storeText());
       assert.equal(committed.silos.EUR.cash, "1010.00 EUR"); // 1000 + 100 - 200 + 110
-      assert.equal(committed.pending_decisions.length, 2);
+      assert.equal(committed.pending_decisions.length, 3);
       assert.equal(committed.unmoved_batches.length, 1);
 
       await rm(dir("logs", "decisions.jsonl"), { recursive: true });
@@ -689,12 +693,12 @@ describe("inbox:ingest", () => {
       const lines = await log();
       assert.deepEqual(
         lines.map((l) => l.type),
-        ["entry", "exit"],
+        ["deposit", "entry", "exit"],
       );
       const done = JSON.parse(await storeText());
       assert.deepEqual([done.pending_decisions, done.unmoved_batches], [[], []]);
       assert.deepEqual(await ls("inbox", "applied"), ["a.yaml"]);
-      assert.equal(lines[1].related_id, lines[0].id);
+      assert.equal(lines[2].related_id, lines[1].id);
     });
 
     it("refuses a batch it cannot apply without the version of the rules, and check goes on without it", async () => {

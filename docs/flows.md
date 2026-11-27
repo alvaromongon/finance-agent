@@ -17,6 +17,7 @@ parentheses so a code comment that cites it can be found here.
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize`                             |
 | [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                                               |
 | [Apply the inbox](#apply-the-inbox)                           | `inbox:ingest`                                                                              |
+| [Repair the state](#repair-the-state)                         | `state:repair`                                                                              |
 | [Evaluate decisions](#evaluate-decisions)                     | `decisions:evaluate`, `decisions:chart`, `screening:outcomes`                               |
 | [Email delivery](#email-delivery)                             | `outbox:send` and every flow that sends                                                     |
 
@@ -47,6 +48,12 @@ parentheses so a code comment that cites it can be found here.
      (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
      cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
      briefing and the screening log the same warning.
+     2a. A state file that does not read never stops risk watch (ADR-0015, #139): when `state/portfolio.json` is not valid
+     (bad JSON, a field the engine does not accept, another version), the run goes on over `state/portfolio.last-readable.json`, the
+     last state that read (a copy written with every write of the store), so the stops it holds are still checked. A console warning
+     and the digest name the corruption and the [repair](#repair-the-state) that fixes it, in every run while it lasts (not
+     deduplicated). The corrupt file is left as it is (prices are not written over it), and a run with neither the file nor its copy
+     readable fails with the reason.
      2'. Name every [rejected batch](glossary.md#rejected-batch) still awaiting an answer (a file of `inbox/rejected/` that
      no applied batch replaced or discarded, #152) in the digest, in every run while it lasts (not deduplicated), right
      after the portfolio is read (before anything can end the run), also when there is nothing else to watch. Only the list of the
@@ -463,10 +470,16 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      the silo the date and each difference (what each side holds, and the size, the broker's less the engine's), because the
      broker is the owner's fact but applying it silently would hide a trade missed or entered wrongly, which the owner
      corrects with a command. It is refused for a silo the portfolio lacks, a date in the future, a ticker listed twice. It writes a `reconcile` line per difference (none when there is none).
+     3a. A batch of [corrections](glossary.md#correction) (`correct` commands, alone in the file) is not applied command by
+     command: the batches of `inbox/applied/` are applied again in order with each corrected record in place of the original, over empty
+     silos, through the same runner and validation as the original commands, so every later sale and cash movement is judged against
+     it. If the replay refuses anywhere (an id that is not in the log, a later sale without lots, cash below zero) the whole
+     correction batch is rejected with that reason and nothing changes. Otherwise the store takes the rebuilt lots, cash and positions,
+     and the log gets a `correction` line per line that changes, each pointing at its original, which stays.
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
      with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
-     sold, an `fx_conversion` per conversion, a `split` per silo a split scaled and a `reconcile` per difference of a snapshot, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
+     sold, an `fx_conversion` per conversion, a `split` per silo a split scaled, a `reconcile` per difference of a snapshot and a `correction` per line a correction changes, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
      from the store (the store is written first, the view after it).
   5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
      (command position, line, reason), never over a file already there. A file in `rejected/` is never read as a
@@ -496,6 +509,24 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Never**: touches the stop check, waits for it or makes it wait (the compare-and-swap takes no lock and the
   heartbeat does not import it). The [heartbeat](#heartbeat) never runs a batch, so a rejected batch cannot stop it
   (it names it in its digest); it reads the state last applied, and a refused batch leaves it as it was.
+
+## Repair the state
+
+- **Starts with**: the owner, on purpose, when `state/portfolio.json` does not read or is wrong (the [heartbeat](#heartbeat)
+  names it in its digest): `npm run state:repair`. Never automatic. No LLM, no network.
+- **Steps**:
+  1. Read the store if it reads (a store that does not read is an input, not an error), the decision history and every batch of
+     `inbox/applied/` (plus a batch applied and not yet moved), in order.
+  2. Apply the batches' commands again over the silos as the store began (`starting_silos`, from `portfolio.md`; empty ones if it began empty), the [corrections](glossary.md#correction) included, through the runner of the inbox.
+  3. Check the result against the decision log: every line the batches write must be in the log with the same figures, and every
+     inbox line of the log must be one the batches write. A batch that does not replay is a disagreement too.
+  4. Disagreement: **refuse, change nothing** and print each difference with the batch, command and line. Agreement: write
+     the rebuilt [store](glossary.md#store) (a store that already equals it is left as it is) and print what differed.
+  5. Write a `repair` line per silo to the decision log, in every run, a refusal included: the date, the `result`
+     (`rebuilt`, `unchanged`, `refused`) and the `differences`.
+- **Ends with**: exit 0 when the store is as the audit trail gives it, 1 when it refused or another run committed state meanwhile
+  (run it again). With `STATE_COMMIT=git` the run is one [compare-and-swap](glossary.md#compare-and-swap) like the inbox's.
+- **Never**: edits a batch or a line of the log, repairs the watchlist or configuration, or deletes history.
 
 ## Evaluate decisions
 

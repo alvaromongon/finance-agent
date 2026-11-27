@@ -93,6 +93,7 @@ export const en = {
       unreadableCells: "cell that cannot be counted",
       noStop: "position without a stop",
       rejectedBatches: "rejected batch",
+      storeUnreadable: "state file that does not read",
       stale: "stale portfolio",
       differences: "difference with the broker",
       reconciled: "snapshot without differences",
@@ -157,6 +158,18 @@ export const en = {
       `Replace each with a new batch that starts with \`replaces: <file>\`, or give it up with a \`discard\` command`,
       `(\`file: <file>\`) in \`inbox/\` (see \`docs/input-format.md\`). The file stays in \`inbox/rejected/\` as the audit`,
       `trail. The notice stays in every digest until you do.`,
+    ],
+    storeUnreadableIntro: [
+      `## The state file does not read`,
+      ``,
+      `The engine cannot read \`state/portfolio.json\`. The heartbeat keeps watching the stops, but over the **last state`,
+      `that did read** (\`state/portfolio.last-readable.json\`), so a batch applied after it is not in what was checked:`,
+      ``,
+    ],
+    storeUnreadableOutro: [
+      ``,
+      `Rebuild the file with \`npm run state:repair\`, which rebuilds it from the decision log and \`inbox/applied/\` and`,
+      `refuses if they disagree (\`docs/input-format.md\`). The notice stays in every digest until the file reads.`,
     ],
     staleIntro: (currency: string) => [
       `## ${currency} silo: stale`,

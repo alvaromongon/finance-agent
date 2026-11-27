@@ -10,7 +10,7 @@ import yaml from "js-yaml";
 import { CURRENCIES, type Currency } from "../types.js";
 import { canCountInCents, money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
-import type { BrokerPosition, Command } from "./inbox-handlers.js";
+import { ENTRY_ID, type BrokerPosition, type Command, type Correct } from "./inbox-handlers.js";
 import { quoted } from "./printable.js";
 
 /** The `schema_version` of the inbox format this engine reads. */
@@ -67,6 +67,7 @@ const COMMAND_KINDS = [
   "split",
   "snapshot",
   "discard",
+  "correct",
 ] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 const FIELDS: Record<CommandKind, readonly string[]> = {
@@ -80,6 +81,7 @@ const FIELDS: Record<CommandKind, readonly string[]> = {
   split: ["command", "ticker", "date", "ratio"],
   snapshot: ["command", "date", "cash", "positions"],
   discard: ["command", "file"],
+  correct: ["command", "id", "ticker", "date", "units", "price", "costs", "amount"],
 };
 
 /** Fields that used to exist: a command that still carries one is told where it went. */
@@ -378,6 +380,46 @@ function readCommand(raw: unknown): Command | Unread {
     if (typeof named === "object") problems.push(named.problem);
     if (problems.length > 0 || named === undefined || typeof named === "object") return unread();
     return { kind, file: named };
+  }
+
+  if (kind === "correct") {
+    const id = text("id", true);
+    if (id !== undefined && !ENTRY_ID.test(id)) {
+      problems.push(`"id" must be the id the engine gave the record (letters, digits, . _ -); got: ${quoted(id)}`);
+    }
+    const t = fields.ticker !== undefined ? ticker() : undefined;
+    const when = fields.date !== undefined ? date() : undefined;
+    const n = fields.units !== undefined ? units() : undefined;
+    const price = positive(amount("price", false, false), "price");
+    // Zero costs take the costs away: the one corrected value that may be zero.
+    const costs = amount("costs", false, true);
+    const total = positive(amount("amount", false, true), "amount");
+    const currency = sameCurrency({ price, costs, amount: total });
+    if (
+      fields.ticker === undefined &&
+      fields.date === undefined &&
+      fields.units === undefined &&
+      fields.price === undefined &&
+      fields.costs === undefined &&
+      fields.amount === undefined
+    ) {
+      problems.push(
+        'a correction needs at least one corrected value: "ticker", "date", "units", "price", "costs" or "amount"',
+      );
+    }
+    if (problems.length > 0 || id === undefined) return unread();
+    const fix: Correct = {
+      kind,
+      id,
+      ...(currency !== undefined ? { currency } : {}),
+      ...(t !== undefined ? { ticker: t } : {}),
+      ...(when !== undefined ? { date: when } : {}),
+      ...(n !== undefined ? { units: n } : {}),
+      ...(price ? { price: price.value } : {}),
+      ...(costs && currency ? { costs: money(costs.value, currency) } : {}),
+      ...(total && currency ? { amount: money(total.value, currency) } : {}),
+    };
+    return fix;
   }
 
   if (kind === "snapshot") {

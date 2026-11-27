@@ -178,8 +178,42 @@ export interface Discard {
   file: string;
 }
 
+/**
+ * Corrects a mistaken record (#139): the buy, the sale, the deposit or the withdrawal that the engine gave `id`, with the
+ * values it should have had. What is left out stays as it was told. The engine does not edit the state: it applies the
+ * batches that were applied again with the corrected record, so every later command is judged against it, and it
+ * writes a `correction` line that points at the original, which stays in the log. It is run by the inbox over the applied
+ * batches (`inbox-replay.ts`), on its own in a batch, and not by a handler of the state: `applyCommand` refuses it.
+ */
+export interface Correct {
+  kind: "correct";
+  /** The id of the record in the decision log: the entry of a buy, the exit of a sale, the line of a deposit or a withdrawal. */
+  id: string;
+  /** The currency the amounts of the command are in: the silo of the record, which a correction does not move. */
+  currency?: Currency;
+  ticker?: Ticker;
+  /** YYYY-MM-DD. */
+  date?: string;
+  units?: number;
+  price?: number;
+  /** A buy or a sale's costs; zero takes the costs away. */
+  costs?: Money;
+  /** A deposit or a withdrawal's amount. */
+  amount?: Money;
+}
+
 export type Command<C extends Currency = Currency> =
-  Deposit<C> | Withdrawal<C> | Conversion | Buy<C> | Sale<C> | SetStop<C> | ClearStop | Split | Snapshot<C> | Discard;
+  | Deposit<C>
+  | Withdrawal<C>
+  | Conversion
+  | Buy<C>
+  | Sale<C>
+  | SetStop<C>
+  | ClearStop
+  | Split
+  | Snapshot<C>
+  | Discard
+  | Correct;
 
 // ─── State and result ─────────────────────────────────────────────────────────
 
@@ -426,7 +460,7 @@ export function convert(state: InboxState, command: Conversion): HandlerResult {
 }
 
 /** The rule an entry id must follow before it reaches a path or a cell: what `newDecisionId` writes, and the example ids. */
-const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+export const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 /**
  * The rule violations of a lot once its initial stop is `stop`: the ones it was opened with that do not depend on the
@@ -985,6 +1019,9 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
         return snapshot(state, command, context);
       case "discard":
         return discard(command, context, state);
+      case "correct":
+        // The runner of the inbox applies it over the applied batches (`checkCorrections`); there is no state to hand it.
+        return refused("a correct command is run on its own in a batch, over the batches already applied");
     }
   } catch (err) {
     if (isCountedRefusal(err)) return refused(err.message);

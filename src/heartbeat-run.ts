@@ -64,6 +64,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     unreadableCells: [],
     noStop: [],
     rejectedBatches: [],
+    storeProblem: null,
     staleness: null,
     snapshot: null,
     tightStops: [],
@@ -108,8 +109,17 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   } = deps;
 
   // 1. Read the portfolio state (updated by hand from the broker).
-  const { portfolio, lotsProblem, skippedRows, unreadableCells, staleness } = await readPortfolio(currency);
+  //    A state file that does not read never stops risk watch (ADR-0015, #139): the run goes on over the last state that
+  //    did read and names the corruption in the digest.
+  const { portfolio, lotsProblem, skippedRows, unreadableCells, staleness, storeProblem } = await readPortfolio(
+    currency,
+    { lastReadable: true },
+  );
   digest.syncedAt = portfolio.syncedAt;
+  if (storeProblem !== undefined) {
+    digest.storeProblem = storeProblem;
+    console.warn(`[finance-agent] WARNING, state: ${storeProblem}; watching the last state that read`);
+  }
   // How stale the silo is and what its latest snapshot of the broker found (#138).
   digest.staleness = staleness;
   digest.snapshot = portfolio.reconciled

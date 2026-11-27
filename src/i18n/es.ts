@@ -90,6 +90,7 @@ export const es: Messages = {
       unreadableCells: "celda que no se puede contar",
       noStop: "posición sin stop",
       rejectedBatches: "lote rechazado",
+      storeUnreadable: "archivo de estado que no se lee",
       stale: "cartera desactualizada",
       differences: "diferencia con el bróker",
       reconciled: "instantánea sin diferencias",
@@ -154,6 +155,19 @@ export const es: Messages = {
       `Sustituye cada uno con un lote nuevo que empiece por \`replaces: <archivo>\`, o renuncia a él con un comando`,
       `\`discard\` (\`file: <archivo>\`) en \`inbox/\` (ver \`docs/input-format.md\`). El archivo queda en \`inbox/rejected/\``,
       `como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
+    ],
+    storeUnreadableIntro: [
+      `## El archivo de estado no se lee`,
+      ``,
+      `El motor no puede leer \`state/portfolio.json\`. El heartbeat sigue vigilando los stops, pero sobre el **último`,
+      `estado que sí se leyó** (\`state/portfolio.last-readable.json\`), así que un lote aplicado después no está en lo que`,
+      `se comprobó:`,
+      ``,
+    ],
+    storeUnreadableOutro: [
+      ``,
+      `Reconstruye el archivo con \`npm run state:repair\`, que lo rehace desde el registro de decisiones y \`inbox/applied/\``,
+      `y se niega si no coinciden (\`docs/input-format.md\`). El aviso sigue en cada resumen hasta que el archivo se lea.`,
     ],
     staleIntro: (currency) => [
       `## Silo ${currency}: desactualizado`,

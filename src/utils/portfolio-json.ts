@@ -65,6 +65,11 @@ export interface PortfolioStore {
   pendingDecisions: string[];
   /** The rejected batches that were replaced or discarded, see `ResolvedRejection`. */
   resolvedRejections: ResolvedRejection[];
+  /**
+   * The silos as the store began, from `portfolio.md` (#139): what the batches in `inbox/applied/` are replayed over by a
+   * correction and by the repair. Absent in a store that began empty.
+   */
+  starting?: { readonly [C in Currency]?: PortfolioSnapshot<C> };
 }
 
 // ─── Plain decimal ────────────────────────────────────────────────────────────
@@ -134,14 +139,17 @@ const encodeSilo = (silo: PortfolioSnapshot) => ({
   lots: silo.lots.map((l) => encodeLot(l, silo.currency)),
 });
 
-/** The text of the store file. */
-export function encodeStore(store: PortfolioStore): string {
-  const silos = Object.fromEntries(
+const encodeSilos = (silos: PortfolioStore["silos"]) =>
+  Object.fromEntries(
     CURRENCIES.flatMap((currency) => {
-      const silo = store.silos[currency];
+      const silo = silos[currency];
       return silo === undefined ? [] : [[currency, encodeSilo(silo)]];
     }),
   );
+
+/** The text of the store file. */
+export function encodeStore(store: PortfolioStore): string {
+  const silos = encodeSilos(store.silos);
   const document = {
     schema_version: STORE_VERSION,
     ...(store.accountEnv !== undefined ? { account_env: store.accountEnv } : {}),
@@ -155,6 +163,7 @@ export function encodeStore(store: PortfolioStore): string {
       at: r.at,
     })),
     silos,
+    ...(store.starting !== undefined ? { starting_silos: encodeSilos(store.starting) } : {}),
   };
   return `${JSON.stringify(document, null, 2)}\n`;
 }
@@ -214,9 +223,8 @@ export function decodeStore(text: string, where: string): PortfolioStore {
   if (doc.schema_version !== STORE_VERSION) {
     fail("schema_version", `must be ${STORE_VERSION}; got: ${JSON.stringify(doc.schema_version)}`);
   }
-  const silos: { EUR?: PortfolioSnapshot<"EUR">; USD?: PortfolioSnapshot<"USD"> } = {};
-  const readSilo = <C extends Currency>(currency: C, raw: unknown): PortfolioSnapshot<C> => {
-    const at = `silos.${currency}`;
+  const readSilo = <C extends Currency>(currency: C, raw: unknown, root: string): PortfolioSnapshot<C> => {
+    const at = `${root}.${currency}`;
     const s = object(raw, at);
     const positions = array(s.positions, `${at}.positions`).map((p, i): Position<C> => {
       const path = `${at}.positions[${i}]`;
@@ -292,12 +300,17 @@ export function decodeStore(text: string, where: string): PortfolioStore {
       ...(s.reconciled !== undefined ? { reconciled: reconciled(s.reconciled) } : {}),
     };
   };
-  const rawSilos = object(doc.silos, "silos");
-  for (const key of Object.keys(rawSilos)) {
-    if (!CURRENCIES.includes(key as Currency)) fail(`silos.${key}`, "is not a silo (EUR or USD)");
-  }
-  if (rawSilos.EUR !== undefined) silos.EUR = readSilo("EUR", rawSilos.EUR);
-  if (rawSilos.USD !== undefined) silos.USD = readSilo("USD", rawSilos.USD);
+  const readSilos = (value: unknown, root: string): PortfolioStore["silos"] => {
+    const raw = object(value, root);
+    for (const key of Object.keys(raw)) {
+      if (!CURRENCIES.includes(key as Currency)) fail(`${root}.${key}`, "is not a silo (EUR or USD)");
+    }
+    return {
+      ...(raw.EUR !== undefined ? { EUR: readSilo("EUR", raw.EUR, root) } : {}),
+      ...(raw.USD !== undefined ? { USD: readSilo("USD", raw.USD, root) } : {}),
+    };
+  };
+  const silos = readSilos(doc.silos, "silos");
   const unmoved = array(doc.unmoved_batches, "unmoved_batches").map((a, i): AppliedBatch => {
     const o = object(a, `unmoved_batches[${i}]`);
     return {
@@ -331,6 +344,7 @@ export function decodeStore(text: string, where: string): PortfolioStore {
     unmoved,
     pendingDecisions,
     resolvedRejections,
+    ...(doc.starting_silos !== undefined ? { starting: readSilos(doc.starting_silos, "starting_silos") } : {}),
   };
 }
 
