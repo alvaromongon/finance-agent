@@ -144,6 +144,8 @@ describe("runHeartbeat", () => {
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "strategies"), { recursive: true });
     await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "1.0"\n---\n`, "utf8");
+    await mkdir(join(vaultDir, "routines"), { recursive: true });
+    await writeFile(join(vaultDir, "routines", "execution-analysis.md"), "Reasoner instructions.\n", "utf8");
     await writeFile(join(vaultDir, "watchlist.md"), WATCHLIST_MD, "utf8");
     await setPortfolio(MSFT_ROW, [MSFT_LOT]);
   });
@@ -786,6 +788,114 @@ describe("runHeartbeat", () => {
       "the heartbeat says nothing of the inbox",
     );
     await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
+  });
+
+  describe("a configuration file that does not validate never stops risk watch (#142, ADR-0015, ADR-0018)", () => {
+    const strategy = join("strategies", "base.md");
+    const prompt = join("routines", "execution-analysis.md");
+    const edit = (file: string, text: string) => writeFile(join(vaultDir, file), text, "utf8");
+    const stored = (file: string) => readFile(join(vaultDir, "state", "config", file), "utf8");
+    const crossed = () => setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+    const decisionsRulesVersions = async () =>
+      (await readFile(join(vaultDir, "logs", "decisions.jsonl"), "utf8"))
+        .split("\n")
+        .filter((l) => l.includes('"setup"'))
+        .map((l) => JSON.parse(l).rules_version);
+
+    it("an invalid strategy: every stop is checked on the last valid version and the digest warns with the errors", async () => {
+      await crossed();
+      await heartbeat(); // a valid run saves the copy
+      assert.match(await stored(strategy), /version: "1.0"/);
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true });
+      await rm(join(vaultDir, "logs", "heartbeat-sent-USD.json"), { force: true });
+      await edit(strategy, "# the version line was deleted\n");
+
+      const warnings = await heartbeat();
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/, "the crossed stop is checked and sent");
+      assert.match(email.subject, /configuración que no valida/);
+      assert.match(email.body, /## Un archivo de configuración no valida/);
+      assert.match(email.body, /`strategies\/base\.md`: el motor trabaja con su \*\*última versión válida\*\*/);
+      assert.match(email.body, /- frontmatter: missing: the file must start with a `---` block holding `version`/);
+      assert.ok(warnings.some((w) => /configuration.*strategies\/base\.md is not valid/.test(w)));
+      assert.ok(
+        (await decisionsRulesVersions()).every((v) => v === "1.0"),
+        "the rules version is the stored one",
+      );
+      assert.match(await stored(strategy), /version: "1.0"/, "the bad file never replaces the copy");
+    });
+
+    it("the warning is in every digest while the file is invalid and goes on the first run after a valid edit", async () => {
+      await crossed();
+      await heartbeat();
+      await edit(strategy, "# broken\n");
+      await heartbeat();
+      await heartbeat();
+      await edit(strategy, `---\nversion: "2.0"\n---\n`);
+      await heartbeat();
+
+      const emails = await outbox();
+      assert.equal(emails.length, 4, "the stop is repeated on every run, and the warning with it while it lasts");
+      assert.doesNotMatch(emails[0].body, /configuración no valida/);
+      assert.match(emails[1].body, /configuración no valida/);
+      assert.match(emails[2].body, /configuración no valida/);
+      assert.doesNotMatch(emails[3].body, /configuración no valida/, "gone on the first run after a valid edit");
+      assert.match(await stored(strategy), /version: "2.0"/, "the valid edit is the new copy");
+    });
+
+    it("an invalid strategy on the first run: the stop check and the digest go out, and the run refuses with the errors", async () => {
+      await crossed();
+      await edit(strategy, "# broken\n");
+
+      await assert.rejects(
+        heartbeat(),
+        /strategies\/base\.md is not valid and there is no last valid version[^]*frontmatter/,
+      );
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(email.body, /\*\*aún no hay última versión válida\*\*/);
+    });
+
+    it("an invalid prompt: the escalation runs on the last valid prompt and the stops are checked", async () => {
+      const { HandoffAnalystProvider } = await import("../analyst/handoff-provider.js");
+      await crossed();
+      await heartbeat({ analyst: new HandoffAnalystProvider() });
+      assert.match(await stored(prompt), /Reasoner instructions/);
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true });
+      await rm(join(vaultDir, "logs", "heartbeat-sent-USD.json"), { force: true });
+      await rm(join(vaultDir, "logs", "pending"), { recursive: true, force: true });
+      await edit(prompt, "  \n");
+
+      await heartbeat({ analyst: new HandoffAnalystProvider() });
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(
+        email.body,
+        /`routines\/execution-analysis\.md`: el motor trabaja con su \*\*última versión válida\*\*/,
+      );
+      assert.match(email.body, /- content: empty/);
+      const pending = join(vaultDir, "logs", "pending");
+      const [file] = await readdir(pending);
+      assert.match(await readFile(join(pending, file), "utf8"), /Reasoner instructions/, "the stored prompt was used");
+    });
+
+    it("an invalid prompt on the first run: the stop is in the digest that goes out before the run refuses", async () => {
+      const { HandoffAnalystProvider } = await import("../analyst/handoff-provider.js");
+      await crossed();
+      await edit(prompt, "");
+
+      await assert.rejects(
+        heartbeat({ analyst: new HandoffAnalystProvider() }),
+        /routines\/execution-analysis\.md is not valid and there is no last valid version/,
+      );
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
+      assert.match(email.body, /## Un archivo de configuración no valida/);
+    });
   });
 
   it("a second run with the same state sends nothing (no crossed stops)", async () => {

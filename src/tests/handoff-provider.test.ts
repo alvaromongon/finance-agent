@@ -50,7 +50,11 @@ describe("HandoffAnalystProvider.escalate", () => {
       "Instrucciones de razonamiento de prueba.",
       "utf8",
     );
-    await writeFile(join(vaultDir, "strategies", "base.md"), "Definición de estrategia base de prueba.", "utf8");
+    await writeFile(
+      join(vaultDir, "strategies", "base.md"),
+      `---\nversion: "1.0"\n---\nDefinición de estrategia base de prueba.`,
+      "utf8",
+    );
 
     process.env.VAULT_PROJECT_DIR = vaultDir;
     const mod = await import("../analyst/handoff-provider.js");

@@ -23,6 +23,14 @@ import Anthropic from "@anthropic-ai/sdk";
 import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config.js";
+import {
+  describeProblems,
+  readConfiguration,
+  resolveConfiguration,
+  type ConfigurationFile,
+  type ConfigurationProblem,
+} from "./configuration.js";
+import { configurationWarningLines } from "./utils/configuration-warning.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import {
   appendDecisions,
@@ -64,6 +72,23 @@ async function safeRead(path: string): Promise<string> {
   return readTextFile(path).catch(() => "");
 }
 
+/** The configuration files the briefing reads: its prompt, the portfolio policy and the rules version of its decisions. */
+const BRIEFING_CONFIGURATION: readonly ConfigurationFile[] = [
+  "routines/monday-briefing.md",
+  "portfolio-policy.md",
+  "strategies/base.md",
+];
+
+/**
+ * Saves the valid configuration files as the last valid version and returns the ones that do not validate (#142); the
+ * run goes on over their last valid version, and the email names them.
+ */
+async function resolveBriefingConfiguration(): Promise<ConfigurationProblem[]> {
+  const { problems } = await resolveConfiguration(BRIEFING_CONFIGURATION);
+  for (const line of describeProblems(problems)) console.error(`[monday-briefing] WARNING, configuration: ${line}`);
+  return problems;
+}
+
 export interface PreparedBriefing {
   today: string;
   systemPrompt: string;
@@ -84,12 +109,13 @@ export async function prepareBriefing(
   const logsDir = join(vaultDir, "logs");
 
   console.error("[monday-briefing] Reading vault context...");
+  await resolveBriefingConfiguration();
 
   const [watchlistMd, evaluationMd, systemPromptMd, policyMd] = await Promise.all([
     safeRead(join(vaultDir, "watchlist.md")),
     safeRead(join(logsDir, "decisions-evaluation.md")),
     readRoutinePrompt("monday-briefing"),
-    safeRead(join(vaultDir, "portfolio-policy.md")),
+    readConfiguration("portfolio-policy.md").then((policy) => policy ?? ""),
   ]);
 
   // Cash and positions/watchlist of both silos (portfolio.md/watchlist.md are
@@ -286,6 +312,8 @@ export async function finalizeBriefing(
   const today = new Date().toISOString().slice(0, 10);
   const logsDir = join(config.paths.vaultProjectDir, "logs");
   const m = messages();
+  // The files this run reads: a configuration problem is named at the top of the email (#142).
+  const configurationProblems = await resolveBriefingConfiguration();
 
   const [eurPortfolio, usdPortfolio, eurWatchlist, usdWatchlist, rulesVersion, history] = await Promise.all([
     readPortfolio("EUR").then(ignoringLots),
@@ -367,6 +395,7 @@ export async function finalizeBriefing(
     m.briefing.emailTitle(today),
     "=".repeat(60),
     "",
+    ...(configurationProblems.length > 0 ? [...configurationWarningLines(configurationProblems, m), ""] : []),
     ...formatRegimeLines(benchmarks, m),
     "",
     reportWithTickets,

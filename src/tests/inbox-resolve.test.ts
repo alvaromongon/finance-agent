@@ -74,6 +74,7 @@ describe("pending escalations are closed by a command (#141)", () => {
       rejectedBatches: [],
       pendingEscalations,
       storeProblem: null,
+      configurationProblems: [],
       staleness: null,
       snapshot: null,
       tightStops: [],

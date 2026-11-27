@@ -714,6 +714,27 @@ One thesis per asset, created by the screening and editable by hand.
 | `created`         | Creation date                                                                                                                |
 | `exit_criteria`   | `pending` while the invalidation criteria are missing; the screening reminds you until you fill them in and remove the field |
 
+## Configuration files
+
+The files that configure the engine, kept by hand in the data directory (spec #124, ADR-0018, #142):
+
+| File                             | What it is                                                   | Required | A run that reads it                   |
+| -------------------------------- | ------------------------------------------------------------ | -------- | ------------------------------------- |
+| `strategies/base.md`             | The strategy: its frontmatter `version` is the rules version | yes      | heartbeat, inbox, briefing, screening |
+| `portfolio-policy.md`            | Free text the briefing respects                              | no       | briefing                              |
+| `screening-universe.md`          | The screening universe ([format](#screening-universemd))     | yes      | screening                             |
+| `routines/monday-briefing.md`    | The briefing's prompt                                        | yes      | briefing                              |
+| `routines/weekly-screening.md`   | The screening's prompt                                       | yes      | screening                             |
+| `routines/execution-analysis.md` | The reasoner's instructions for a signal                     | yes      | heartbeat                             |
+
+**Validated when read, fail-fast.** Each run validates the files it reads, with every error (file, field, reason) and not just the first:
+
+- `strategies/base.md`: starts with a `---` block that is valid YAML and has a `version` that is a number or a non-empty string.
+- `screening-universe.md`: `schema_version` 1, a ` ```yaml ` block that is valid YAML with `universe:` and `eur` and `usd` as lists (`commodities`, if present, a list too). An entry whose ticker does not parse is still skipped with a warning (ADR-0016), not an error of the file.
+- `portfolio-policy.md` and the prompts: not empty. A file that exists and says nothing is an accident, not a policy; to have no policy, delete the file. A prompt cannot be absent.
+
+**The last valid configuration.** A file that validates is copied by the engine, byte for byte, to `state/config/<file>` (for example `state/config/strategies/base.md`): written only by the engine, committed with the state, so it survives a fresh CI checkout. Do not edit it; a copy that does not validate is ignored. A file that does not validate is **refused**: the engine runs on the copy, and every [heartbeat](flows.md#heartbeat) digest and the [Monday briefing](flows.md#monday-briefing) email warn with the errors until the first run after a valid edit. With no copy yet (the first run) the run that needs the file refuses with the errors; the heartbeat has already checked every stop and sent its digest by then ([flow](flows.md#heartbeat), step 2'-c). A file that is optional and absent is no file: its copy is deleted. The terms are in the [glossary](glossary.md#last-valid-configuration).
+
 ## Files the engine writes and reads back
 
 Their parsed parts are part of the format and are never localized.

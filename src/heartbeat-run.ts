@@ -8,6 +8,7 @@
 import { collectWatchedTickers, evaluateSignals } from "./heartbeat.js";
 import { sendSummaryEmail } from "./mailer.js";
 import { config } from "./config.js";
+import { describeProblems, resolveConfiguration, type ConfigurationFile } from "./configuration.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { fetchHeadlines } from "./providers/news-provider.js";
 import {
@@ -53,6 +54,9 @@ export interface HeartbeatDeps {
   lotsCheck?: (portfolio: PortfolioSnapshot) => string[];
 }
 
+/** The configuration files the heartbeat reads: the rules version of the setups it records, and the reasoner's instructions. */
+const HEARTBEAT_CONFIGURATION: readonly ConfigurationFile[] = ["strategies/base.md", "routines/execution-analysis.md"];
+
 export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const digest: HeartbeatDigest = {
@@ -67,6 +71,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     rejectedBatches: [],
     pendingEscalations: [],
     storeProblem: null,
+    configurationProblems: [],
     staleness: null,
     snapshot: null,
     tightStops: [],
@@ -131,6 +136,13 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
         recordedToday: portfolio.reconciled.recordedOn === today,
       }
     : null;
+  // The configuration files this run reads (#142): a valid one is saved as the last valid version, an invalid one is named in
+  // the digest and the run goes on over its last valid version. With none yet (the first run) what needs the file refuses, but
+  // only after the stops below are checked and the digest is sent. It never throws for a file: a bad edit never stops risk watch.
+  digest.configurationProblems = (await resolveConfiguration(HEARTBEAT_CONFIGURATION)).problems;
+  for (const line of describeProblems(digest.configurationProblems)) {
+    console.warn(`[finance-agent] WARNING, configuration: ${line}`);
+  }
   // A row whose ticker does not parse is skipped and reported, never a reason to stop watching the rest
   // (ADR-0015: a typo must never switch off stop alerts; ADR-0016).
   const tickerWarning = (message: string): void => {

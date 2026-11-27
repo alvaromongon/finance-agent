@@ -193,6 +193,7 @@ describe("English renders", () => {
       rejectedBatches: [],
       pendingEscalations: [],
       storeProblem: null,
+      configurationProblems: [],
       staleness: null,
       snapshot: null,
       breaches: detectStopBreaches(
@@ -248,6 +249,7 @@ describe("English heartbeat digest, the silo and the broker (#138)", () => {
     rejectedBatches: [],
     pendingEscalations: [],
     storeProblem: null,
+    configurationProblems: [],
     staleness: { asOf: "2026-11-10", ageDays: 16.5, stale: true },
     snapshot: {
       date: "2026-11-20",
@@ -303,6 +305,7 @@ describe("English heartbeat digest, lots section", () => {
         rejectedBatches: [],
         pendingEscalations: [],
         storeProblem: null,
+        configurationProblems: [],
         staleness: null,
         snapshot: null,
         breaches: [],
