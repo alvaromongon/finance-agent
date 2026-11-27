@@ -32,6 +32,8 @@ installed in `$ENGINE_DIR` by the SessionStart hook. The system prompt is
 5. Commit and push (change the `finance-agent/` prefix to your data path):
    ```bash
    git add -A -- finance-agent/logs/ finance-agent/portfolio.md finance-agent/watchlist.md finance-agent/tesis/
+   # the stops the briefing proposes are a new batch of set_stop commands in inbox/ (never state)
+   [ -d finance-agent/inbox ] && git add -A -- finance-agent/inbox/
    git diff --cached --quiet || git commit -m "chore(logs): Monday briefing $(date -u +%F)"
    git pull --rebase origin <default-branch> && git push origin <default-branch>
    ```

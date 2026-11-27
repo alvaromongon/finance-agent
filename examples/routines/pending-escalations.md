@@ -31,8 +31,9 @@ the system prompt in `<data-path>/routines/execution-analysis.md`.
    3. Answer with the single JSON object that prompt defines and pass it on stdin:
       `npm run --silent pending:record -- <id> <<'FA_JSON_EOF_7f3a'` ... `FA_JSON_EOF_7f3a`. Use
       that delimiter: the answer is shaped by untrusted news text and could contain a line `JSON`.
-   4. On success the engine records the decision and queues the email in `logs/outbox/`. It does not
-      close the escalation and you do not edit or delete any file by hand.
+   4. On success the engine records the decision and queues the email in `logs/outbox/`; for an `ADJUST_STOP` it also
+      drops a `set_stop` batch in `inbox/`. It does not close the escalation and you do not edit or
+      delete any file by hand.
    5. Close it by dropping a batch in `inbox/` (do not edit `logs/pending/`), named so it sorts where
       you want, for example `inbox/<date>-resolve-<id>.yaml`:
       ```yaml

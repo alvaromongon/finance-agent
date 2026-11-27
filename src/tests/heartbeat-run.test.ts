@@ -790,6 +790,191 @@ describe("runHeartbeat", () => {
     await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
   });
 
+  describe("the engine's stop proposals are a batch in inbox/, never a write of the state (#136)", () => {
+    const BUY_DATE = "2026-10-01";
+    const stateFile = () => join(vaultDir, "state", "portfolio.json");
+    const quietly = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const log = mock.method(console, "log", () => {});
+      const warn = mock.method(console, "warn", () => {});
+      try {
+        return await fn();
+      } finally {
+        log.mock.restore();
+        warn.mock.restore();
+      }
+    };
+    const dropBatchFile = async (name: string, text: string) => {
+      await mkdir(join(vaultDir, "inbox"), { recursive: true });
+      await writeFile(join(vaultDir, "inbox", name), text, "utf8");
+    };
+    /** The store, made by ingesting a batch that opens each position with its stop (400 unless `stops` says another). */
+    const openStore = async (tickers: string[], stops: Record<string, number> = {}) => {
+      const { ingestInbox } = await import("../inbox.js");
+      await setPortfolio("", []);
+      const commands = [
+        "  - command: deposit\n    amount: 5000 USD",
+        ...tickers.flatMap((t) => [
+          `  - command: buy\n    ticker: ${t}\n    date: ${BUY_DATE}\n    units: 1\n    price: ${PRICES[t]} USD`,
+          `  - command: set_stop\n    ticker: ${t}\n    price: ${stops[t] ?? 400} USD`,
+        ]),
+      ];
+      await dropBatchFile("0-open.yaml", `schema_version: 1\ncommands:\n${commands.join("\n")}\n`);
+      assert.equal((await quietly(() => ingestInbox())).exitCode, 0);
+    };
+    /** The reasoner proposes ADJUST_STOP for whatever it is asked about. */
+    const proposing: IAnalystProvider = {
+      escalate: async (signal) => ({
+        status: "resolved",
+        recommendation: {
+          ticker: signal.ticker,
+          action: "ADJUST_STOP",
+          ticket: { direction: "ADJUST_STOP", currency: "USD" },
+          thesis_summary: "Raise the stop.",
+          triggers: ["big_move"],
+        },
+      }),
+    };
+    // Each position moved more than BIG_MOVE_PCT: one signal each, and its flat history makes the trailing stop rise above 400.
+    const moved: IMarketDataProvider = {
+      ...provider,
+      getPreviousCloses: async (tickers) => new Map(tickers.map((t) => [t, 450])),
+    };
+    const stopFiles = async () =>
+      (await readdir(join(vaultDir, "inbox")).catch(() => [] as string[]))
+        .filter((f) => f.endsWith("-stops.yaml"))
+        .sort();
+    const stopsOf = async () => {
+      const store = JSON.parse(await readFile(stateFile(), "utf8")) as {
+        silos: { USD: { positions: { ticker: string; stop_loss: string }[] } };
+      };
+      return Object.fromEntries(store.silos.USD.positions.map((p) => [p.ticker, p.stop_loss]));
+    };
+    const stopCommands = (text: string) =>
+      [...text.matchAll(/command: set_stop\n\s+ticker: "([^"]+)"\n\s+price: (\S+) (\w+)/g)].map((m) => ({
+        ticker: m[1],
+        price: m[2],
+        currency: m[3],
+      }));
+    const resetLogs = async () => {
+      // The cooldown would skip a second analysis of the same trigger and price.
+      await rm(join(vaultDir, "logs"), { recursive: true, force: true });
+      await mkdir(join(vaultDir, "logs"), { recursive: true });
+      await writeFile(join(vaultDir, "logs", "decisions.jsonl"), "", "utf8");
+    };
+
+    it("a stop the reasoner proposes is one set_stop in one batch file that passes inbox:check; the state is not touched", async () => {
+      const { checkInbox, ingestInbox } = await import("../inbox.js");
+      await openStore(["MSFT"]);
+      const before = await readFile(stateFile(), "utf8");
+
+      await heartbeat({ provider: moved, analyst: proposing });
+
+      assert.equal(await readFile(stateFile(), "utf8"), before, "not a byte of the state changes");
+      const files = await stopFiles();
+      assert.equal(files.length, 1);
+      assert.match(files[0], /^\d{4}-\d{2}-\d{2}-heartbeat-usd-stops\.yaml$/);
+      const dropped = stopCommands(await readFile(join(vaultDir, "inbox", files[0]), "utf8"));
+      assert.equal(dropped.length, 1);
+      assert.equal(dropped[0].ticker, "MSFT");
+      assert.equal(dropped[0].currency, "USD");
+      assert.ok(Number(dropped[0].price) > 400 && Number(dropped[0].price) < 501.02, "a raised stop below the price");
+
+      const check = await quietly(() => checkInbox());
+      assert.equal(check.exitCode, 0, check.lines.join("\n"));
+      assert.equal((await stopsOf()).MSFT, "400", "check changes nothing");
+
+      assert.equal((await quietly(() => ingestInbox())).exitCode, 0);
+      assert.equal(Number((await stopsOf()).MSFT), Number(dropped[0].price), "only inbox:ingest writes the stop");
+    });
+
+    it("several proposals of a run share one batch file, one set_stop each", async () => {
+      await openStore(["MSFT", "CAT"], { CAT: 150 });
+      const before = await readFile(stateFile(), "utf8");
+
+      await heartbeat({ provider: moved, analyst: proposing });
+
+      assert.equal(await readFile(stateFile(), "utf8"), before);
+      const files = await stopFiles();
+      assert.equal(files.length, 1);
+      const dropped = stopCommands(await readFile(join(vaultDir, "inbox", files[0]), "utf8"));
+      assert.deepEqual(dropped.map((d) => d.ticker).sort(), ["CAT", "MSFT"]);
+    });
+
+    it("a stop that is blocked (it does not rise) is not dropped: nothing the engine did not already propose", async () => {
+      // The stop already at 490: the trailing stop of the flat history (about 471) does not raise it.
+      await setPortfolio("| MSFT | 1 | 492.01 | 501.02 | +9.01 | 490.00 |", [MSFT_LOT]);
+
+      await heartbeat({ provider: moved, analyst: proposing });
+
+      assert.deepEqual(await stopFiles(), []);
+    });
+
+    it("a proposal already dropped and not ingested is not dropped twice (the same ticker and price)", async () => {
+      await openStore(["MSFT"]);
+      await heartbeat({ provider: moved, analyst: proposing });
+      const first = await stopFiles();
+      assert.equal(first.length, 1);
+      await resetLogs();
+
+      await heartbeat({ provider: moved, analyst: proposing });
+
+      assert.deepEqual(await stopFiles(), first);
+    });
+
+    it("the same stop written by the owner in another file counts as waiting too", async () => {
+      await openStore(["MSFT"]);
+      await heartbeat({ provider: moved, analyst: proposing });
+      const [file] = await stopFiles();
+      const [{ price }] = stopCommands(await readFile(join(vaultDir, "inbox", file), "utf8"));
+      await rm(join(vaultDir, "inbox", file));
+      await dropBatchFile(
+        "owner.yaml",
+        `schema_version: 1\ncommands:\n  - command: set_stop\n    ticker: msft\n    price: ${price}0 USD\n`,
+      );
+      await resetLogs();
+
+      await heartbeat({ provider: moved, analyst: proposing });
+
+      assert.deepEqual(await stopFiles(), []);
+    });
+
+    it("risk watch never waits: with a batch pending every stop is still checked against the last applied state", async () => {
+      // CAT trades below its stop of 200; the engine's own proposal waits in inbox/, not ingested.
+      await openStore(["CAT"], { CAT: 200 });
+      PRICES.CAT = 190;
+      try {
+        await dropBatchFile(
+          "2026-11-26-heartbeat-usd-stops.yaml",
+          'schema_version: 1\ncommands:\n  - command: set_stop\n    ticker: "CAT"\n    price: 180 USD\n',
+        );
+
+        await heartbeat();
+
+        const [email] = await outbox();
+        assert.match(email.subject, /stop cruzado: CAT/, "the breach is read from the last applied state and prices");
+        assert.deepEqual(await stopFiles(), ["2026-11-26-heartbeat-usd-stops.yaml"], "the pending batch is untouched");
+      } finally {
+        PRICES.CAT = 210.77;
+      }
+    });
+
+    it("an inbox/ that cannot be written to is said and never stops the run", async () => {
+      await openStore(["MSFT"]);
+      await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
+      await symlink(tmpdir(), join(vaultDir, "inbox"));
+      try {
+        const warnings = await heartbeat({ provider: moved, analyst: proposing });
+
+        assert.ok(
+          warnings.some((w) => w.includes("not dropped in inbox") && w.includes("symbolic link")),
+          warnings.join("\n"),
+        );
+      } finally {
+        await rm(join(vaultDir, "inbox"), { force: true });
+      }
+    });
+  });
+
   describe("a configuration file that does not validate never stops risk watch (#142, ADR-0015, ADR-0018)", () => {
     const strategy = join("strategies", "base.md");
     const prompt = join("routines", "execution-analysis.md");

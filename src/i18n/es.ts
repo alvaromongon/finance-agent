@@ -14,6 +14,9 @@ export const es: Messages = {
     tickerField: "Ticker",
     directionField: "Dirección",
     engineNote: "Stop, unidades e importe los calcula el motor (ADR-0009); el objetivo lo propone el análisis.",
+    adjustStopNote:
+      "El motor deja este stop como comando `set_stop` en `inbox/`: no cambia nada hasta que `inbox:ingest` lo aplica. " +
+      "Colocar el stop en tu bróker es cosa tuya.",
     noticesTitle: "AVISOS",
     assumptionsTitle: "SUPUESTOS",
     thesisTitle: "TESIS",
@@ -134,10 +137,11 @@ export const es: Messages = {
     breachHeader: [`| Ticker | Precio | Stop | Bajo el stop | P/L latente |`, `|---|---|---|---|---|`],
     breachOutro: [
       ``,
-      `Tras actualizar la cuenta, cuéntale al motor lo ocurrido por \`inbox/\``,
-      `(guía: \`routines/portfolio-sync.md\`) para que el resto del sistema deje`,
-      `de razonar sobre una posición que ya no existe.`,
+      `Tras revisar la cuenta, cuéntale al motor lo ocurrido con un lote en \`inbox/\` (una \`sale\` si el stop se`,
+      `ejecutó; un \`set_stop\` o un \`clear_stop\` si no; guía: \`routines/portfolio-sync.md\`) para que el resto`,
+      `del sistema deje de razonar sobre una posición que ya no existe.`,
     ],
+    breachOutroStopWaiting: [`Un stop que el motor haya propuesto ya espera allí como \`set_stop\`.`],
     lotsIntro: [
       `## \`portfolio.md\`: problema con los lotes`,
       ``,
@@ -294,9 +298,9 @@ export const es: Messages = {
     ],
     tightOutro: (syncedAt) => [
       ``,
-      `El stop real vive en tu bróker: el motor solo lee la columna Stop loss de`,
-      `\`portfolio.md\` (última sincronización: **${syncedAt}**). Si lo`,
-      `cambias, refléjalo allí (guía: \`routines/portfolio-sync.md\`).`,
+      `El stop real vive en tu bróker: el motor solo conoce el stop de su propio estado (última sincronización: **${syncedAt}**).`,
+      `Si lo cambias allí, cuéntaselo al motor con un \`set_stop\` (o un lote) en \`inbox/\` (guía:`,
+      `\`routines/portfolio-sync.md\`). Cuando es el propio motor quien propone un stop, deja allí el \`set_stop\` por ti.`,
     ],
     armedIntro: [
       `## Rupturas armadas`,
@@ -656,7 +660,9 @@ export const es: Messages = {
     macroSearchWarning:
       "> ⚠ Aviso automático: la búsqueda web no devolvió resultados en este run (bloqueada, agotada o sin uso) — el contexto de esta sección puede basarse solo en conocimiento entrenado, no en tiempo real.\n",
     ticketsTitle: "## Tickets del motor",
-    ticketsNote: "Importe de venta y trailing stop los calcula el motor (ADR-0009). Lo bloqueado no se ejecuta.",
+    ticketsNote:
+      "Importe de venta y trailing stop los calcula el motor (ADR-0009). Lo bloqueado no se ejecuta. Un stop propuesto " +
+      "se deja como comando `set_stop` en `inbox/`: no cambia nada hasta que `inbox:ingest` lo aplica.",
     proposed: "PROPUESTA",
     blocked: (codes) => `BLOQUEADA (${codes})`,
     ticketHeader: ["| Campo | Valor |", "|---|---|"],

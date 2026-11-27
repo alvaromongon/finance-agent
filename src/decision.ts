@@ -35,6 +35,7 @@ import { portfolioWhere } from "./utils/portfolio-where.js";
 import { changeCash } from "./portfolio-store.js";
 import type { Currency, Recommendation, Signal } from "./types.js";
 import { tickerFileStem } from "./ticker.js";
+import type { StopProposal } from "./utils/stop-proposals.js";
 
 export interface RecordDecisionOptions {
   /** Tells in the console which backend recorded the decision, with a trailing space ("[pending] "). */
@@ -47,11 +48,15 @@ export interface RecordDecisionOptions {
   detectedOn?: string;
 }
 
+/**
+ * Records the decision and returns the stop it proposes, if it proposes one: an `ADJUST_STOP` the engine did not block.
+ * The caller drops it in `inbox/` as a `set_stop` (`dropStopProposals`, #136); this never writes the state for it.
+ */
 export async function recordDecision(
   rec: Recommendation,
   signal: Signal,
   { logPrefix = "", detectedOn }: RecordDecisionOptions = {},
-): Promise<void> {
+): Promise<StopProposal | null> {
   // The signal sets the asset, not the reasoner: with another ticker or
   // currency the decision would get another security's price, ATR and levels.
   if (rec.ticker !== signal.ticker || rec.ticket.currency !== signal.currency) {
@@ -100,7 +105,7 @@ export async function recordDecision(
     for (const e of evaluation.errors) console.error(`  ${e.message}`);
     await writeDecisionLog(rec, { ...logOpts, blocked: true, reasons: codes });
     if (decision) await appendDecisions([decision]);
-    return;
+    return null;
   }
 
   await writeDecisionLog(rec, logOpts);
@@ -111,6 +116,8 @@ export async function recordDecision(
   console.log(
     `${logPrefix}${signal.ticker}: ${rec.action}${signal.conviction ? ` (${signal.conviction.conviction})` : ""}`,
   );
+  const ticket = evaluation.ticket;
+  return ticket?.kind === "ADJUST_STOP" ? { ticker: rec.ticker, currency: ticket.currency, stop: ticket.stop } : null;
 }
 
 /** Provider `recordOwnerDecision` needs: the benchmark price on the date. */

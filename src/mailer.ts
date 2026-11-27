@@ -190,6 +190,7 @@ function renderBody(
     ...rows.map(([field, value]) => `${`${field}:`.padEnd(width)}${value}`),
     "",
     t.engineNote,
+    ...(isAdjustStop ? [t.adjustStopNote] : []),
     "",
     ...(notes.length > 0 ? [...heading(t.noticesTitle), ...notes.map((n) => `- ${n}`), ""] : []),
     ...(rec.assumptions && rec.assumptions.length > 0

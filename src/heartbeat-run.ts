@@ -31,6 +31,8 @@ import { detectStopBreaches } from "./utils/stop-breach.js";
 import { positionsWithoutStop } from "./utils/stop.js";
 import { detectTightStops, fetchAtrForPositions } from "./utils/atr-stop.js";
 import { recordDecision } from "./decision.js";
+import { dropStopProposals } from "./stop-proposals.js";
+import type { StopProposal } from "./utils/stop-proposals.js";
 import { attachStrength } from "./utils/strength.js";
 import { fetchBenchmarks } from "./utils/benchmark.js";
 import { describeSetup } from "./utils/setups/index.js";
@@ -313,34 +315,43 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // 4. Escalate each new signal to Claude.
   // logFiles is listed once and reused for all the run's signals.
   const logFiles = await listLogFiles();
-  for (const signal of signals) {
-    const lastLog = await getLastLogForTicker(signal.ticker, logFiles);
-    if (
-      shouldSkipReanalysis({
-        currentTriggers: signal.triggers,
-        currentPrice: signal.price,
-        lastLog,
-        reanalysisPriceDeltaPct: config.strategy.reanalysisPriceDeltaPct,
-      })
-    ) {
-      console.log(
-        `[finance-agent] ${signal.ticker}: cooldown active (same trigger, no relevant price change), skipping.`,
-      );
-      continue;
-    }
+  // The stops the reasoner proposes leave as one batch in inbox/ (#136), also when a later signal fails: the proposal
+  // is already in the decision log and in an email. The heartbeat never writes the state for a stop.
+  const stopProposals: StopProposal[] = [];
+  try {
+    for (const signal of signals) {
+      const lastLog = await getLastLogForTicker(signal.ticker, logFiles);
+      if (
+        shouldSkipReanalysis({
+          currentTriggers: signal.triggers,
+          currentPrice: signal.price,
+          lastLog,
+          reanalysisPriceDeltaPct: config.strategy.reanalysisPriceDeltaPct,
+        })
+      ) {
+        console.log(
+          `[finance-agent] ${signal.ticker}: cooldown active (same trigger, no relevant price change), skipping.`,
+        );
+        continue;
+      }
 
-    // T-04: fetch recent headlines as extra context (non-blocking).
-    const result = await analyst.escalate(signal, await headlines(signal.ticker));
-    if (result.status === "deferred") {
-      // The BUY/SELL alert arrives when the Routine resolves it; here only an informational line.
-      console.log(`[finance-agent] ${signal.ticker}: escalation deferred (${result.pendingPath}).`);
-      digest.escalated.push(signal);
-      continue;
-    }
+      // T-04: fetch recent headlines as extra context (non-blocking).
+      const result = await analyst.escalate(signal, await headlines(signal.ticker));
+      if (result.status === "deferred") {
+        // The BUY/SELL alert arrives when the Routine resolves it; here only an informational line.
+        console.log(`[finance-agent] ${signal.ticker}: escalation deferred (${result.pendingPath}).`);
+        digest.escalated.push(signal);
+        continue;
+      }
 
-    // Deterministic guardrail + recording: checks financial consistency before
-    // alerting (shared with pending.ts — see decision.ts).
-    await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
+      // Deterministic guardrail + recording: checks financial consistency before
+      // alerting (shared with pending.ts — see decision.ts).
+      const proposal = await recordDecision(result.recommendation, signal, { logPrefix: "[finance-agent] " });
+      if (proposal) stopProposals.push(proposal);
+    }
+  } finally {
+    const { dropped, waiting } = await dropStopProposals(stopProposals, `heartbeat-${currency.toLowerCase()}`);
+    digest.stopProposed = dropped.length + waiting.length > 0;
   }
 }
 

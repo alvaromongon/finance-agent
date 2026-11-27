@@ -39,6 +39,8 @@ export interface HeartbeatDigest {
   /** Tight-stop warning threshold (STOP_MIN_ATR). */
   minAtr: number;
   breaches: StopBreach[];
+  /** A stop the engine proposed this run is waiting in `inbox/` (#136): the breach outro says so only then. */
+  stopProposed?: boolean;
   /**
    * Problems of the portfolio's `Lots` (ADR-0015): a table that does not read, or a `Volume` that is not
    * the sum of its lots. The run does not refuse the file: it keeps watching the positions and reports
@@ -230,6 +232,7 @@ function breachSection(d: HeartbeatDigest, m: Messages): string[] {
         ` -${b.belowStopPct.toFixed(2)}% | ${fmt(b.unrealizedPl)} ${b.currency} |`,
     ),
     ...m.heartbeatDigest.breachOutro,
+    ...(d.stopProposed ? m.heartbeatDigest.breachOutroStopWaiting : []),
   ];
 }
 

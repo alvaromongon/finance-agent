@@ -9,7 +9,7 @@
 process.env.OUTPUT_LANGUAGE = "es";
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, readdir, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { brokenUsdLots, lotsSection } from "./fixtures/lots.js";
@@ -297,6 +297,49 @@ describe("pending.ts", () => {
         log.mock.restore();
         warn.mock.restore();
       }
+    });
+
+    it("recordPending of an ADJUST_STOP drops the stop as a set_stop in inbox/ and leaves the portfolio as it was (#136)", async () => {
+      const portfolioPath = join(vaultDir, "portfolio.md");
+      const held = PORTFOLIO_MD.replace(
+        "| — | — | — | — | — | — |",
+        "| XOM | 1 | 110.00 | 124.50 | +14.50 | 100.00 |",
+      ).replace(lotsSection("USD"), lotsSection("USD", [{ ticker: "XOM", units: 1, price: 110, stop: 100 }]));
+      await writeFile(portfolioPath, held, "utf8");
+      await writeFile(
+        join(vaultDir, "logs", "pending", PENDING_FILENAME),
+        PENDING_MD.replace(
+          "use_web_search: true",
+          "range_position: 0.5\nbias: ALCISTA\natr14: 2.0000\nuse_web_search: true",
+        ),
+        "utf8",
+      );
+      const log = mock.method(console, "log", () => {});
+      const warn = mock.method(console, "warn", () => {});
+      try {
+        await recordPending(PENDING_FILENAME, {
+          ...validRecommendation(),
+          action: "ADJUST_STOP",
+          ticket: { direction: "ADJUST_STOP", currency: "USD" },
+          assumptions: undefined,
+        });
+      } finally {
+        log.mock.restore();
+        warn.mock.restore();
+      }
+
+      assert.equal(await readFile(portfolioPath, "utf8"), held, "the portfolio is not written for a stop");
+      const today = new Date().toISOString().slice(0, 10);
+      const files = await readdir(join(vaultDir, "inbox"));
+      assert.deepEqual(files, [`${today}-pending-stops.yaml`]);
+      const batch = await readFile(join(vaultDir, "inbox", files[0]), "utf8");
+      assert.match(
+        batch,
+        /schema_version: 1\ncommands:\n {2}- command: set_stop\n {4}ticker: "XOM"\n {4}price: 118\.5 USD\n$/,
+      );
+      assert.equal((await lastDecision()).type, "adjust_stop");
+      await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
+      await writeFile(portfolioPath, PORTFOLIO_MD, "utf8");
     });
 
     it("recordPending with R:R below the minimum records blocked:true and sends no alert", async () => {

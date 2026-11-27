@@ -230,6 +230,22 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual(onlyNew(withNoStop, new Set(["anything"])).noStop, noStop);
   });
 
+  it("the breach and tight-stop outros send the owner to inbox/ (a set_stop or a batch), never to portfolio.md (#136)", () => {
+    const { body } = renderHeartbeatDigest(digest({ breaches, tightStops }))!;
+
+    assert.match(body, /un `set_stop` o un `clear_stop`/, "the breach says which command");
+    assert.doesNotMatch(body, /ya espera/, "no batch is said to wait when the engine proposed no stop");
+    assert.match(body, /cuéntaselo al motor con un `set_stop` \(o un lote\) en `inbox\/`/, "the tight stop too");
+    assert.match(body, /deja allí el `set_stop` por ti/);
+    assert.doesNotMatch(body, /refléjalo|columna Stop loss/, "the old advice to edit portfolio.md by hand is gone");
+  });
+
+  it("the breach outro says a stop the engine proposed waits in inbox/ only when one was proposed (#136)", () => {
+    const { body } = renderHeartbeatDigest(digest({ breaches, stopProposed: true }))!;
+
+    assert.match(body, /Un stop que el motor haya propuesto ya espera\s+allí como `set_stop`/);
+  });
+
   it("a rejected batch is named in every digest, by its file, and is never marked as sent (#152)", () => {
     const rejectedBatches = ["2026-11-12.yaml", "2026-11-13-2.yaml"];
     const withRejected = digest({ rejectedBatches });

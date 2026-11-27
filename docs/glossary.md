@@ -85,9 +85,10 @@ sale can share a batch.
 
 ### Inbox
 
-The folder where a person, an AI or a routine drops one file per [batch](#batch) of [commands](#command). The
-engine never edits a file there: `inbox:ingest` moves it to `applied/`, or to `rejected/` with the line and the
-reason of each error (a [rejected batch](#rejected-batch)). It is the only way a buy or a sale is recorded.
+The folder where a person, an AI, a routine or the engine itself drops one file per [batch](#batch) of
+[commands](#command). The engine writes there only new files (the `set_stop` of a stop it proposes) and never edits
+one: `inbox:ingest` moves it to `applied/`, or to `rejected/` with the line and the reason of each error (a
+[rejected batch](#rejected-batch)). It is the only way a buy or a sale is recorded.
 
 ### Rejected batch
 
@@ -162,7 +163,9 @@ trades and a recent snapshot is not stale. The [heartbeat](#heartbeat) names a s
 The price at which a position is closed to cap its loss. A position has one stop, set or moved by the
 `set_stop` [command](#command) and removed by `clear_stop`; a buy never changes it. The stop a lot starts
 with is its initial stop, the base of [R](#r). A position without a stop is named in every digest, since
-risk watch cannot protect it.
+risk watch cannot protect it. A stop the engine proposes (`ADJUST_STOP`) is never written into the state by the flow
+that proposes it: it drops a `set_stop` in the [inbox](#inbox), as the owner would, and placing the stop at the broker
+is the owner's job.
 
 ### Silo
 
