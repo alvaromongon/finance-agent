@@ -90,6 +90,7 @@ export const es: Messages = {
       unreadableCells: "celda que no se puede contar",
       noStop: "posición sin stop",
       rejectedBatches: "lote rechazado",
+      pendingEscalations: "escalado pendiente",
       storeUnreadable: "archivo de estado que no se lee",
       stale: "cartera desactualizada",
       differences: "diferencia con el bróker",
@@ -155,6 +156,19 @@ export const es: Messages = {
       `Sustituye cada uno con un lote nuevo que empiece por \`replaces: <archivo>\`, o renuncia a él con un comando`,
       `\`discard\` (\`file: <archivo>\`) en \`inbox/\` (ver \`docs/input-format.md\`). El archivo queda en \`inbox/rejected/\``,
       `como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
+    ],
+    pendingEscalationsIntro: [
+      `## Escalados pendientes a la espera de respuesta`,
+      ``,
+      `El motor escaló estas señales y las dejó en \`logs/pending/\` para el razonador. Un escalado pendiente nunca se`,
+      `olvida: sigue aquí hasta que lo cierres:`,
+      ``,
+    ],
+    pendingEscalationsLine: (id) => `- \`logs/pending/${id}.md\``,
+    pendingEscalationsOutro: [
+      ``,
+      `Cierra cada uno con un comando \`resolve\` (\`id: <id>\`, \`outcome: resolved\` o \`discarded\`) en \`inbox/\` (ver`,
+      `\`docs/input-format.md\`). El archivo queda en \`logs/pending/\` como registro. El aviso sigue en cada resumen hasta que lo hagas.`,
     ],
     storeUnreadableIntro: [
       `## El archivo de estado no se lee`,

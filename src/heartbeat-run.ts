@@ -21,6 +21,7 @@ import {
   writeHeartbeatSent,
 } from "./vault-io.js";
 import { readPortfolio, refreshPrices } from "./portfolio-store.js";
+import { readOpenEscalations } from "./inbox-escalations.js";
 import { readAwaitingRejected } from "./inbox-rejected.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
 import { checkMarketSession } from "./utils/market-session.js";
@@ -64,6 +65,7 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
     unreadableCells: [],
     noStop: [],
     rejectedBatches: [],
+    pendingEscalations: [],
     storeProblem: null,
     staleness: null,
     snapshot: null,
@@ -148,6 +150,12 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // the stops below must still be watched.
   digest.rejectedBatches = await readAwaitingRejected().catch((err: unknown) => {
     console.warn(`[finance-agent] WARNING, inbox/rejected: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  });
+
+  // A pending escalation no `resolve` command closed is named in every digest (#141), like a rejected batch.
+  digest.pendingEscalations = await readOpenEscalations().catch((err: unknown) => {
+    console.warn(`[finance-agent] WARNING, logs/pending: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   });
 

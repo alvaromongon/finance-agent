@@ -299,6 +299,40 @@ describe("runHeartbeat", () => {
       assert.deepEqual(await readdir(join(vaultDir, "inbox", "rejected")), ["bad.yaml"]);
     });
 
+    it("a pending escalation is named in every digest until a resolve command closes it (#141)", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      const id = "2026-11-20-xom";
+      await mkdir(join(vaultDir, "logs", "pending"), { recursive: true });
+      await writeFile(join(vaultDir, "logs", "pending", `${id}.md`), "---\nticker: XOM\n---\n", "utf8");
+      await heartbeat();
+      await heartbeat();
+      let emails = await outbox();
+      assert.equal(emails.length, 2, "it is not deduplicated");
+      for (const email of emails) {
+        assert.match(email.subject, /escalado pendiente/);
+        assert.match(email.body, /- `logs\/pending\/2026-11-20-xom\.md`/);
+        assert.match(email.body, /comando `resolve`/);
+      }
+
+      const { ingestInbox } = await import("../inbox.js");
+      await drop("close.yaml", batch(`command: resolve\nid: ${id}\noutcome: resolved`));
+      const quiet = mock.method(console, "log", () => {});
+      const quietWarn = mock.method(console, "warn", () => {});
+      try {
+        assert.equal((await ingestInbox()).exitCode, 0);
+      } finally {
+        quiet.mock.restore();
+        quietWarn.mock.restore();
+      }
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+      await heartbeat();
+      emails = await outbox();
+      assert.equal(emails.length, 1);
+      assert.doesNotMatch(emails[0].body, /2026-11-20-xom/);
+      assert.doesNotMatch(emails[0].subject, /escalado pendiente/);
+      assert.deepEqual(await readdir(join(vaultDir, "logs", "pending")), [`${id}.md`], "the file stays as the record");
+    });
+
     describe("the silo and the broker (#138)", () => {
       const day = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
       /** The store made from portfolio.md, its USD silo carrying `reconciled` (none: no snapshot was ever recorded). */

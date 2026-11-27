@@ -78,6 +78,7 @@ const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   unreadableCells: [],
   noStop: [],
   rejectedBatches: [],
+  pendingEscalations: [],
   storeProblem: null,
   staleness: null,
   snapshot: null,
@@ -242,6 +243,27 @@ describe("onlyNew / digestKeys", () => {
     assert.deepEqual(digestKeys(withRejected), []);
     assert.deepEqual(onlyNew(withRejected, new Set(["anything"])).rejectedBatches, rejectedBatches);
     assert.equal(renderHeartbeatDigest(digest()), null, "none, nothing to say");
+  });
+
+  it("a pending escalation is named in every digest, by its file, and is never marked as sent (#141)", () => {
+    const pendingEscalations = ["2026-11-20-xom", "2026-11-21-ko"];
+    const withPending = digest({ pendingEscalations });
+    const email = renderHeartbeatDigest(withPending)!;
+
+    assert.match(email.subject, /escalado pendiente/);
+    assert.match(email.body, /## Escalados pendientes a la espera de respuesta/);
+    assert.ok(email.body.includes("- `logs/pending/2026-11-20-xom.md`"));
+    assert.ok(email.body.includes("- `logs/pending/2026-11-21-ko.md`"));
+    assert.match(email.body, /comando `resolve`/);
+    assert.deepEqual(digestKeys(withPending), []);
+    assert.deepEqual(onlyNew(withPending, new Set(["anything"])).pendingEscalations, pendingEscalations);
+  });
+
+  it("a pending escalation id is written inside its code span safely (#141)", () => {
+    const email = renderHeartbeatDigest(digest({ pendingEscalations: ["a`b\n## injected\u001b[31m"] }))!;
+    assert.ok(email.body.includes("- `logs/pending/a\\u0060b\\n## injected\\u001b[31m.md`"), email.body);
+    assert.ok(!email.body.includes("\n## injected"));
+    assert.ok(!email.body.includes("\u001b"));
   });
 
   it("a rejected file name is written inside its code span safely: a backtick or a control character cannot end it or reach the email (#152)", () => {

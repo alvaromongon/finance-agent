@@ -48,6 +48,7 @@ import type {
 // Import and re-export the type from vault-parser (single source of truth)
 import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { readTextFile } from "./utils/fs-text.js";
+import { printable } from "./utils/printable.js";
 import { checkTicker, tickerFileStem, tickerSlug, type Ticker } from "./ticker.js";
 export type { ScreeningLogEntry };
 
@@ -89,7 +90,7 @@ export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[
 }
 
 /**
- * `readWatchlist` for every other reader (heartbeat, `pending:resolve`, the Monday briefing, the weekly
+ * `readWatchlist` for every other reader (heartbeat, `pending:record`, the Monday briefing, the weekly
  * screening): an entry whose ticker does not parse is skipped and reported to `onSkip` (a warning by
  * default), and the rest keeps working (ADR-0016).
  */
@@ -257,7 +258,7 @@ export async function writePendingSignal(
     `---`,
     ``,
     // Queue file read by the Routine, not by the owner: fixed in English like the prompts.
-    `> Resolve with: \`npm run pending:show -- ${filename}\` and \`npm run pending:resolve -- ${filename}\``,
+    `> Answer with: \`npm run pending:show -- ${filename.slice(0, -3)}\` and \`npm run pending:record -- ${filename.slice(0, -3)}\`; close it with a \`resolve\` command in inbox/`,
     `> (see README › Handoff mode for these commands and the agent session that runs them)`,
     ``,
     `## System prompt`,
@@ -375,7 +376,7 @@ export async function listPendingFiles(): Promise<string[]> {
 
 /**
  * Reads logs/pending/<filename>: returns the full content (for
- * `pending:show`) and the parsed frontmatter (for `pending:resolve`, which
+ * `pending:show`) and the parsed frontmatter (for `pending:record`, which
  * rebuilds the real Signal from it instead of trusting what the caller
  * repeats). It validates the frontmatter — a corrupt pending file must not
  * propagate a silent NaN/undefined down to validateTicket.
@@ -421,9 +422,27 @@ export async function readPendingSignal(filename: string): Promise<{ meta: Pendi
   };
 }
 
-/** Deletes a logs/pending/ file once resolved. */
-export async function deletePendingFile(filename: string): Promise<void> {
-  await unlink(pendingFilePath(filename));
+/**
+ * The pending escalations of logs/pending/ with their text (#141): the id is the file name without `.md`, which a `resolve`
+ * command names. A file whose name the engine does not write (`PENDING_FILENAME_RE`) or that cannot be read is not an
+ * escalation and is left out, said on the console: the digest and the commands must never stop for a stray file.
+ */
+export async function readPendingEscalations(): Promise<{ id: string; text: string }[]> {
+  const found: { id: string; text: string }[] = [];
+  for (const file of (await listPendingFiles()).sort()) {
+    if (!PENDING_FILENAME_RE.test(file)) {
+      console.warn(
+        `[vault-io] WARNING, logs/pending/${printable(file)} is not a name the engine writes: not an escalation`,
+      );
+      continue;
+    }
+    try {
+      found.push({ id: file.slice(0, -".md".length), text: await readTextFile(pendingFilePath(file)) });
+    } catch (err) {
+      console.warn(`[vault-io] WARNING, logs/pending/${file} could not be read: ${(err as Error).message}`);
+    }
+  }
+  return found;
 }
 
 /**

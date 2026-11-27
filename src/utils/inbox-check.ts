@@ -18,6 +18,7 @@ import {
   type BatchContext,
   type Command,
   type EntryContext,
+  type EscalationOutcome,
   type InboxState,
   type InitialStopBreach,
   type OpenedLot,
@@ -73,6 +74,8 @@ export interface RejectedFile {
 export interface RunContext {
   /** The rejected batches (names in `inbox/rejected/`) awaiting a replacement or a discard when the run starts. */
   awaiting: ReadonlySet<string>;
+  /** The ids of the pending escalations (`logs/pending/`) still open when the run starts: what a `resolve` can close. */
+  escalations: ReadonlySet<string>;
   rulesVersion: string;
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
@@ -103,6 +106,8 @@ export interface Earlier {
   tickers: ReadonlySet<string>;
   /** The rejected batches still awaiting a replacement or a discard, as the clean files before this one left them. */
   awaiting: ReadonlySet<string>;
+  /** The pending escalations still open, as the clean files before this one left them. */
+  escalations: ReadonlySet<string>;
   /** The ids taken so far: the history's, and those the clean files gave to their lots. */
   takenIds: ReadonlySet<string>;
   /** The entry costs taken so far: the history's, and those the exits of the clean files took. */
@@ -249,6 +254,15 @@ function atScale(lot: Lot, from: Scale, to: Scale): Lot {
   };
 }
 
+/** A pending escalation a clean batch closed (`resolve`): what `inbox:ingest` writes to the store. */
+export interface ClosedEscalation {
+  id: string;
+  outcome: EscalationOutcome;
+  note?: string;
+  /** YYYY-MM-DD, when the command gave it; the run's day otherwise. */
+  date?: string;
+}
+
 /** A rejected batch a clean batch gave up for good: replaced (`replaces:`) or discarded (`discard`). */
 export interface Resolved {
   /** The name in `inbox/rejected/`. */
@@ -282,6 +296,8 @@ export interface BatchCheck {
   trades: Trade[];
   /** The rejected batches a clean batch replaces or discards; none when it is not clean. */
   resolved: Resolved[];
+  /** The pending escalations a clean batch closes; none when it is not clean. */
+  closed: ClosedEscalation[];
   /** The ids taken after a clean batch (those of its lots too), and the entry costs its exits took. */
   takenIds: ReadonlySet<string>;
   entryCostsTaken: ReadonlyMap<string, Money>;
@@ -340,6 +356,9 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   // What this batch can discard: the rejected batches awaiting one, but the one it replaces (that one is settled by `replaces:`).
   const awaiting = new Set(earlier.awaiting);
   const discarded: string[] = [];
+  // The pending escalations this batch can close: the open ones, less what it closes as it goes (one `resolve` each).
+  const escalations = new Set(earlier.escalations);
+  const closed: ClosedEscalation[] = [];
   // The ids come from the one source of decision ids, never repeating one of the history's or the state's.
   const takenIds = new Set(earlier.takenIds);
   for (const silo of Object.values(state)) for (const l of silo.lots) takenIds.add(l.entryId);
@@ -520,7 +539,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     if (read === undefined) {
       const { currencies, kind, ticker } = unread.get(position)!;
       // A discard or a snapshot changes no cash, lots or stop: nothing is unknown because of it.
-      if (kind === "discard" || kind === "snapshot") continue;
+      if (kind === "discard" || kind === "resolve" || kind === "snapshot") continue;
       // A conversion that did not read moved cash between both silos, whatever currencies were readable in it.
       const written = currencies.length > 0 && kind !== "convert" ? currencies : CURRENCIES;
       const blocker: Blocker = { position, how: "could not be read" };
@@ -596,6 +615,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       rulesVersion: earlier.rulesVersion,
       entryCostsTaken,
       awaiting,
+      escalations,
       entry: { ...earlier.entry, cited },
       record: { at: { command: position, line: read.line }, stops },
       today: earlier.today,
@@ -657,7 +677,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       command.kind !== "convert" &&
       command.kind !== "split" &&
       command.kind !== "snapshot" &&
-      command.kind !== "discard"
+      command.kind !== "discard" &&
+      command.kind !== "resolve"
     ) {
       touch(command.currency, command.ticker, read);
       if (command.kind === "set_stop") liftStop(command.currency, command.ticker);
@@ -665,6 +686,10 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     if (result.discarded !== undefined) {
       awaiting.delete(result.discarded);
       discarded.push(result.discarded);
+    }
+    if (result.closed !== undefined) {
+      escalations.delete(result.closed.id);
+      closed.push(result.closed);
     }
     if (result.opened !== undefined && command.kind === "buy") {
       const lot = { currency: command.currency, ticker: command.ticker, command: position, line: read.line };
@@ -786,6 +811,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
           ...discarded.map((file) => ({ file, how: "discarded" as const })),
         ]
       : [],
+    closed: clean ? closed : [],
     takenIds: clean ? takenIds : earlier.takenIds,
     cited: clean ? cited : earlier.cited,
     entryCostsTaken: clean ? entryCostsTaken : earlier.entryCostsTaken,
@@ -828,6 +854,7 @@ function checkCorrections(state: InboxState, parsed: ParsedBatch, earlier: Earli
     stops: new Map(),
     trades: [],
     resolved: [],
+    closed: [],
     takenIds: earlier.takenIds,
     entryCostsTaken: earlier.entryCostsTaken,
     cited: earlier.cited,
@@ -941,6 +968,7 @@ function checkCorrections(state: InboxState, parsed: ParsedBatch, earlier: Earli
       patch,
     })),
     resolved,
+    closed: [],
     takenIds: earlier.takenIds,
     entryCostsTaken: taken,
     cited: earlier.cited,
@@ -999,7 +1027,11 @@ function footprintOf(parsed: ParsedBatch): Footprint[] {
       currencies: u.currencies.length > 0 && u.kind !== "convert" ? u.currencies : CURRENCIES,
       kind: u.kind ?? null,
       ticker:
-        u.kind === "deposit" || u.kind === "withdrawal" || u.kind === "convert" || u.kind === "discard"
+        u.kind === "deposit" ||
+        u.kind === "withdrawal" ||
+        u.kind === "convert" ||
+        u.kind === "discard" ||
+        u.kind === "resolve"
           ? undefined
           : (u.ticker ?? null),
     })),
@@ -1018,6 +1050,7 @@ const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean
   split: { cash: false, lots: true, stop: true },
   snapshot: { cash: false, lots: false, stop: false },
   discard: { cash: false, lots: false, stop: false },
+  resolve: { cash: false, lots: false, stop: false },
   correct: { cash: true, lots: true, stop: true },
 };
 
@@ -1135,6 +1168,8 @@ export interface FileCheck {
   trades: Trade[];
   /** The rejected batches a clean file replaces or discards. */
   resolved: Resolved[];
+  /** The pending escalations a clean file closes. */
+  closed: ClosedEscalation[];
   /** The text of the file, absent for one that could not be read. */
   text?: string;
 }
@@ -1158,6 +1193,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
   const stops = new Map<string, StopSource | null>();
   const rejected: RejectedFile[] = [];
   let awaiting: ReadonlySet<string> = run.awaiting;
+  let escalations: ReadonlySet<string> = run.escalations;
   let takenIds: ReadonlySet<string> = run.takenIds;
   let entryCostsTaken: ReadonlyMap<string, Money> = run.entryCostsTaken;
   // What the history already cites is in `run.entry.history`; these are the proposals cited by this run's own buys.
@@ -1177,6 +1213,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
         clean: false,
         trades: [],
         resolved: [],
+        closed: [],
       };
     }
     const { text } = file;
@@ -1186,6 +1223,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       rejected,
       tickers,
       awaiting,
+      escalations,
       takenIds,
       entryCostsTaken,
       rulesVersion: run.rulesVersion,
@@ -1207,6 +1245,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       ledger?.push({ name, text });
       if (!checked.corrective) appliedInRun += 1;
       awaiting = new Set([...awaiting].filter((name) => !checked.resolved.some((r) => r.file === name)));
+      escalations = new Set([...escalations].filter((id) => !checked.closed.some((c) => c.id === id)));
       takenIds = checked.takenIds;
       entryCostsTaken = checked.entryCostsTaken;
       cited = checked.cited;
@@ -1232,6 +1271,7 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       clean,
       trades: checked.trades,
       resolved: checked.resolved,
+      closed: checked.closed,
       text,
     };
   });

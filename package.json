@@ -29,7 +29,7 @@
     "outbox:send": "tsx src/outbox.ts send",
     "pending:list": "tsx src/pending.ts list",
     "pending:show": "tsx src/pending.ts show",
-    "pending:resolve": "tsx src/pending.ts resolve",
+    "pending:record": "tsx src/pending.ts record",
     "decision:record": "tsx src/decision-record.ts record",
     "demo": "tsx src/demo.ts",
     "lint": "eslint .",

@@ -191,6 +191,7 @@ describe("English renders", () => {
       unreadableCells: [],
       noStop: [],
       rejectedBatches: [],
+      pendingEscalations: [],
       storeProblem: null,
       staleness: null,
       snapshot: null,
@@ -245,6 +246,7 @@ describe("English heartbeat digest, the silo and the broker (#138)", () => {
     unreadableCells: [],
     noStop: [],
     rejectedBatches: [],
+    pendingEscalations: [],
     storeProblem: null,
     staleness: { asOf: "2026-11-10", ageDays: 16.5, stale: true },
     snapshot: {
@@ -299,6 +301,7 @@ describe("English heartbeat digest, lots section", () => {
         unreadableCells: [],
         noStop: [],
         rejectedBatches: [],
+        pendingEscalations: [],
         storeProblem: null,
         staleness: null,
         snapshot: null,

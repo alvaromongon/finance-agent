@@ -57,6 +57,8 @@ export type Repair =
       state: InboxState;
       /** The batches the rebuilt state settled of the rejected ones, for the store to remember. */
       resolved: { file: string; how: "replaced" | "discarded"; by: string }[];
+      /** The pending escalations the batches closed, for the store to remember (the file's hash is read by the caller). */
+      closed: { id: string; outcome: "resolved" | "discarded"; note?: string; date?: string; by: string }[];
       findings: Finding[];
       batches: number;
     }
@@ -157,11 +159,13 @@ export function planRepair(input: RepairInput): Repair {
   const known = CURRENCIES.flatMap((c) => (input.old?.[c]?.lots ?? []) as Lot[]);
   const state = withTelemetry(restoreMetadata(result.state, known, input.history), input.old ?? {});
   const resolved = result.checks.flatMap((check) => check.resolved.map((r) => ({ ...r, by: check.name })));
+  const closed = result.checks.flatMap((check) => check.closed.map((c) => ({ ...c, by: check.name })));
   if (input.old === null) {
     return {
       result: "rebuilt",
       state,
       resolved,
+      closed,
       batches,
       findings: [{ currency: null, text: "the store could not be read: it is rebuilt whole" }],
     };
@@ -171,6 +175,7 @@ export function planRepair(input: RepairInput): Repair {
     result: differences.length > 0 ? "rebuilt" : "unchanged",
     state,
     resolved,
+    closed,
     batches,
     findings: differences.map((text) => ({ currency: silo(text), text })),
   };

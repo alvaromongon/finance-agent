@@ -57,6 +57,7 @@ version: "0.2"
 `;
 
 const PENDING_FILENAME = "2026-07-15-xom.md";
+const PENDING_ID = "2026-07-15-xom";
 
 const PENDING_MD = `---
 id: 20260715-xom-pending
@@ -108,7 +109,7 @@ describe("pending.ts", () => {
   let vaultDir: string;
   let listPending: () => Promise<void>;
   let showPending: (filename: string) => Promise<void>;
-  let resolvePending: (filename: string, recommendationInput: unknown) => Promise<void>;
+  let recordPending: (filename: string, recommendationInput: unknown) => Promise<void>;
 
   before(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "finance-agent-pending-"));
@@ -122,7 +123,7 @@ describe("pending.ts", () => {
     const mod = await import("../pending.js");
     listPending = mod.listPending;
     showPending = mod.showPending;
-    resolvePending = mod.resolvePending;
+    recordPending = mod.recordPending;
   });
 
   after(async () => {
@@ -149,7 +150,7 @@ describe("pending.ts", () => {
       }
     });
 
-    it("lists the logs/pending/ files when there are signals", async () => {
+    it("lists the ids of the open escalations when there are signals", async () => {
       await mkdir(join(vaultDir, "logs", "pending"), { recursive: true });
       await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_MD, "utf8");
 
@@ -158,7 +159,7 @@ describe("pending.ts", () => {
         await listPending();
         assert.deepEqual(
           log.mock.calls.map((c) => c.arguments[0]),
-          [PENDING_FILENAME],
+          [PENDING_ID],
         );
       } finally {
         log.mock.restore();
@@ -167,7 +168,7 @@ describe("pending.ts", () => {
     });
   });
 
-  describe("showPending / resolvePending", () => {
+  describe("showPending / recordPending", () => {
     beforeEach(async () => {
       await mkdir(join(vaultDir, "logs", "pending"), { recursive: true });
       await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_MD, "utf8");
@@ -187,12 +188,12 @@ describe("pending.ts", () => {
       }
     });
 
-    it("resolvePending with a valid ticket writes the log, sends the alert and deletes the pending file", async () => {
+    it("recordPending with a valid ticket writes the log, sends the alert and leaves the pending file", async () => {
       await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, validRecommendation());
+        await recordPending(PENDING_FILENAME, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -226,19 +227,19 @@ describe("pending.ts", () => {
       assert.deepEqual(decision.assumptions, ["El Brent se mantiene por encima de 80 $"]);
       assert.equal(decision.log_link, `logs/${today}-xom.md`);
 
-      // The pending file is deleted whether the ticket is valid or blocked.
-      await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
+      // The pending file stays whether the ticket is valid or blocked: only a resolve command closes the escalation.
+      await access(join(vaultDir, "logs", "pending", PENDING_FILENAME)); // recording does not close it: a resolve command does
     });
 
     for (const [label, broken] of brokenUsdLots(PORTFOLIO_MD)) {
-      it(`resolvePending resolves a signal with ${label}: recorded, alert sent, file deleted`, async () => {
+      it(`recordPending resolves a signal with ${label}: recorded, alert sent, file kept`, async () => {
         const portfolioPath = join(vaultDir, "portfolio.md");
         await writeFile(portfolioPath, broken, "utf8");
         await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
         const log = mock.method(console, "log", () => {});
         const warn = mock.method(console, "warn", () => {});
         try {
-          await resolvePending(PENDING_FILENAME, validRecommendation());
+          await recordPending(PENDING_FILENAME, validRecommendation());
         } finally {
           log.mock.restore();
           warn.mock.restore();
@@ -249,11 +250,56 @@ describe("pending.ts", () => {
         assert.equal(decision.type, "buy_proposal");
         const smtpWarned = warn.mock.calls.some((c) => String(c.arguments[0]).includes("SMTP_USER/SMTP_PASS"));
         assert.ok(smtpWarned, "the alert was attempted");
-        await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
+        await access(join(vaultDir, "logs", "pending", PENDING_FILENAME)); // recording does not close it: a resolve command does
       });
     }
 
-    it("resolvePending with R:R below the minimum records blocked:true and sends no alert", async () => {
+    it("recordPending refuses an escalation that does not exist, and one a resolve command closes or is about to close", async () => {
+      await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
+      await assert.rejects(() => recordPending("2026-07-15-nope", validRecommendation()), /not a pending escalation/);
+
+      // A batch waiting in inbox/ closes it: recording would record the decision twice.
+      await mkdir(join(vaultDir, "inbox"), { recursive: true });
+      await writeFile(
+        join(vaultDir, "inbox", "close.yaml"),
+        `schema_version: 1\ncommands:\n  - command: resolve\n    id: ${PENDING_ID}\n    outcome: resolved\n`,
+        "utf8",
+      );
+      try {
+        await assert.rejects(() => recordPending(PENDING_ID, validRecommendation()), /waits in inbox/);
+        const log = mock.method(console, "log", () => {});
+        try {
+          await listPending();
+          assert.deepEqual(
+            log.mock.calls.map((c) => c.arguments[0]),
+            ["No pending signals."],
+          );
+        } finally {
+          log.mock.restore();
+        }
+      } finally {
+        await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
+      }
+    });
+
+    it("recordPending takes the id or the file name, and tells how to close the escalation", async () => {
+      await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
+      const log = mock.method(console, "log", () => {});
+      const warn = mock.method(console, "warn", () => {});
+      try {
+        await recordPending(PENDING_FILENAME, validRecommendation());
+        const said = log.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+        assert.match(
+          said,
+          new RegExp(`Close it with a resolve command in inbox/ \\(command: resolve, id: ${PENDING_ID}`),
+        );
+      } finally {
+        log.mock.restore();
+        warn.mock.restore();
+      }
+    });
+
+    it("recordPending with R:R below the minimum records blocked:true and sends no alert", async () => {
       await writeFile(
         join(vaultDir, "logs", "pending", PENDING_FILENAME),
         PENDING_BUYABLE_MD.replace("target_levels: [140]", "target_levels: [130]"),
@@ -266,7 +312,7 @@ describe("pending.ts", () => {
       const warn = mock.method(console, "warn", () => {});
       const error = mock.method(console, "error", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, rec);
+        await recordPending(PENDING_FILENAME, rec);
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -289,13 +335,13 @@ describe("pending.ts", () => {
       assert.equal(decision.type, "buy_blocked");
       assert.deepEqual(decision.eligibility, { verdict: "blocked", reasons: ["rr_below_min"] });
 
-      await assert.rejects(() => access(join(vaultDir, "logs", "pending", PENDING_FILENAME)));
+      await access(join(vaultDir, "logs", "pending", PENDING_FILENAME)); // recording does not close it: a resolve command does
     });
 
     // The regime block follows the same path as the rest (log +
     // decision log, no email), and uses the regime of the detection date frozen
     // in the pending file, not today's.
-    it("resolvePending with an adverse regime in the pending file records buy_blocked for regime_adverse and sends no alert", async () => {
+    it("recordPending with an adverse regime in the pending file records buy_blocked for regime_adverse and sends no alert", async () => {
       await writeFile(
         join(vaultDir, "logs", "pending", PENDING_FILENAME),
         PENDING_BUYABLE_MD.replace(
@@ -309,7 +355,7 @@ describe("pending.ts", () => {
       const warn = mock.method(console, "warn", () => {});
       const error = mock.method(console, "error", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, validRecommendation());
+        await recordPending(PENDING_FILENAME, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -330,7 +376,7 @@ describe("pending.ts", () => {
       assert.equal(decision.regime, "adverso");
     });
 
-    it("resolvePending carries strength, benchmark and its regime from the pending file to the decision log", async () => {
+    it("recordPending carries strength, benchmark and its regime from the pending file to the decision log", async () => {
       const withSnapshot = PENDING_MD.replace(
         "use_web_search: true",
         "range_position: 0.742\nbias: ALCISTA\natr14: 4.2500\nbenchmark_ticker: VOO\nbenchmark_price: 701.5\nbenchmark_regime: favorable\nuse_web_search: true",
@@ -340,7 +386,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, {
+        await recordPending(PENDING_FILENAME, {
           ...validRecommendation(),
           action: "HOLD",
           ticket: { ...validRecommendation().ticket, direction: "HOLD" },
@@ -367,7 +413,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, {
+        await recordPending(PENDING_FILENAME, {
           ...validRecommendation(),
           action: "HOLD",
           triggers: ["setup"],
@@ -398,7 +444,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, validRecommendation());
+        await recordPending(PENDING_FILENAME, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -410,19 +456,19 @@ describe("pending.ts", () => {
       assert.match(logMd, /\| Convicción \| high \(quintil superior, régimen favorable, catalizador fechado\) \|/);
     });
 
-    it("resolvePending rejects a recommendation carrying conviction: the engine computes it", async () => {
+    it("recordPending rejects a recommendation carrying conviction: the engine computes it", async () => {
       await writeFile(join(vaultDir, "logs", "pending", PENDING_FILENAME), PENDING_BUYABLE_MD, "utf8");
       await assert.rejects(
-        () => resolvePending(PENDING_FILENAME, { ...validRecommendation(), conviction: "high" }),
+        () => recordPending(PENDING_FILENAME, { ...validRecommendation(), conviction: "high" }),
         /conviction .*the engine computes it/,
       );
     });
 
-    it("resolvePending rejects a recommendation for another ticker without writing anything", async () => {
+    it("recordPending rejects a recommendation for another ticker without writing anything", async () => {
       const decisionsPath = join(vaultDir, "logs", "decisions.jsonl");
       const before = await readFile(decisionsPath, "utf8").catch(() => "");
       await assert.rejects(
-        () => resolvePending(PENDING_FILENAME, { ...validRecommendation(), ticker: "CVX" }),
+        () => recordPending(PENDING_FILENAME, { ...validRecommendation(), ticker: "CVX" }),
         /recommendation is for CVX \(USD\) and the signal for XOM \(USD\)/,
       );
       assert.equal(await readFile(decisionsPath, "utf8").catch(() => ""), before);
@@ -430,10 +476,10 @@ describe("pending.ts", () => {
       await access(join(vaultDir, "logs", "pending", PENDING_FILENAME));
     });
 
-    it("resolvePending writes nothing if strategies/base.md has no version", async () => {
+    it("recordPending writes nothing if strategies/base.md has no version", async () => {
       await writeFile(join(vaultDir, "strategies", "base.md"), "---\ntitle: sin versión\n---\n", "utf8");
       try {
-        await assert.rejects(() => resolvePending(PENDING_FILENAME, validRecommendation()), /version/);
+        await assert.rejects(() => recordPending(PENDING_FILENAME, validRecommendation()), /version/);
       } finally {
         await writeFile(join(vaultDir, "strategies", "base.md"), STRATEGY_MD, "utf8");
       }
@@ -445,7 +491,7 @@ describe("pending.ts", () => {
     // in the pending file's frontmatter — when the Routine resolves, buildSignal
     // rebuilds the rest of the Signal from the current vault and could no longer
     // recompute it for that day.
-    it("resolvePending carries range_position/bias from the pending file to the decision log", async () => {
+    it("recordPending carries range_position/bias from the pending file to the decision log", async () => {
       const filename = "2026-07-15-xom.md";
       const withStrength = PENDING_MD.replace(
         "use_web_search: true",
@@ -456,7 +502,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(filename, validRecommendation());
+        await recordPending(filename, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -470,7 +516,7 @@ describe("pending.ts", () => {
 
     // The detection-date ATR travels like the rest of the strength —
     // it is the unit the proposed stop was sized in.
-    it("resolvePending carries atr14 from the pending file to the decision log", async () => {
+    it("recordPending carries atr14 from the pending file to the decision log", async () => {
       const filename = "2026-07-15-xom.md";
       const withAtr = PENDING_MD.replace(
         "use_web_search: true",
@@ -481,7 +527,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(filename, validRecommendation());
+        await recordPending(filename, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -503,7 +549,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(filename, validRecommendation());
+        await recordPending(filename, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -515,11 +561,11 @@ describe("pending.ts", () => {
       assert.ok(!content.includes("| ATR14 |"), "without atr14 the row must not be written");
     });
 
-    it("resolvePending works with a pending file without strength: it skips the rows, does not fail", async () => {
+    it("recordPending works with a pending file without strength: it skips the rows, does not fail", async () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(PENDING_FILENAME, validRecommendation());
+        await recordPending(PENDING_FILENAME, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -531,7 +577,7 @@ describe("pending.ts", () => {
       assert.ok(!content.includes("| Sesgo |"), "without strength the row must not be written");
     });
 
-    it("resolvePending ignores corrupt strength in the pending file instead of breaking", async () => {
+    it("recordPending ignores corrupt strength in the pending file instead of breaking", async () => {
       const filename = "2026-07-15-xom.md";
       const corrupt = PENDING_MD.replace(
         "use_web_search: true",
@@ -542,7 +588,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(filename, validRecommendation());
+        await recordPending(filename, validRecommendation());
       } finally {
         log.mock.restore();
         warn.mock.restore();
@@ -553,7 +599,7 @@ describe("pending.ts", () => {
       assert.ok(!content.includes("Posición en rango"), "invalid strength is discarded");
     });
 
-    it("resolvePending throws if the pending file ticker is in neither watchlist.md nor portfolio.md", async () => {
+    it("recordPending throws if the pending file ticker is in neither watchlist.md nor portfolio.md", async () => {
       const filename = "2026-07-15-unknown.md";
       const content = PENDING_MD.replace(/ticker: XOM/, "ticker: UNKNOWN").replace(/XOM/g, "UNKNOWN");
       await writeFile(join(vaultDir, "logs", "pending", filename), content, "utf8");
@@ -561,16 +607,13 @@ describe("pending.ts", () => {
       const rec = validRecommendation();
       rec.ticker = "UNKNOWN";
 
-      await assert.rejects(
-        () => resolvePending(filename, rec),
-        /UNKNOWN is in neither watchlist\.md nor portfolio\.md/,
-      );
+      await assert.rejects(() => recordPending(filename, rec), /UNKNOWN is in neither watchlist\.md nor portfolio\.md/);
     });
 
     // ADR-0007: A position without a watchlist.md entry can be resolved
     // too — buildSignal no longer requires finding the ticker in the watchlist if
     // it has a real position in portfolio.md.
-    it("resolvePending resolves a signal for a ticker without a watchlist entry but with a position in portfolio.md", async () => {
+    it("recordPending resolves a signal for a ticker without a watchlist entry but with a position in portfolio.md", async () => {
       const filename = "2026-07-15-orphan.md";
       const content = PENDING_MD.replace(/ticker: XOM/, "ticker: ORPHAN").replace(/XOM/g, "ORPHAN");
       await writeFile(join(vaultDir, "logs", "pending", filename), content, "utf8");
@@ -593,7 +636,7 @@ describe("pending.ts", () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
-        await resolvePending(filename, rec);
+        await recordPending(filename, rec);
       } finally {
         log.mock.restore();
         warn.mock.restore();

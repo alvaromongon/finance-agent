@@ -84,7 +84,7 @@ function inUsdLots(portfolioMd: string, edit: (section: string) => string): stri
 
 /**
  * The same portfolio.md with the USD silo's `Lots` broken in the three ways the tolerant readers
- * (`pending:resolve`, the Monday briefing, the weekly screening) must carry on through: a misspelled
+ * (`pending:record`, the Monday briefing, the weekly screening) must carry on through: a misspelled
  * heading (the section is missing), an unreadable table header (a column is missing: a
  * `LotsTableError`), and one unreadable row (Units "TBD": the row is skipped, the header reads).
  * The USD silo is the one that holds a position and a lot in the flow fixtures.

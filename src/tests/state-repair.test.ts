@@ -105,6 +105,30 @@ describe("the repair of a corrupt state", () => {
     assert.equal((await repairLines())[0].result, "rebuilt");
   });
 
+  it("a store that does not read gets its closed escalations back from the resolve commands of the applied batches (#141)", async () => {
+    const id = "2026-11-10-xom";
+    const text = "---\nticker: XOM\ncurrency: USD\nprice: 100\ntriggers: [big_move]\n---\n";
+    await mkdir(dir("logs", "pending"), { recursive: true });
+    await writeFile(dir("logs", "pending", `${id}.md`), text, "utf8");
+    await writeFile(
+      dir("inbox", "2026-11-21-close.yaml"),
+      batch(`command: resolve\nid: ${id}\noutcome: discarded\nnote: stale\ndate: 2026-11-20`),
+      "utf8",
+    );
+    assert.equal((await inbox.ingestInbox(new Date("2026-11-21T09:00:00Z"))).exitCode, 0);
+    const closed = JSON.parse(await storeFile()).closed_escalations;
+    assert.equal(closed.length, 1);
+
+    await writeFile(dir("state", "portfolio.json"), '{"silos": {', "utf8");
+    const outcome = await repair.repairStore(now);
+    assert.equal(outcome.exitCode, 0, outcome.lines.join("\n"));
+    const [rebuilt] = JSON.parse(await storeFile()).closed_escalations;
+    assert.deepEqual(
+      [rebuilt.id, rebuilt.outcome, rebuilt.note, rebuilt.date, rebuilt.by, rebuilt.sha256],
+      [id, "discarded", "stale", "2026-11-20", "2026-11-21-close.yaml", closed[0].sha256],
+    );
+  });
+
   it("a store that is what the audit trail gives is left alone, and the run is still logged", async () => {
     const before = await snapshot();
     const outcome = await repair.repairStore(now);

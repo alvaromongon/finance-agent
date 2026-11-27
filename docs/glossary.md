@@ -96,6 +96,15 @@ trail, never retried. It awaits an answer, named in every digest of the [heartbe
 replaces it (`replaces: <file>` at its top) or discards it (a `discard` [command](#command) with `file: <file>`). A
 batch that depends on it fails its own validation.
 
+### Pending escalation
+
+A signal that was [escalated](#escalation) in `handoff` mode and that no one has closed. The engine leaves it as a file
+in `logs/pending/` (its id is the file name without `.md`, such as `2026-11-20-xom`) for the [reasoner](#reasoner-api-and-handoff).
+It stays open, and is named in every digest of the [heartbeat](#heartbeat), until a `resolve` [command](#command) closes it
+as `resolved` (answered) or `discarded` (given up). A command is the only way to close it: the file is never edited or
+deleted, and the store remembers what was closed with the hash of the file, so a new signal written later under the same
+name is open again.
+
 ### Conversion
 
 Cash moved from one [silo](#silo) to the other: the `convert` [command](#command) takes an amount out of one currency

@@ -11,7 +11,7 @@ parentheses so a code comment that cites it can be found here.
 | Flow                                                          | Command                                                                                     |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | [Heartbeat](#heartbeat)                                       | `heartbeat:eu`, `heartbeat:us`                                                              |
-| [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:resolve`                                           |
+| [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:record`; a `resolve` command in `inbox/` closes it |
 | [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner's flows and stop adjustments |
 | [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`                                       |
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize`                             |
@@ -36,17 +36,17 @@ parentheses so a code comment that cites it can be found here.
      section) do not stop the run: the lots count as empty for that run and the warning names
      `portfolio.md` and the expected section. Only the `Lots` reading is tolerant: a missing `Cash`
      or `Positions` section, or a table of them that does not read, still stops the run.
-     The same tolerance applies to `pending:resolve`, the Monday briefing and the weekly screening,
+     The same tolerance applies to `pending:record`, the Monday briefing and the weekly screening,
      which do not use the lots; only `decisions:evaluate` refuses a broken `Lots` (and `inbox:check` and `inbox:ingest`
      refuse a portfolio whose `Volume` is not the sum of its lots).
      A ticker that does not parse (`M&M.NS`, a typo) is handled the same way: the `Positions` row or
      watchlist entry is skipped, the other positions are still priced and their stops detected, and the
-     digest carries a warning naming the row in every run while it lasts. `pending:resolve`, the Monday
+     digest carries a warning naming the row in every run while it lasts. `pending:record`, the Monday
      briefing and the weekly screening skip such a row, entry or screening-log row with a warning and
      carry on, each also logging the warning through `warnSkipped`; only `decisions:evaluate` and the inbox refuse.
      A `Positions` `P/L`, `Available cash` or `Total cash` cell holding a number too large to count in cents
      (`1e307`) is tolerated too: it reads as 0, 0 and absent, the row is still watched, a console warning names the
-     cell and the digest carries it in its own section in every run while it lasts. `pending:resolve`, the Monday
+     cell and the digest carries it in its own section in every run while it lasts. `pending:record`, the Monday
      briefing and the screening log the same warning.
      2a. A state file that does not read never stops risk watch (ADR-0015, #139): when `state/portfolio.json` is not valid
      (bad JSON, a field the engine does not accept, another version), the run goes on over `state/portfolio.last-readable.json`, the
@@ -59,6 +59,10 @@ parentheses so a code comment that cites it can be found here.
      after the portfolio is read (before anything can end the run), also when there is nothing else to watch. Only the list of the
      rejected files is read, never a batch run, and a folder that cannot be read is said in the log and stops nothing: a
      rejected batch never switches off a stop alert.
+     2'-b. Name every [pending escalation](glossary.md#pending-escalation) no `resolve` command has closed (a file of
+     `logs/pending/` whose id and text the store does not list as closed, #141) in the digest, in every run while it
+     lasts (not deduplicated), at the same point and with the same guarantee: a folder that cannot be read is said in the
+     log and stops nothing.
      2''. Judge how stale the silo is and what its latest [snapshot](glossary.md#snapshot) found (#138), once the state is
      the [store](glossary.md#store): a silo is [stale](glossary.md#stale) by its latest snapshot alone. A console warning names it, and the digest has a section for it. The differences of the latest snapshot are in the
      digest in every run (not deduplicated) until a later snapshot shows none; a snapshot with no difference says so, once,
@@ -110,7 +114,8 @@ parentheses so a code comment that cites it can be found here.
   11. [Escalate](glossary.md#escalation) the rest to the [reasoner](glossary.md#reasoner-api-and-handoff).
       With `ANALYST_PROVIDER=api` the answer comes back at once and is passed to
       [Record a decision](#record-a-decision). With `handoff` the engine writes
-      `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated.
+      `logs/pending/<date>-<ticker>.md` and the signal is listed in the digest as escalated, and as a
+      [pending escalation](glossary.md#pending-escalation) in every later digest until a `resolve` command closes it.
   12. Send the digest (crossed stops, positions without a stop, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
       since the last send today (crossed stops, the differences of a snapshot and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `logs/decisions.jsonl`, the rules
@@ -201,25 +206,34 @@ them. It needs one history request per position with a stop; without ATR the pos
 
 ## Resolve a pending escalation
 
-- **Starts with**: an agent session (a routine or a person) after a handoff heartbeat left files in
-  `logs/pending/`: `pending:list`, `pending:show -- <file>`, then `pending:resolve -- <file>` with
-  the answer as JSON on stdin.
-- **Steps**:
-  1. Validate the answer's shape.
-  2. Rebuild the signal from the pending file and the current `watchlist.md` and the portfolio (the store, else `portfolio.md`).
+- **Starts with**: an agent session (a routine or a person) after a handoff heartbeat left files in `logs/pending/`:
+  `pending:list` (the open ones not already closed by a batch waiting in `inbox/`), `pending:show -- <id>`, then
+  `pending:record -- <id>` with the answer as JSON on stdin, and finally a `resolve` command in `inbox/` that closes it.
+  The id of an escalation is its file name without `.md`.
+- **Steps** (`pending:record`):
+  1. Refuse an id that is not open: it does not exist, a `resolve` command closed it, or a batch in `inbox/` is about to
+     (recording again would record the decision twice).
+  2. Validate the answer's shape.
+  3. Rebuild the signal from the pending file and the current `watchlist.md` and the portfolio (the store, else `portfolio.md`).
      The detection snapshot keeps only strength, benchmark, setup, conviction and price; the entry,
-     position, cash and silo value are read at resolve time, so a late resolution sizes on the
-     current state. A ticker in neither file is stale and cannot be resolved.
-  3. Hand over to [Record a decision](#record-a-decision), dated with the detection day.
-  4. Delete the pending file, whether the ticket was blocked or not.
-- **Reads / writes**: reads the pending file, `watchlist.md`, the portfolio; writes what Record a
-  decision writes and deletes the pending file.
+     position, cash and silo value are read at record time, so a late answer sizes on the
+     current state. A ticker in neither file is stale and cannot be recorded.
+  4. Hand over to [Record a decision](#record-a-decision), dated with the detection day.
+  5. Say how to close it. The file stays: `pending:record` changes no list, and the escalation stays in every digest.
+- **Closing** is a `resolve` command (`id`, `outcome` `resolved` or `discarded`, optional `note` and `date`), the only way
+  to change the list of pending escalations ([ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md)). It is
+  checked by [Check the inbox](#check-the-inbox) against the escalations still open as the commands before it in the batch
+  leave them (an id that does not exist or is already closed is refused, and blocks no other command), and applied by
+  [Apply the inbox](#apply-the-inbox), which writes it to the store with the hash of the file. It changes no cash, lot or
+  stop. A signal can be closed as `discarded` without ever recording an answer.
+- **Reads / writes**: `pending:record` reads the pending file, `watchlist.md`, the portfolio and the inbox, and writes what Record a
+  decision writes; it deletes nothing. The `resolve` command writes the store only.
 - **When it fails**: a validation or recording error exits non-zero and leaves the file for a retry.
-- **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
+- **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md), [ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md).
 
 ## Record a decision
 
-- **Starts with**: a reasoner answer (the heartbeat with the `api` backend, or `pending:resolve`),
+- **Starts with**: a reasoner answer (the heartbeat with the `api` backend, or `pending:record`),
   or the owner narrating a cash flow or a stop adjustment (`npm run decision:record`, JSON on stdin).
 - **Steps (reasoner answer)**:
   1. Check the answer is for the signal's ticker and currency.
@@ -373,6 +387,9 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      `discard` of such a file is an error of its command. A `discard` changes no cash, lots or stop, so a refused or
      unreadable one leaves nothing unknown and blocks no other command. A clean batch settles what it replaces and
      discards for the batches after it in name order (a second batch cannot answer the same file again).
+     A `resolve` is checked the same way against the [pending escalations](glossary.md#pending-escalation) still open
+     (the files of `logs/pending/` the store does not list as closed): an id that does not exist or that an earlier
+     command or file closed is an error of its command. It changes no cash, lots or stop either.
   3. Check each command with its handler, in order, against the state the previous ones would produce, and
      each file against the state the clean batches before it produce (a rejected batch contributes nothing). A
      handler is pure: state and command in, new state or a reason out; it checks the currency of the silo
@@ -477,7 +494,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      correction batch is rejected with that reason and nothing changes. Otherwise the store takes the rebuilt lots, cash and positions,
      and the log gets a `correction` line per line that changes, each pointing at its original, which stays.
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
-     the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded (each
+     the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded and the pending escalations they closed (each
      with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
      sold, an `fx_conversion` per conversion, a `split` per silo a split scaled, a `reconcile` per difference of a snapshot and a `correction` per line a correction changes, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
      from the store (the store is written first, the view after it).
