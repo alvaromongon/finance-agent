@@ -38,9 +38,11 @@ import {
   readRoutinePrompt,
   readRulesVersion,
   readWatchlistSkippingBadTickers,
-  retireWatchlistEntry,
+  archiveThesis,
 } from "./vault-io.js";
-import { ignoringLots, readPortfolio, readPortfolioView, refreshPrices } from "./portfolio-store.js";
+import { ignoringLots, readPortfolio, readPortfolioView, readWatchlistView, refreshPrices } from "./portfolio-store.js";
+import { dropBatchOnce } from "./inbox-store.js";
+import { stopWatchingBatch } from "./utils/inbox-proposals.js";
 import { dropStopProposals } from "./stop-proposals.js";
 import { buildBriefingDecisions, extractProposals, formatEngineTicketsSection } from "./utils/briefing-decisions.js";
 import { CUT_BOARD_HEADING, extractCutBoard } from "./utils/decisions-evaluation-render.js";
@@ -113,7 +115,7 @@ export async function prepareBriefing(
   await resolveBriefingConfiguration();
 
   const [watchlistMd, evaluationMd, systemPromptMd, policyMd] = await Promise.all([
-    safeRead(join(vaultDir, "watchlist.md")),
+    readWatchlistView(),
     safeRead(join(logsDir, "decisions-evaluation.md")),
     readRoutinePrompt("monday-briefing"),
     readConfiguration("portfolio-policy.md").then((policy) => policy ?? ""),
@@ -374,11 +376,23 @@ export async function finalizeBriefing(
     console.warn(`[monday-briefing] ⚠ Ignoring removal of tickers with an open position: ${blockedRetires.join(", ")}`);
   }
 
-  if (toRetire.length > 0) {
-    console.log(`[monday-briefing] Removing from watchlist: ${toRetire.join(", ")}`);
-    for (const ticker of toRetire) {
-      await retireWatchlistEntry(ticker, m.briefing.retireReason(today));
-    }
+  // The watchlist is the engine's state: what the briefing retires is proposed as a batch of `stop_watching` commands in
+  // `inbox/`, which `inbox:ingest` applies (#140). A ticker that is not on the list has nothing to stop: it is told, not proposed.
+  const watched = new Set(watchlist.map((e) => e.ticker));
+  const notWatched = toRetire.filter((ticker) => !watched.has(ticker));
+  if (notWatched.length > 0) {
+    console.warn(`[monday-briefing] ⚠ Not on the watchlist, nothing to retire: ${notWatched.join(", ")}`);
+  }
+  const retiring = toRetire.filter((ticker) => watched.has(ticker));
+  if (retiring.length > 0) {
+    console.log(`[monday-briefing] Proposing to stop watching: ${retiring.join(", ")}`);
+    for (const ticker of retiring) await archiveThesis(ticker, m.briefing.retireReason(today));
+    const name = `${today}-briefing-retire.yaml`;
+    const written = await dropBatchOnce(
+      name,
+      stopWatchingBatch(retiring.map((ticker) => ({ ticker, reason: m.briefing.retireReason(today) }))),
+    );
+    console.log(`[monday-briefing] ${written === "written" ? "Proposed" : "Already proposed"} in inbox/${name}`);
   }
 
   // Idempotent: if finalize is rerun the same day (failed push, manual retry),

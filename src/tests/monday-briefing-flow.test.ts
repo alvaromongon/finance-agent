@@ -414,7 +414,7 @@ describe("monday-briefing prepare/finalize", () => {
       });
     }
 
-    it("saves the log with cash in the frontmatter, removes only tickers without a position and sends the email", async () => {
+    it("saves the log with cash in the frontmatter, proposes retiring only tickers without a position and sends the email", async () => {
       const log = mock.method(console, "log", () => {});
       const warn = mock.method(console, "warn", () => {});
       try {
@@ -424,10 +424,12 @@ describe("monday-briefing prepare/finalize", () => {
         assert.match(logContent, /id: \d+-monday-briefing/);
         assert.match(logContent, /## AUTOMATED_ACTIONS/);
 
-        // XOM removed; MSFT blocked by the guardrail (open position).
-        const watchlist = await readFile(join(vaultDir, "watchlist.md"), "utf8");
-        assert.ok(!watchlist.includes("XOM"), "XOM must leave watchlist.md");
-        assert.ok(watchlist.includes("MSFT"), "MSFT must stay in watchlist.md");
+        // XOM is proposed for retirement as a batch in inbox/ (the watchlist is the engine's state, #140); MSFT is
+        // blocked by the guardrail (open position). The briefing edits no watchlist.
+        assert.equal(await readFile(join(vaultDir, "watchlist.md"), "utf8"), WATCHLIST_MD);
+        const proposed = await readFile(join(vaultDir, "inbox", `${today}-briefing-retire.yaml`), "utf8");
+        assert.match(proposed, /command: stop_watching\n\s+ticker: XOM\n/);
+        assert.doesNotMatch(proposed, /MSFT/);
         const blockedWarned = warn.mock.calls.some((c) => String(c.arguments[0]).includes("MSFT"));
         assert.ok(blockedWarned, "the blocked MSFT removal must be warned about");
 
@@ -439,6 +441,33 @@ describe("monday-briefing prepare/finalize", () => {
         log.mock.restore();
         warn.mock.restore();
       }
+    });
+
+    it("with the watchlist in the store, finalize changes neither the store nor its views: it proposes the retirement (#140)", async () => {
+      await (await import("../portfolio-store.js")).seedStore(new Date("2026-11-01T00:00:00Z"));
+      const state = ["state/portfolio.json", "state/portfolio.last-readable.json", "watchlist.md", "portfolio.md"];
+      const read = () => Promise.all(state.map((file) => readFile(join(vaultDir, file), "utf8")));
+      const before = await read();
+
+      await quietly(() => finalizeBriefing(VALID_REPORT, fakeProvider));
+
+      assert.deepEqual(await read(), before, "the store and the views are as they were");
+      const proposed = await readFile(join(vaultDir, "inbox", `${today}-briefing-retire.yaml`), "utf8");
+      assert.match(proposed, /command: stop_watching\n\s+ticker: XOM\n/);
+      assert.doesNotMatch(proposed, /MSFT/, "MSFT has an open position: it stays on the watchlist");
+    });
+
+    it("a ticker the report retires that is not on the watchlist is told, not proposed", async () => {
+      const warn = mock.method(console, "warn", () => {});
+      const log = mock.method(console, "log", () => {});
+      try {
+        await finalizeBriefing(VALID_REPORT.replace("RETIRE: XOM,MSFT", "RETIRE: GHOST"), fakeProvider);
+        assert.ok(warn.mock.calls.some((c) => String(c.arguments[0]).includes("GHOST")));
+      } finally {
+        warn.mock.restore();
+        log.mock.restore();
+      }
+      await assert.rejects(() => access(join(vaultDir, "inbox", `${today}-briefing-retire.yaml`)));
     });
 
     // What is not proposed is recorded too. Only

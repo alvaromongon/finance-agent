@@ -928,15 +928,20 @@ describe("inbox:ingest", () => {
       assert.deepEqual(lotsMismatches((await store.readPortfolio("EUR")).portfolio, await readDecisionHistory()), []);
     });
 
-    it("inbox:check and inbox:ingest need no watchlist for a batch that buys nothing; an ingest that buys refuses without one", async () => {
+    it("a missing watchlist.md is an empty watchlist: every ticker bought is flagged, nothing is refused", async () => {
       await rm(dir("watchlist.md"));
-      await drop("a.yaml", batch("command: deposit\namount: 10 EUR"));
-      assert.equal((await inbox.checkInbox()).exitCode, 0);
+      await drop("a.yaml", batch(BUY(), STOP));
       assert.equal((await inbox.ingestInbox()).exitCode, 0);
-      await drop("b.yaml", batch(BUY(), STOP));
+      assert.deepEqual((await entries())[0].rule_violations, ["not_in_watchlist"]);
+      assert.deepEqual(JSON.parse(await storeText()).watchlist, []);
+    });
+
+    it("a watchlist.md that cannot be read stops the ingest, whatever the batch holds; check goes on without it (#140)", async () => {
+      await writeFile(dir("watchlist.md"), "---\nschema_version: 9\n---\n", "utf8");
+      await drop("a.yaml", batch("command: deposit\namount: 10 EUR"));
       assert.equal((await inbox.checkInbox()).exitCode, 0, "check goes on: the rules of an entry change no verdict");
       await assert.rejects(inbox.ingestInbox(), /watchlist\.md/);
-      assert.deepEqual(await ls("inbox"), ["applied", "b.yaml"], "nothing was moved or applied");
+      assert.deepEqual(await ls("inbox"), ["a.yaml"], "nothing was moved or applied");
     });
   });
 

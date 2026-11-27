@@ -49,8 +49,8 @@ const ALLOWLIST: Readonly<Record<string, { slices: string; why: string }>> = {
     why: "copies the example brain to a temporary directory and reads the outbox of its copy",
   },
   "monday-briefing.ts": {
-    slices: "#140, #143",
-    why: "puts watchlist.md as text in the prompt; reads the theses and logs; writes the report",
+    slices: "#143",
+    why: "reads the theses and logs; writes the report",
   },
   "providers/fixtures.ts": { slices: "#143", why: "reads market fixture files (not state)" },
   "screening-outcomes.ts": { slices: "#143", why: "reads screening-log.md and writes its report" },
@@ -59,8 +59,8 @@ const ALLOWLIST: Readonly<Record<string, { slices: string; why: string }>> = {
   "utils/screening-helpers.ts": { slices: "#143", why: "reads the theses and screening files" },
   "utils/screening-outcomes-helpers.ts": { slices: "#143", why: "uses the screening-log result values" },
   "weekly-screening.ts": {
-    slices: "#140, #143",
-    why: "reads watchlist.md as text, writes the theses",
+    slices: "#140, #142, #143",
+    why: "reads screening-universe.md and the watchlist as text, writes the theses",
   },
 };
 

@@ -225,6 +225,7 @@ describe("weekly-screening prepare/resolve/summarize", () => {
   beforeEach(async () => {
     runtimeProvider.current = fakeProvider;
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
+    await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
     // The last valid copies of the configuration files are state: one test's must not feed the next.
     await rm(join(vaultDir, "state"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
@@ -377,7 +378,7 @@ describe("weekly-screening prepare/resolve/summarize", () => {
       }
     });
 
-    it("removes from the watchlist what breaks filter 0, archives its thesis and reports it in the email", async () => {
+    it("proposes to retire what breaks filter 0 as a batch in inbox/, archives its thesis and reports it in the email", async () => {
       runtimeProvider.current = {
         ...fakeProvider,
         getHistorical: async (ticker: string) => (ticker === "MSFT" ? falling : fakeProvider.getHistorical(ticker)),
@@ -389,7 +390,10 @@ describe("weekly-screening prepare/resolve/summarize", () => {
       );
       await prepare();
 
-      assert.doesNotMatch(await readFile(join(vaultDir, "watchlist.md"), "utf8"), /MSFT/);
+      // The watchlist is the engine's state (#140): the screening proposes, `inbox:ingest` applies.
+      assert.equal(await readFile(join(vaultDir, "watchlist.md"), "utf8"), WATCHLIST_MD);
+      const proposed = await readFile(join(vaultDir, "inbox", `${today}-screening-exits.yaml`), "utf8");
+      assert.match(proposed, /command: stop_watching\n\s+ticker: MSFT\n\s+reason: \S/);
       const thesis = await readFile(join(vaultDir, "tesis", "tesis-msft.md"), "utf8");
       assert.match(thesis, /status: archived/);
       assert.match(thesis, /archive_reason: "Salida mecánica .*: below_sma200"/);
@@ -407,10 +411,38 @@ describe("weekly-screening prepare/resolve/summarize", () => {
       }
     });
 
-    it("without a reliable ranking it removes nothing from the watchlist", async () => {
+    it("with the watchlist in the store, the screening changes neither the store nor its views: it only proposes (#140)", async () => {
+      runtimeProvider.current = {
+        ...fakeProvider,
+        getHistorical: async (ticker: string) => (ticker === "MSFT" ? falling : fakeProvider.getHistorical(ticker)),
+      };
+      await (await import("../portfolio-store.js")).seedStore(new Date("2026-11-01T00:00:00Z"));
+      const state = ["state/portfolio.json", "state/portfolio.last-readable.json", "watchlist.md", "portfolio.md"];
+      const read = () => Promise.all(state.map((file) => readFile(join(vaultDir, file), "utf8")));
+      const before = await read();
+      assert.match(before[0], /"ticker": "MSFT"/, "the store holds the watchlist");
+
+      await prepare();
+      const log = mock.method(console, "log", () => {});
+      try {
+        await resolveScreeningCandidate(`${today}-nvda.md`, VALID_INTERESTING);
+      } finally {
+        log.mock.restore();
+      }
+
+      assert.deepEqual(await read(), before, "the store and the views are as they were");
+      assert.deepEqual(
+        (await readdir(join(vaultDir, "inbox"))).sort(),
+        [`${today}-screening-exits.yaml`, `${today}-screening-watch-nvda.yaml`],
+        "the proposals wait in the inbox",
+      );
+    });
+
+    it("without a reliable ranking it proposes to retire nothing", async () => {
       runtimeProvider.current = providerWithoutReference;
       await prepare();
       assert.match(await readFile(join(vaultDir, "watchlist.md"), "utf8"), /MSFT/);
+      await assert.rejects(() => access(join(vaultDir, "inbox")), "no batch was dropped");
     });
 
     it("without a reliable ranking it draws as before and applies filter 0 to each drawn one", async () => {
@@ -426,7 +458,7 @@ describe("weekly-screening prepare/resolve/summarize", () => {
   });
 
   describe("screening:resolve", () => {
-    it("with an interesting evaluation: log, thesis, watchlist, results.jsonl and file deletion", async () => {
+    it("with an interesting evaluation: log, thesis, the watch proposal, results.jsonl and file deletion", async () => {
       await prepare();
       const log = mock.method(console, "log", () => {});
       try {
@@ -438,10 +470,17 @@ describe("weekly-screening prepare/resolve/summarize", () => {
       const screeningLog = await readFile(join(vaultDir, "screening-log.md"), "utf8");
       assert.match(screeningLog, /\| NVDA \| NVIDIA \| S&P 500 \| .+ \| interesting \| .+ \| — \|/);
 
-      const watchlist = await readFile(join(vaultDir, "watchlist.md"), "utf8");
-      assert.ok(watchlist.includes("NVDA"), "NVDA must enter watchlist.md");
+      // NVDA is proposed for the watchlist as a `watch` command in inbox/ (the watchlist is the engine's state, #140).
+      assert.equal(await readFile(join(vaultDir, "watchlist.md"), "utf8"), WATCHLIST_MD);
+      const proposed = await readFile(join(vaultDir, "inbox", `${today}-screening-watch-nvda.yaml`), "utf8");
+      assert.match(
+        proposed,
+        /command: watch\n\s+currency: USD\n\s+ticker: NVDA\n\s+note: .*Demanda de aceleradores IA/,
+      );
+      assert.match(proposed, new RegExp(`date: '?${today}'?`));
+      assert.match(proposed, /horizon: medium/);
       // No entry thresholds: the setups decide the entry.
-      assert.ok(!/target_buy_range|alert_thresholds|strategy:/.test(watchlist));
+      assert.ok(!/target_buy_range|alert_thresholds|strategy:/.test(proposed));
 
       const thesis = await readFile(join(vaultDir, "tesis", "tesis-nvda.md"), "utf8");
       assert.match(thesis, /Demanda de aceleradores IA/);
@@ -533,6 +572,12 @@ describe("weekly-screening prepare/resolve/summarize", () => {
 
       const watchlist = await readFile(join(vaultDir, "watchlist.md"), "utf8");
       assert.ok(!watchlist.includes("ASML"), "ASML must not enter watchlist.md");
+      const dropped = await readdir(join(vaultDir, "inbox")).catch(() => [] as string[]);
+      assert.deepEqual(
+        dropped.filter((name) => name.includes("-watch-")),
+        [],
+        "a not-interesting candidate is not proposed",
+      );
       await assert.rejects(() => access(join(vaultDir, "tesis", "tesis-asmlas.md")));
 
       // The rejection is recorded too, with its silo benchmark and without the

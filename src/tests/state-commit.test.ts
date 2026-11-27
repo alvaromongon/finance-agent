@@ -211,7 +211,7 @@ describe("GitStateRemote, over a real git remote in a temporary folder", () => {
       dir: join(clone(name), "data"),
       remote: "origin",
       branch: "main",
-      paths: ["state", "inbox", "portfolio.md", "logs"],
+      paths: ["state", "inbox", "portfolio.md", "watchlist.md", "logs"],
     });
   const write = async (name: string, file: string, text: string) => {
     const path = join(clone(name), "data", file);

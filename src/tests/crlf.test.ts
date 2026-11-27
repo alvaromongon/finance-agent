@@ -5,8 +5,6 @@
  * Windows checkout with `core.autocrlf=true` materializes the .md files with CRLF
  * and the parsers — which anchor blocks with a literal `\n` (```yaml\n, ^---\n) —
  * failed locally while still working on GitHub Actions (Linux).
- * Worse: `extractYamlBlock` threw, but `applyRetireWatchlistEntry` silently
- * returned the Markdown untouched.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -21,9 +19,7 @@ import {
   parseTableRows,
   extractRetireList,
   extractPlanSummary,
-  applyRetireWatchlistEntry,
 } from "../utils/vault-parser.js";
-import { parseTicker as tk } from "../ticker.js";
 
 const PORTFOLIO_LF = `---
 schema_version: 2
@@ -153,11 +149,5 @@ describe("vault parsers with CRLF", () => {
 
   it("extractPlanSummary reads the plan summary", () => {
     assert.equal(extractPlanSummary(crlf(REVIEW_LF)), "Semana defensiva, sin compras nuevas.");
-  });
-
-  it("applyRetireWatchlistEntry does remove the entry (it used to fail silently)", () => {
-    const updated = applyRetireWatchlistEntry(crlf(WATCHLIST_LF), tk("HAL"));
-    assert.doesNotMatch(updated, /ticker: HAL/);
-    assert.match(updated, /ticker: SGO\.PA/);
   });
 });

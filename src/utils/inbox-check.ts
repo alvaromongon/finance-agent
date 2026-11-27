@@ -13,6 +13,7 @@ import {
   applyCommand,
   initialStopBreaches,
   openedKey,
+  silosOf,
   splitLot,
   takeEntryCosts,
   type BatchContext,
@@ -361,7 +362,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   const closed: ClosedEscalation[] = [];
   // The ids come from the one source of decision ids, never repeating one of the history's or the state's.
   const takenIds = new Set(earlier.takenIds);
-  for (const silo of Object.values(state)) for (const l of silo.lots) takenIds.add(l.entryId);
+  for (const silo of silosOf(state)) for (const l of silo.lots) takenIds.add(l.entryId);
   const newId = uniqueDecisionIds(takenIds, createHash("sha256").update(text).digest("hex"));
   // A replay keeps the id the log holds for a record whatever day or ticker its correction gives it.
   const nextId = (date: string, subject: string, type: string): string => {
@@ -559,7 +560,10 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
     const { command } = read;
     // A batch with a correction is checked apart (`checkCorrections`): none is left here.
     if (command.kind === "correct") continue;
-    const currency = "currency" in command ? command.currency : undefined;
+    // The watchlist is no silo's: a `watch` or a `stop_watching` reads and changes neither cash, nor lots, nor stops, so
+    // nothing that failed before it makes it unknown, and when it fails it leaves nothing unknown (#140).
+    const watching = command.kind === "watch" || command.kind === "stop_watching";
+    const currency = "currency" in command && !watching ? command.currency : undefined;
     // The silos whose cash a command changes: both for a conversion, its own for the others (`undefined`: none named).
     const silos: readonly Currency[] | undefined =
       command.kind === "convert" ? [command.from, command.to] : currency !== undefined ? [currency] : undefined;
@@ -577,8 +581,12 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         : "ticker" in command
           ? splitBlockOf(command.ticker)
           : undefined;
-    const blocker =
-      cashBlock ?? lotsBlock ?? splitBlock ?? (command.kind === "clear_stop" ? stopBlockOf(command.ticker) : undefined);
+    const blocker = watching
+      ? undefined
+      : (cashBlock ??
+        lotsBlock ??
+        splitBlock ??
+        (command.kind === "clear_stop" ? stopBlockOf(command.ticker) : undefined));
     if (blocker !== undefined) {
       const unknown = unknownOf(
         command,
@@ -678,6 +686,8 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
       command.kind !== "split" &&
       command.kind !== "snapshot" &&
       command.kind !== "discard" &&
+      command.kind !== "watch" &&
+      command.kind !== "stop_watching" &&
       command.kind !== "resolve"
     ) {
       touch(command.currency, command.ticker, read);
@@ -1050,6 +1060,8 @@ const CHANGES: Record<CommandKind, { cash: boolean; lots: boolean; stop: boolean
   split: { cash: false, lots: true, stop: true },
   snapshot: { cash: false, lots: false, stop: false },
   discard: { cash: false, lots: false, stop: false },
+  watch: { cash: false, lots: false, stop: false },
+  stop_watching: { cash: false, lots: false, stop: false },
   resolve: { cash: false, lots: false, stop: false },
   correct: { cash: true, lots: true, stop: true },
 };

@@ -6,6 +6,10 @@ schema_version: 1
 
 Assets the heartbeat scans every day for an entry setup.
 
+This file is where you start: the first `npm run inbox:ingest` seeds the engine's store with it. From then on the
+watchlist is engine state, changed with `watch` and `stop_watching` commands in `inbox/`, and this file is
+generated from the store: do not edit it.
+
 ```yaml
 watchlist:
   - ticker: AIR.PA

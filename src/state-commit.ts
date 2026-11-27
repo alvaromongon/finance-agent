@@ -75,7 +75,7 @@ export interface GitStateRemoteOptions {
   dir: string;
   remote: string;
   branch: string;
-  /** What the engine writes and the commit may hold: `state`, `inbox`, `portfolio.md`, `logs`. */
+  /** What the engine writes and the commit may hold: `state`, `inbox`, `portfolio.md`, `watchlist.md`, `logs`. */
   paths: readonly string[];
   git?: Git;
   auth?: RemoteAuth;
@@ -216,7 +216,7 @@ export function stateRemoteFromConfig(
     dir,
     remote: config.remote(),
     branch: config.branch(),
-    paths: ["state", "inbox", "portfolio.md", "logs"],
+    paths: ["state", "inbox", "portfolio.md", "watchlist.md", "logs"],
     ...(token ? { auth: { serverUrl: config.serverUrl(), token } } : {}),
   });
 }

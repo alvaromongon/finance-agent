@@ -20,9 +20,24 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { config } from "./config.js";
 import type { Ticker } from "./ticker.js";
-import type { Currency, Lot, PortfolioSnapshot } from "./types.js";
+import {
+  ASSET_CLASSES,
+  CURRENCIES,
+  HORIZONS,
+  type Currency,
+  type Lot,
+  type PortfolioSnapshot,
+  type WatchlistEntry,
+} from "./types.js";
 import { applyPrices } from "./utils/portfolio-writer.js";
-import { decodeStore, encodeStore, renderView, withPrices, type PortfolioStore } from "./utils/portfolio-json.js";
+import {
+  decodeStore,
+  encodeStore,
+  renderView,
+  renderWatchlistView,
+  withPrices,
+  type PortfolioStore,
+} from "./utils/portfolio-json.js";
 import { volumeMismatches } from "./utils/lots-check.js";
 import { stalenessOf, type Staleness } from "./utils/staleness.js";
 import { addCounted, countedInCents, formatMoney } from "./money.js";
@@ -30,6 +45,8 @@ import {
   assertPortfolioSections,
   assertSchemaVersion,
   extractFrontmatter,
+  extractYamlBlock,
+  parseWatchlistBlock,
   LotsTableError,
   parseCash,
   parseLotRows,
@@ -86,6 +103,8 @@ const portfolioPath = () => join(projectDir(), "portfolio.md");
 /** The engine's own store of the portfolio: JSON written only by the engine. */
 const storePath = () => join(projectDir(), "state", "portfolio.json");
 const STORE_WHERE = "state/portfolio.json";
+/** The old state file of the watchlist, and, once the store holds the watchlist, its generated view. */
+const watchlistPath = () => join(projectDir(), "watchlist.md");
 /**
  * A copy of the store that the engine writes with every write of the store and that it read back: the last state that
  * was readable. The heartbeat falls back to it when the store cannot be read, so risk watch never stops for a corrupt
@@ -139,18 +158,20 @@ export async function readStoreForRepair(): Promise<{
   problem: string | null;
   /** What the store began with, from its last readable copy when the store itself does not read. */
   starting?: PortfolioStore["starting"];
+  /** The watchlist the store began with (#140), taken the same way; absent when the state never held the watchlist. */
+  startingWatchlist?: PortfolioStore["startingWatchlist"];
 }> {
+  const began = (store: PortfolioStore | null) => ({
+    ...(store?.starting !== undefined ? { starting: store.starting } : {}),
+    ...(store?.startingWatchlist !== undefined ? { startingWatchlist: store.startingWatchlist } : {}),
+  });
   try {
     const store = await readStore();
-    return { store, problem: null, ...(store?.starting !== undefined ? { starting: store.starting } : {}) };
+    return { store, problem: null, ...began(store) };
   } catch (err) {
     if (!(err instanceof StoreUnreadableError)) throw err;
     const { store } = await readLastReadable();
-    return {
-      store: null,
-      problem: err.message,
-      ...(store?.starting !== undefined ? { starting: store.starting } : {}),
-    };
+    return { store: null, problem: err.message, ...began(store) };
   }
 }
 
@@ -448,12 +469,13 @@ async function writeStore(store: PortfolioStore): Promise<void> {
   decodeStore(text, STORE_WHERE);
   await writeAtomically(text, storePath());
   await writeAtomically(text, lastReadablePath());
-  await writeAtomically(renderView(store));
+  await rewriteView(store);
 }
 
-/** Generates the view again from the store, for a run that finds the state already written. */
+/** Generates the views again from the store (`portfolio.md`, and `watchlist.md` once the store holds the watchlist), for a run that finds the state already written. */
 export async function rewriteView(store: PortfolioStore): Promise<void> {
   await writeAtomically(renderView(store));
+  if (store.watchlist !== undefined) await writeAtomically(renderWatchlistView(store), watchlistPath());
 }
 
 /**
@@ -464,6 +486,99 @@ export async function readPortfolioView(): Promise<string> {
   const store = await readStore();
   if (store !== null) return renderView(store);
   return readFile(portfolioPath(), "utf8").catch(() => "");
+}
+
+// ─── The watchlist (#140) ─────────────────────────────────────────────────────
+
+/**
+ * An entry of the old `watchlist.md` as the store holds it: what the store's reader accepts, so a field it would refuse is
+ * made what the old readers made of it (a missing or unknown horizon is `medium`, an unknown asset class is none). `null`
+ * for an entry with no silo (a currency neither EUR nor USD): nothing ever read it.
+ */
+function seededEntry(entry: WatchlistEntry): WatchlistEntry | null {
+  if (!CURRENCIES.includes(entry.currency)) return null;
+  const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+  const [name, market, thesisLink] = [text(entry.name), text(entry.market), text(entry.thesis_link)];
+  return {
+    ticker: entry.ticker,
+    currency: entry.currency,
+    horizon: HORIZONS.includes(entry.horizon) ? entry.horizon : "medium",
+    ...(ASSET_CLASSES.includes(entry.asset_class!) ? { asset_class: entry.asset_class! } : {}),
+    thesis: text(entry.thesis) ?? "",
+    ...(thesisLink !== undefined ? { thesis_link: thesisLink } : {}),
+    ...(name !== undefined ? { name } : {}),
+    ...(market !== undefined ? { market } : {}),
+  };
+}
+
+/**
+ * The entries of the old `watchlist.md`, to seed the store with: no file is an empty list. A file that cannot be
+ * read (another `schema_version`, a ticker that does not parse, not YAML) throws, naming it: the watchlist is not guessed.
+ * A ticker written twice is kept once, an entry with no silo is left out; both are warned of.
+ */
+async function readWatchlistFile(): Promise<WatchlistEntry[]> {
+  let raw: string;
+  try {
+    raw = await readFile(watchlistPath(), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  assertSchemaVersion(raw, "watchlist.md");
+  const seen = new Set<string>();
+  return parseWatchlistBlock(extractYamlBlock(raw)).flatMap((entry) => {
+    const seeded = seededEntry(entry);
+    if (seeded === null) {
+      warnSkipped(
+        `watchlist.md: ${entry.ticker} has no silo (currency ${String(entry.currency)}): left out of the store`,
+      );
+      return [];
+    }
+    if (seen.has(seeded.ticker)) {
+      warnSkipped(`watchlist.md: ${seeded.ticker} is on the list twice: the first entry is kept`);
+      return [];
+    }
+    seen.add(seeded.ticker);
+    return [seeded];
+  });
+}
+
+/**
+ * The store with the watchlist seeded from `watchlist.md` when it holds none yet (the state was still the file), as the
+ * list it began with too: what a correction and the repair apply the `watch` and `stop_watching` commands over. Nothing
+ * is written. With `mustKnow` a file that cannot be read throws (an `ingest` does not guess the watchlist); without it
+ * (`check`) the list is empty.
+ */
+export async function withWatchlist(store: PortfolioStore, mustKnow: boolean): Promise<PortfolioStore> {
+  if (store.watchlist !== undefined) return store;
+  let entries: WatchlistEntry[];
+  try {
+    entries = await readWatchlistFile();
+  } catch (err) {
+    if (mustKnow) throw err;
+    entries = [];
+  }
+  return { ...store, watchlist: entries, startingWatchlist: entries };
+}
+
+/**
+ * The watchlist the store holds, or `null` while it holds none (nobody has run `inbox:ingest` since the watchlist became
+ * state, so `watchlist.md` is still the state). Goes on over the last readable copy of a store that does not read, as the
+ * heartbeat does for the portfolio (ADR-0015): risk watch scans the watchlist for setups and must not stop for it.
+ */
+export async function readWatchlistInStore(): Promise<WatchlistEntry[] | null> {
+  const { store } = await readLastReadable();
+  return store?.watchlist ?? null;
+}
+
+/**
+ * The watchlist as the text of `watchlist.md`, for the one flow that puts it in a prompt: with a store that holds it,
+ * generated from it now; otherwise the file's text; "" with neither.
+ */
+export async function readWatchlistView(): Promise<string> {
+  const { store } = await readLastReadable();
+  if (store?.watchlist !== undefined) return renderWatchlistView(store);
+  return readFile(watchlistPath(), "utf8").catch(() => "");
 }
 
 /**
@@ -526,7 +641,7 @@ export async function saveStore(store: PortfolioStore): Promise<void> {
  */
 export async function seedStore(syncedAt: Date): Promise<void> {
   if ((await readStore()) !== null) return;
-  const store = await storeFromPortfolioFile();
+  const store = await withWatchlist(await storeFromPortfolioFile(), false);
   const stamp = (silo: PortfolioSnapshot | undefined) =>
     silo
       ? {

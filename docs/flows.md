@@ -29,7 +29,7 @@ parentheses so a code comment that cites it can be found here.
   1. Check the mail configuration before doing anything: with email on and no SMTP settings the run
      fails at once (an alert that does not go out is worse than a run that does not run).
   2. Read the portfolio (the [store](glossary.md#store) once `state/portfolio.json` exists, where it reads whole and the
-     tolerances below do not arise; until then `portfolio.md`) and `watchlist.md`. The [tickers](glossary.md#ticker) watched are the union of open positions and
+     tolerances below do not arise; until then `portfolio.md`) and the [watchlist](glossary.md#watchlist) (the store's; until it holds one, `watchlist.md`). The [tickers](glossary.md#ticker) watched are the union of open positions and
      watchlist candidates, so a position is watched for risk even without a watchlist entry.
      With nothing to watch the run ends. A `Lots` table that does not read (a misspelled column in
      its header) and a `Lots` section that is missing (a misspelled heading, or a deleted empty
@@ -132,7 +132,7 @@ parentheses so a code comment that cites it can be found here.
       check of step 4 reads the last applied state and never waits for that batch.
   12. Send the digest (crossed stops, positions without a stop, a configuration file that does not validate, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
       since the last send today (crossed stops, the differences of a snapshot, configuration problems and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
-- **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `logs/decisions.jsonl`, the rules
+- **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), the watchlist (the store, else `watchlist.md`), `logs/decisions.jsonl`, the rules
   `version` in `strategies/base.md`, `routines/execution-analysis.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
   regenerating the view `portfolio.md`; else `portfolio.md`), `state/config/`, the batch of stop proposals in `inbox/` (a new file; it never edits one),
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
@@ -229,7 +229,7 @@ them. It needs one history request per position with a stop; without ATR the pos
   1. Refuse an id that is not open: it does not exist, a `resolve` command closed it, or a batch in `inbox/` is about to
      (recording again would record the decision twice).
   2. Validate the answer's shape.
-  3. Rebuild the signal from the pending file and the current `watchlist.md` and the portfolio (the store, else `portfolio.md`).
+  3. Rebuild the signal from the pending file and the current watchlist and portfolio (the store, else `watchlist.md` and `portfolio.md`).
      The detection snapshot keeps only strength, benchmark, setup, conviction and price; the entry,
      position, cash and silo value are read at record time, so a late answer sizes on the
      current state. A ticker in neither file is stale and cannot be recorded.
@@ -241,7 +241,7 @@ them. It needs one history request per position with a stop; without ATR the pos
   leave them (an id that does not exist or is already closed is refused, and blocks no other command), and applied by
   [Apply the inbox](#apply-the-inbox), which writes it to the store with the hash of the file. It changes no cash, lot or
   stop. A signal can be closed as `discarded` without ever recording an answer.
-- **Reads / writes**: `pending:record` reads the pending file, `watchlist.md`, the portfolio and the inbox, and writes what Record a
+- **Reads / writes**: `pending:record` reads the pending file, the watchlist, the portfolio and the inbox, and writes what Record a
   decision writes and the batch of stop proposals in `inbox/`; it deletes nothing. The `resolve` command writes the store only.
 - **When it fails**: a validation or recording error exits non-zero and leaves the file for a retry.
 - **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md), [ADR-0018](decisions/0018-commands-are-the-only-way-to-change-state.md).
@@ -314,24 +314,26 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   portfolio policy and `strategies/base.md`, #142): a valid one is saved as the [last valid configuration](glossary.md#last-valid-configuration),
   an invalid one is named on stderr and the run goes on over its last valid version; `finalize` also puts the warning, with the
   errors, at the top of the email until the first run after a valid edit. With no last valid version the run refuses with the errors.
-  1. `prepare` reads both portfolios and watchlists, the portfolio policy, the latest evaluation
+  1. `prepare` reads both portfolios and watchlists (the watchlist as the text of `watchlist.md`, generated from the store), the portfolio policy, the latest evaluation
      table and the logs of the last 30 days, and refreshes prices in the portfolio (the store, else `portfolio.md`) first so the
      prompt describes one state.
   2. It computes technicals and current setups per asset, the weight breakdown and the USD buffer,
      and prints the prompt (progress goes to stderr).
   3. `finalize` checks the report is complete, builds the engine tickets and one decision per open
-     position, writes `logs/<date>-monday-briefing.md`, applies the watchlist removals the report
-     asks for (never a ticker with an open position), drops the stops it proposes as one batch of `set_stop` commands
+     position, writes `logs/<date>-monday-briefing.md`, proposes the watchlist removals the report
+     asks for (never a ticker with an open position, and only a ticker that is on the watchlist) as a `stop_watching`
+     batch in `inbox/` and archives their theses, drops the stops it proposes as one batch of `set_stop` commands
      in `inbox/<date>-monday-briefing-stops.yaml` (not written into the state; a proposal already waiting there is not
-     dropped twice; a failure to write is said and stops nothing), and emails the summary.
-- **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), `watchlist.md`, `portfolio-policy.md`,
+     dropped twice; a failure to write is said and stops nothing), and emails the summary. The watchlist is engine state: the
+     briefing edits neither it nor the store, and [`inbox:ingest`](#apply-the-inbox) applies the batches.
+- **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), the watchlist (the store, else `watchlist.md`), `portfolio-policy.md`,
   `routines/monday-briefing.md`, `strategies/base.md`, `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
-  `watchlist.md`, `tesis/`, `state/config/`, `logs/decisions.jsonl`, the briefing log, the batch of stop proposals in `inbox/` and email. Its workflow commits `inbox/` with the other paths it writes, never state.
+  `tesis/`, `state/config/`, `logs/decisions.jsonl`, the briefing log, `inbox/` (the `stop_watching` batch and the batch of stop proposals) and email. Its workflow commits `inbox/` with the other paths it writes, never state.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
   In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
   with no lock: if another run committed the [store](glossary.md#store) or its view since the briefing started, the
-  refresh is dropped with a warning and the rest (logs, briefing files, watchlist, thesis notes) is committed; the
+  refresh is dropped with a warning and the rest (logs, briefing files, the inbox batch, thesis notes) is committed; the
   next run refreshes the prices again. `commit-changes` commits only the paths the workflow gives it.
 - **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
 
@@ -345,21 +347,24 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   [last valid configuration](glossary.md#last-valid-configuration), an invalid one is named on stderr and the screening runs on its
   last valid version (a universe with a missing pool, a broken YAML block or another `schema_version` is the usual case); with none yet it refuses with every error.
   1. `prepare` ranks the universe in `screening-universe.md` ([the funnel](#the-screening-funnel)),
-     retires watchlist entries by mechanical rules, selects the candidates, and writes one context
+     proposes to retire watchlist entries by mechanical rules (a `stop_watching` batch in `inbox/`, and
+     their theses archived), selects the candidates, and writes one context
      file per candidate in `logs/pending-screening/` plus `run.json`. Securities already on the
      watchlist or rejected with a review date still in the future are excluded.
   2. `resolve` validates the evaluation, records it in `screening-log.md` (next review in two months
-     if not interesting) and, if interesting, writes the thesis note and adds the candidate to the
-     watchlist; it records `screen_interesting` or `screen_rejected` with `rank`, `score` and
+     if not interesting) and, if interesting, writes the thesis note and proposes the candidate for the
+     watchlist (a `watch` batch in `inbox/`, unless it is on the list already); it records `screen_interesting` or `screen_rejected` with `rank`, `score` and
      `exploration`, appends the result to `results.jsonl` and deletes the candidate file.
   3. `summarize` sends one aggregated email from `results.jsonl` and deletes it. Unresolved
      candidates are listed and kept. If the email did not go out, `results.jsonl` is kept for the
      relay.
-- **Reads / writes**: reads `screening-universe.md`, `routines/weekly-screening.md`, `strategies/base.md`, `watchlist.md`, both portfolios, the screening
-  log; writes `screening-log.md`, `state/config/`, `tesis/`, `watchlist.md`, `logs/decisions.jsonl`,
+- **Reads / writes**: reads `screening-universe.md`, `routines/weekly-screening.md`, `strategies/base.md`, the watchlist (the store, else `watchlist.md`), both portfolios, the screening
+  log; writes `screening-log.md`, `state/config/`, `tesis/`, `inbox/` (its `watch` and `stop_watching` batches), `logs/decisions.jsonl`,
   `logs/pending-screening/` and email.
-- **State**: it never writes the [store](glossary.md#store) or `portfolio.md`, so its workflow gives `commit-changes`
-  no `state-paths` and commits only `logs/`, `tesis/`, `watchlist.md`, `screening-log.md` and the copies of the configuration files it saves (`state/config/`).
+- **State**: it never writes the [store](glossary.md#store), `portfolio.md` or `watchlist.md`: the watchlist is engine state, and
+  the screening only proposes changes to it in `inbox/`, which [`inbox:ingest`](#apply-the-inbox) applies (the workflow's own push starts
+  no workflow, so the inbox workflow's daily run does). Its workflow gives `commit-changes`
+  no `state-paths` and commits only `logs/`, `tesis/`, `inbox/`, `screening-log.md` and the copies of the configuration files it saves (`state/config/`).
 - **When it fails**: if the ranking cannot be trusted the run falls back to a random draw among
   filter-0 eligibles and the email says **NO RANKING** with the reason. A candidate that fails to
   prepare is skipped with a warning.
@@ -387,7 +392,7 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
 7. **Conviction rubric (§7)**: one point each for top quintile of the ranking, a `favorable` regime,
    an active setup with net R:R at least 3, and a dated catalyst (the only qualitative point).
    High is 3 or more points, medium 2, low 0–1. The heartbeat applies the same rubric to setups.
-8. **Mechanical watchlist exit (§8)**: a candidate is retired if it left the universe
+8. **Mechanical watchlist exit (§8)**: a candidate is proposed for retirement if it left the universe
    (`out_of_universe`), fails filter 0 (`filter_zero`), falls out of the top half of its silo
    (`out_of_top`) or spent 4 weeks without any setup (`no_setup`). A security with an open position
    is never retired and a data failure retires nothing. The Monday briefing can only bring an exit
@@ -497,9 +502,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      file does not validate the batches are applied with its [last valid version](glossary.md#last-valid-configuration) and the output
      names the errors; with none (and no valid file) nothing is applied (the lots carry the version): the run fails with every error.
      A valid file is saved to `state/config/` together with the state, in the same commit, by a run that applies something. When a batch
-     buys, read also what the rules of an entry judge it with: the watchlist of each silo (a `watchlist.md` that cannot
-     be read fails the run, as it did `decision:record`) and the ATR of each ticker bought (a failure to get it only
-     leaves the stop distance unjudged). A rejected folder that cannot be read, or a file in it that is a link or hidden, is
+     buys, read also what the rules of an entry judge it with: the ATR of each ticker bought (a failure to get it only
+     leaves the stop distance unjudged). The watchlist is part of the state read here: a store that holds none is
+     seeded from `watchlist.md` for the run (a `watchlist.md` that cannot be read fails the run; none is an empty list),
+     and it is written with the store at the end. A rejected folder that cannot be read, or a file in it that is a link or hidden, is
      said in the output and stops nothing.
   3. Run the files in name order with the [same code as the check](#check-the-inbox) (`runFiles`): each command checked
      by its handler against the state the ones before it produce, a refused batch contributing nothing. The handlers
@@ -524,32 +530,35 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      broker is the owner's fact but applying it silently would hide a trade missed or entered wrongly, which the owner
      corrects with a command. It is refused for a silo the portfolio lacks, a date in the future, a ticker listed twice. It writes a `reconcile` line per difference (none when there is none).
      3a. A batch of [corrections](glossary.md#correction) (`correct` commands, alone in the file) is not applied command by
-     command: the batches of `inbox/applied/` are applied again in order with each corrected record in place of the original, over empty
-     silos, through the same runner and validation as the original commands, so every later sale and cash movement is judged against
+     command: the batches of `inbox/applied/` are applied again in order with each corrected record in place of the original, over the
+     silos and the watchlist as the store began (empty silos if it began empty), through the same runner and validation as the original commands, so every later sale and cash movement is judged against
      it. If the replay refuses anywhere (an id that is not in the log, a later sale without lots, cash below zero) the whole
      correction batch is rejected with that reason and nothing changes. Otherwise the store takes the rebuilt lots, cash and positions,
      and the log gets a `correction` line per line that changes, each pointing at its original, which stays.
   4. Commit once: the store is written with the state the clean batches end with (a silo they changed is synced now),
      the batches applied whose files are not moved yet, the rejected batches the clean ones replaced or discarded and the pending escalations they closed (each
-     with the hash of its file), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
-     sold, an `fx_conversion` per conversion, a `split` per silo a split scaled, a `reconcile` per difference of a snapshot and a `correction` per line a correction changes, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` is the view generated
-     from the store (the store is written first, the view after it).
+     with the hash of its file), the watchlist the `watch` and `stop_watching` commands left (a `watch` of a ticker that is on the
+     list is refused, a `stop_watching` of one that is not on it too; neither changes cash, lots or stops, so neither depends on a
+     refusal of one that does), and the decision-log lines of their trades (an `entry` per buy, an `exit` per lot
+     sold, an `fx_conversion` per conversion, a `split` per silo a split scaled, a `reconcile` per difference of a snapshot and a `correction` per line a correction changes, an exit of 0 included: the lot is closed in the log as in the state). Then the lines go to `logs/decisions.jsonl`, and `portfolio.md` and `watchlist.md` are the views generated
+     from the store (the store is written first, the views after it).
   5. Move each clean file to `inbox/applied/` and each refused one to `inbox/rejected/` with `<file>.errors.txt`
      (command position, line, reason), never over a file already there. A file in `rejected/` is never read as a
      batch again: it stays as the audit trail and awaits an answer until it is settled. Then the store forgets the
      batches moved.
   6. Print what was applied, the warnings (a position with no stop), each error and what was left unread; exit 1 if any
      batch was rejected or left unread, 0 otherwise.
-  7. Commit (only with `STATE_COMMIT=git`): the changes under `state/`, `inbox/`, `portfolio.md` and `logs/` are committed
+  7. Commit (only with `STATE_COMMIT=git`): the changes under `state/`, `inbox/`, `portfolio.md`, `watchlist.md` and `logs/` are committed
      and pushed on top of the commit the run started from, the branch's last one. If the push is refused because the
-     branch moved (another run committed), the run throws its changes away, brings `state/`, `inbox/`, `portfolio.md` and
-     `logs/` to the new last commit (nothing else of the checkout is touched) and does steps 1 to 6 again over it, at most `STATE_COMMIT_ATTEMPTS` times (3). A retry therefore judges each batch
+     branch moved (another run committed), the run throws its changes away, brings `state/`, `inbox/`, `portfolio.md`, `watchlist.md` and
+     `logs/` to the new last commit (nothing else of the checkout is touched: `strategies/` and the other configuration are read as the checkout has them) and does steps 1 to 6 again over it, at most `STATE_COMMIT_ATTEMPTS` times (3). A retry therefore judges each batch
      against the state it now meets: valid before and invalid now is rejected like any other, and the result is that of a
      fresh run. It asks again for nothing it already asked: the history of a ticker is requested once per run, not once
-     per attempt. A push that fails for another reason (network, permission) is not a lost race: it is not retried and
+     per attempt. The watchlist is part of what a retry refreshes: it is in the store, which every attempt reads again (a
+     ticker the other run watched makes this run's `watch` of it a rejection like any other). A push that fails for another reason (network, permission) is not a lost race: it is not retried and
      the run fails with the batches still in `inbox/`.
 - **Reads / writes**: reads the last commit of the branch (with `STATE_COMMIT=git`), the state and the rest above. Writes
-  `state/portfolio.json` and `portfolio.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
+  `state/portfolio.json`, `portfolio.md` and `watchlist.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
   `inbox/`; with `STATE_COMMIT=git` it commits and pushes them as one commit, `chore(state): apply inbox <date>`. A batch
   with an error changes none of them. The writers of the store found when this was written: `inbox:ingest` and
   `decision:record` (compare-and-swap), and the price refresh of the heartbeat and the Monday briefing (through
@@ -570,7 +579,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Steps**:
   1. Read the store if it reads (a store that does not read is an input, not an error), the decision history and every batch of
      `inbox/applied/` (plus a batch applied and not yet moved), in order.
-  2. Apply the batches' commands again over the silos as the store began (`starting_silos`, from `portfolio.md`; empty ones if it began empty), the [corrections](glossary.md#correction) included, through the runner of the inbox.
+  2. Apply the batches' commands again over the silos and the watchlist as the store began (`starting_silos` from `portfolio.md`, empty ones if it began empty, and `starting_watchlist` from `watchlist.md`), the [corrections](glossary.md#correction) included, through the runner of the inbox. The `watch` and `stop_watching` commands replay with the rest; a store that never held the watchlist keeps none, and when the batches changed it but nothing tells the list the store began with, the repair refuses.
   3. Check the result against the decision log: every line the batches write must be in the log with the same figures, and every
      inbox line of the log must be one the batches write. A batch that does not replay is a disagreement too.
   4. Disagreement: **refuse, change nothing** and print each difference with the batch, command and line. Agreement: write
@@ -579,7 +588,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      (`rebuilt`, `unchanged`, `refused`) and the `differences`.
 - **Ends with**: exit 0 when the store is as the audit trail gives it, 1 when it refused or another run committed state meanwhile
   (run it again). With `STATE_COMMIT=git` the run is one [compare-and-swap](glossary.md#compare-and-swap) like the inbox's.
-- **Never**: edits a batch or a line of the log, repairs the watchlist or configuration, or deletes history.
+- **Never**: edits a batch or a line of the log, repairs the configuration, empties the watchlist or deletes history.
 
 ## Evaluate decisions
 

@@ -1,8 +1,8 @@
 // Weekly screener: ranks the universe with the mechanical filter 0 and two
 // factors (screening-ranking.ts, ADR-0012), takes the best of each silo plus a
 // random exploration candidate, analyzes them with technical data + LLM
-// reasoning and, if interesting, adds them automatically to watchlist.md with
-// their thesis note.
+// reasoning and, if interesting, proposes them for the watchlist with their thesis
+// note: a `watch` command dropped in inbox/ (the watchlist is the engine's state, #140).
 //
 // The flow is split into deterministic commands (no LLM) so
 // the reasoning is done by a Claude Code Routine without spending
@@ -13,7 +13,7 @@
 //     logs/pending-screening/ (frontmatter + technicals + system/user prompt)
 //   npm run screening:resolve -- <file>  → takes the evaluation JSON on
 //     stdin, validates it and runs the deterministic part (screening-log,
-//     thesis, watchlist); appends the result to results.jsonl and deletes the file
+//     thesis, the watch proposal); appends the result to results.jsonl and deletes the file
 //   npm run screening:summarize  → composes and sends the run's aggregated
 //     email from results.jsonl, and deletes it
 //
@@ -38,11 +38,10 @@ import {
   readRulesVersion,
   readWatchlistSkippingBadTickers,
   readWatchlistAddedOn,
-  retireWatchlistEntry,
+  archiveThesis,
   readAllWatchlistTickers,
   readScreeningLog,
   appendScreeningLogEntries,
-  addWatchlistEntry,
   writeScreeningCandidate,
   listScreeningCandidateFiles,
   readScreeningCandidate,
@@ -54,7 +53,9 @@ import {
   readScreeningRunSelection,
   type ScreeningCandidateMeta,
 } from "./vault-io.js";
-import { ignoringLots, readPortfolio } from "./portfolio-store.js";
+import { ignoringLots, readPortfolio, readWatchlistView } from "./portfolio-store.js";
+import { dropBatchOnce } from "./inbox-store.js";
+import { stopWatchingBatch, watchBatch } from "./utils/inbox-proposals.js";
 import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import {
@@ -73,7 +74,6 @@ import {
 import { scoreConviction } from "./utils/conviction.js";
 import { CURRENCIES } from "./types.js";
 import type { WatchlistEntry, Currency, AssetClass, Benchmark, PortfolioSnapshot, StrengthSnapshot } from "./types.js";
-import { readTextFile } from "./utils/fs-text.js";
 import { snapshotFromTechnicals } from "./utils/strength.js";
 import { siloValue } from "./utils/sizing.js";
 import { describeSetup, detectSetups, evaluateSetup } from "./utils/setups/index.js";
@@ -293,9 +293,9 @@ function currentSetups(
 }
 
 /**
- * Mechanical watchlist exit (ADR-0012 §8) with the run's ranking: removes
- * from watchlist.md and archives the thesis. What is removed stays excluded
- * from this run's selection, which is computed with the previous watchlist.
+ * Mechanical watchlist exit (ADR-0012 §8) with the run's ranking: proposes the exits as a batch of `stop_watching`
+ * commands in `inbox/` (the watchlist is the engine's state: `inbox:ingest` applies them, #140) and archives the theses.
+ * What leaves stays excluded from this run's selection, which is computed with the previous watchlist.
  */
 async function applyMechanicalExits(
   ranking: UniverseRanking<UniverseTicker>,
@@ -317,11 +317,16 @@ async function applyMechanicalExits(
   });
   const m = messages();
   for (const exit of exits) {
-    console.error(`[screening] Removed from watchlist: ${exit.ticker} (${describeExit(exit)})`);
-    await retireWatchlistEntry(
-      exit.ticker,
-      m.screening.exitArchiveReason(today, describeExitDetail(exit, m)),
-      console.error,
+    console.error(`[screening] Leaves the watchlist: ${exit.ticker} (${describeExit(exit)})`);
+    await archiveThesis(exit.ticker, m.screening.exitArchiveReason(today, describeExitDetail(exit, m)), console.error);
+  }
+  if (exits.length > 0) {
+    const batch = stopWatchingBatch(
+      exits.map((exit) => ({ ticker: exit.ticker, reason: describeExitDetail(exit, m) })),
+    );
+    const written = await dropBatchOnce(`${today}-screening-exits.yaml`, batch);
+    console.error(
+      `[screening] ${written === "written" ? "Proposed" : "Already proposed"}: ${exits.length} stop_watching command(s) in inbox/${today}-screening-exits.yaml`,
     );
   }
   return exits;
@@ -346,7 +351,6 @@ export async function prepareScreening(
   headlinesFetcher: (ticker: string) => Promise<string[]> = fetchHeadlines,
 ): Promise<PreparedScreening> {
   const today = new Date().toISOString().slice(0, 10);
-  const vaultDir = config.paths.vaultProjectDir;
 
   console.error("[screening] Preparing the weekly screener...");
   // The files this run reads: a valid one is saved as the last valid version, an invalid one is named (#142).
@@ -363,7 +367,7 @@ export async function prepareScreening(
       readAllWatchlistTickers(),
       readScreeningLog(),
       readRoutinePrompt("weekly-screening"),
-      readTextFile(join(vaultDir, "watchlist.md")).catch(() => ""),
+      readWatchlistView(),
       readPortfolio("EUR").then(ignoringLots),
       readPortfolio("USD").then(ignoringLots),
     ]);
@@ -509,17 +513,29 @@ async function recordScreeningResult(
   if (result.interesting) {
     await createThesisNote(info, result, technicalsText);
 
-    const watchlistEntry: WatchlistEntry = {
-      ticker: info.ticker,
-      name: info.name,
-      market: info.market,
-      currency: info.currency,
-      horizon: result.horizon ?? "medium",
-      asset_class: info.asset_class,
-      thesis: result.thesis ?? result.reason,
-      thesis_link: `[[tesis-${slug}]]`,
-    };
-    await addWatchlistEntry(watchlistEntry);
+    // The watchlist is the engine's state: the candidate is proposed as a `watch` command, which `inbox:ingest` applies
+    // (it is refused there if the ticker joined the list meanwhile). A candidate already on the list is not proposed again.
+    if ((await readAllWatchlistTickers()).includes(info.ticker)) {
+      console.log(`[screening] ${info.ticker} is already on the watchlist: not proposed again`);
+    } else {
+      const name = `${today}-screening-watch-${slug}.yaml`;
+      const written = await dropBatchOnce(
+        name,
+        watchBatch([
+          {
+            currency: info.currency,
+            ticker: info.ticker,
+            note: result.thesis ?? result.reason,
+            date: today,
+            horizon: result.horizon ?? "medium",
+            assetClass: info.asset_class,
+          },
+        ]),
+      );
+      console.log(
+        `[screening] ${written === "written" ? "Proposed" : "Already proposed"}: watch ${info.ticker} (inbox/${name})`,
+      );
+    }
   }
 
   await appendDecisions([decision]);

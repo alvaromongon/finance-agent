@@ -4,23 +4,23 @@
 import { openEscalationsOf } from "./inbox-escalations.js";
 import { awaitingOf, sha256 } from "./inbox-rejected.js";
 import { moveBatch, readApplied, readInbox, readRejected } from "./inbox-store.js";
-import { readStoreIfAny, saveStore, storeFromPortfolioFile, type PortfolioStore } from "./portfolio-store.js";
 import {
-  appendDecisions,
-  readDecisionHistory,
-  readPendingEscalations,
-  readRulesVersion,
-  readWatchlist,
-} from "./vault-io.js";
+  readStoreIfAny,
+  saveStore,
+  storeFromPortfolioFile,
+  withWatchlist,
+  type PortfolioStore,
+} from "./portfolio-store.js";
+import { appendDecisions, readDecisionHistory, readPendingEscalations, readRulesVersion } from "./vault-io.js";
 import { config } from "./config.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
 import { validateDecision, type Decision } from "./decisions.js";
-import { CURRENCIES, type Currency, type WatchlistEntry } from "./types.js";
+import { CURRENCIES } from "./types.js";
 import type { Ticker } from "./ticker.js";
 import type { PriceSource } from "./utils/benchmark.js";
 import { atr14d } from "./utils/technicals.js";
 import { parseBatch } from "./utils/inbox-parse.js";
-import { isCorrection, ledgerOrder, type LedgerFile } from "./utils/inbox-replay.js";
+import { emptyState, isCorrection, ledgerOrder, type LedgerFile } from "./utils/inbox-replay.js";
 import { entryCostsTaken } from "./utils/portfolio-lots.js";
 import { decisionsOf } from "./utils/inbox-decisions.js";
 import {
@@ -31,7 +31,7 @@ import {
   type InboxFile,
   type InboxRun,
 } from "./utils/inbox-check.js";
-import type { EntryContext, InboxState } from "./utils/inbox-handlers.js";
+import { silosOf, type EntryContext, type InboxState } from "./utils/inbox-handlers.js";
 import { printable } from "./utils/printable.js";
 import { commitState, stateRemoteFromConfig, type StateRemote } from "./state-commit.js";
 import { describeProblems, resolveConfiguration } from "./configuration.js";
@@ -63,7 +63,20 @@ interface Plan {
 const stateOf = (store: PortfolioStore): InboxState => ({
   ...(store.silos.EUR ? { EUR: store.silos.EUR } : {}),
   ...(store.silos.USD ? { USD: store.silos.USD } : {}),
+  ...(store.watchlist !== undefined ? { watchlist: store.watchlist } : {}),
 });
+
+/**
+ * The state a correction and the repair replay the applied batches over: the silos and the watchlist as the store began
+ * (`starting`, `startingWatchlist`); none for a store that began with neither.
+ */
+const startingOf = (store: PortfolioStore): InboxState | undefined =>
+  store.starting === undefined && store.startingWatchlist === undefined
+    ? undefined
+    : {
+        ...(store.starting ?? emptyState(stateOf(store))),
+        ...(store.startingWatchlist !== undefined ? { watchlist: store.startingWatchlist } : {}),
+      };
 
 /** The ATR14 of `ticker` for the stop distance of an entry. Best-effort: without it that distance is not checked. */
 async function fetchAtr(source: PriceSource, ticker: Ticker): Promise<number | null> {
@@ -79,15 +92,12 @@ async function fetchAtr(source: PriceSource, ticker: Ticker): Promise<number | n
 
 /**
  * What the rules of an entry read (ADR-0013 §4, ADR-0009 §5 and §8), read once for the run and only when a batch
- * buys something: the watchlist of each silo, the history and, from `atrSource` (none: no stop distance is checked),
- * the ATR of the tickers bought. A watchlist that cannot be read refuses an `ingest` (an entry cannot be judged
- * without it); `check` goes on without it, as it does without the rules version.
+ * buys something: the history and, from `atrSource` (none: no stop distance is checked), the ATR of the tickers bought.
+ * The watchlist is not read here: it is in the state, so a `watch` earlier in the batch counts (#140).
  */
 async function entryContext(
   files: readonly InboxFile[],
-  store: PortfolioStore,
   history: readonly Decision[],
-  mustKnow: boolean,
   atrSource: PriceSource | undefined,
 ): Promise<Omit<EntryContext, "cited">> {
   const bought = new Set<Ticker>();
@@ -96,24 +106,12 @@ async function entryContext(
     for (const { command } of parseBatch(file.text).commands) if (command.kind === "buy") bought.add(command.ticker);
   }
   const base = { history, minStopAtr: config.strategy.stopMinAtr };
-  if (bought.size === 0) return { ...base, watchlist: {}, atr: new Map() };
-  const currencies = CURRENCIES.filter((c) => store.silos[c] !== undefined);
-  const lists = await Promise.all(
-    currencies.map(async (c): Promise<[Currency, WatchlistEntry[]]> => {
-      try {
-        return [c, await readWatchlist(c)];
-      } catch (err) {
-        if (mustKnow) throw err;
-        return [c, []];
-      }
-    }),
-  );
+  if (bought.size === 0) return { ...base, atr: new Map() };
   const atrs = await Promise.all(
     atrSource === undefined ? [] : [...bought].map(async (t) => [t, await fetchAtr(atrSource, t)] as const),
   );
   return {
     ...base,
-    watchlist: Object.fromEntries(lists),
     atr: new Map(atrs.flatMap(([t, atr]) => (atr !== null && atr > 0 ? [[t, atr] as const] : []))),
   };
 }
@@ -153,12 +151,15 @@ async function readLedger(waiting: readonly InboxFile[]): Promise<{ ledger?: Led
  */
 async function plan(
   all: InboxFile[],
-  store: PortfolioStore,
+  stored: PortfolioStore,
   mustKnowRules: boolean,
   now: Date,
   atrSource?: PriceSource,
 ): Promise<Plan> {
-  const [history, rulesVersion, { batches: rejected, problems: rejectedProblems }, pending] = await Promise.all([
+  // The watchlist is part of the state: a store that holds none is seeded from `watchlist.md` for this run (#140), and a
+  // file that cannot be read refuses an `ingest` (the list is not guessed); `check` goes on with an empty one.
+  const [store, history, rulesVersion, { batches: rejected, problems: rejectedProblems }, pending] = await Promise.all([
+    withWatchlist(stored, mustKnowRules),
     readDecisionHistory(),
     readRulesVersion().catch((err) => {
       if (mustKnowRules) throw err;
@@ -182,10 +183,10 @@ async function plan(
     rulesVersion,
     takenIds: new Set(history.map((d) => d.id)),
     entryCostsTaken: entryCostsTaken(history),
-    entry: await entryContext(toRun, store, history, mustKnowRules, atrSource),
+    entry: await entryContext(toRun, history, atrSource),
     today: now.toISOString().slice(0, 10),
     ...(ledger !== undefined ? { ledger } : {}),
-    ...(store.starting !== undefined ? { starting: store.starting } : {}),
+    ...(startingOf(store) !== undefined ? { starting: startingOf(store)! } : {}),
   });
   return {
     waiting: all.filter(isWaiting).map((file) => file.name),
@@ -336,7 +337,7 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
   let committed = store;
   if (clean.length > 0) {
     const taken = new Set(history.map((d) => d.id));
-    for (const silo of Object.values(run.state)) for (const lot of silo.lots) taken.add(lot.entryId);
+    for (const silo of silosOf(run.state)) for (const lot of silo.lots) taken.add(lot.entryId);
     const lines = clean.flatMap((c) =>
       decisionsOf(c.trades, c.text!, { rulesVersion, takenIds: taken, today: now.toISOString().slice(0, 10) }),
     );
@@ -350,6 +351,7 @@ export async function ingestInbox(now: Date = new Date(), atrSource?: PriceSourc
           return [[currency, silo === store.silos[currency] ? silo : { ...silo, syncedAt: now.toISOString() }]];
         }),
       ),
+      ...(run.state.watchlist !== undefined ? { watchlist: [...run.state.watchlist] } : {}),
       unmoved: [
         ...stillWaiting,
         ...clean.map((c) => ({ file: c.name, sha256: sha256(c.text!), at: now.toISOString() })),

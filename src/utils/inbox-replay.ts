@@ -17,7 +17,7 @@ import { PATCH_FIELDS, type Decision, type PatchField } from "../decisions.js";
 import { countedInCents, formatMoney, zero, type Money } from "../money.js";
 import type { Ticker } from "../ticker.js";
 import { decisionsOf } from "./inbox-decisions.js";
-import type { Command, Correct, InboxState } from "./inbox-handlers.js";
+import { silosOf, type Command, type Correct, type InboxState } from "./inbox-handlers.js";
 import { parseBatch, type ParsedBatch } from "./inbox-parse.js";
 import type { InboxFile, InboxRun, RunContext, Trade } from "./inbox-check.js";
 import { printable, quoted } from "./printable.js";
@@ -107,7 +107,7 @@ const where = (file: string, command: number | null, line: number | null): strin
   (command === null ? "" : `: command ${command}`) +
   (line === null ? "" : `, line ${line}`);
 
-const OPTIONS_NONE = { entry: { history: [], watchlist: {}, atr: new Map(), minStopAtr: 0 } } as const;
+const OPTIONS_NONE = { entry: { history: [], atr: new Map(), minStopAtr: 0 } } as const;
 
 /** The silos as they were before the first batch: the cash is zero and nothing is held. */
 export function emptyState(state: InboxState): InboxState {
@@ -132,6 +132,8 @@ export function currenciesOf(files: readonly LedgerFile[]): Currency[] {
       if (command.kind === "convert") {
         found.add(command.from);
         found.add(command.to);
+      } else if (command.kind === "watch" || command.kind === "stop_watching") {
+        // The watchlist is no silo's: it does not make one.
       } else if ("currency" in command && command.currency !== undefined) found.add(command.currency);
     }
   }
@@ -222,6 +224,16 @@ export function stateDifferences(mine: InboxState, theirs: InboxState, mineName:
       }
     }
   }
+  // The watchlist (#140): a ticker on one list and not on the other. No list is an empty one.
+  const listA = new Map((mine.watchlist ?? []).map((e) => [e.ticker, e.currency]));
+  const listB = new Map((theirs.watchlist ?? []).map((e) => [e.ticker, e.currency]));
+  for (const ticker of new Set([...listA.keys(), ...listB.keys()])) {
+    const [x, y] = [listA.get(ticker), listB.get(ticker)];
+    if (x === y) continue;
+    found.push(
+      `the watchlist ${printable(ticker)}: ${x === undefined ? "not on it" : `on it (${x})`} in ${mineName}, ${y === undefined ? "not on it" : `on it (${y})`} in ${theirsName}`,
+    );
+  }
   return found;
 }
 
@@ -253,13 +265,14 @@ export function restoreMetadata(state: InboxState, known: readonly Lot[], histor
   return {
     ...(state.EUR ? { EUR: restore(state.EUR) } : {}),
     ...(state.USD ? { USD: restore(state.USD) } : {}),
+    ...(state.watchlist !== undefined ? { watchlist: state.watchlist } : {}),
   };
 }
 
 /**
  * The silos of `rebuilt` with what the batches do not tell, taken from `old` (the store they replace): the day it was
  * synced and the snapshot of the broker, the prices of the positions (and the P/L they give) and the total cash, moved
- * as the cash was. A silo `old` does not have is left as it was rebuilt.
+ * as the cash was, and the join date of the watchlist entries. A silo `old` does not have is left as it was rebuilt.
  */
 export function withTelemetry(rebuilt: InboxState, old: InboxState): InboxState {
   const keep = <C extends Currency>(
@@ -287,6 +300,16 @@ export function withTelemetry(rebuilt: InboxState, old: InboxState): InboxState 
   return {
     ...(rebuilt.EUR ? { EUR: keep(rebuilt.EUR, old.EUR) } : {}),
     ...(rebuilt.USD ? { USD: keep(rebuilt.USD, old.USD) } : {}),
+    // An undated `watch` takes the day of the run as its join date: a replay keeps the date the store holds, or the 4-week
+    // `no_setup` exit counter would restart at every correction or repair (#140).
+    ...(rebuilt.watchlist !== undefined
+      ? {
+          watchlist: rebuilt.watchlist.map((e) => {
+            const was = old.watchlist?.find((o) => o.ticker === e.ticker && o.currency === e.currency);
+            return was?.date !== undefined ? { ...e, date: was.date } : e;
+          }),
+        }
+      : {}),
   };
 }
 
@@ -422,7 +445,7 @@ function run(
     };
   }
   const taken = new Set<string>();
-  for (const silo of Object.values(result.state)) for (const l of silo.lots) taken.add(l.entryId);
+  for (const silo of silosOf(result.state)) for (const l of silo.lots) taken.add(l.entryId);
   // The line of a deposit has no date of its own: each batch is given a day of its own, so that two batches with one text
   // (a monthly deposit) are not told apart by the number the ids count up with, as the log's, of different days, are not.
   const dayOf = (index: number): string => {

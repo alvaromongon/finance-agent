@@ -15,11 +15,10 @@ import {
   isBlockedLog,
   parseScreeningLog,
   SCHEMA_VERSION,
-  applyAddWatchlistEntry,
-  applyRetireWatchlistEntry,
   parseWatchlistBlock,
 } from "./utils/vault-parser.js";
 import {
+  ASSET_CLASSES,
   CONVICTION_POINTS,
   CONVICTIONS,
   CURRENCIES,
@@ -49,6 +48,7 @@ import type {
 // Import and re-export the type from vault-parser (single source of truth)
 import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.js";
 import { readTextFile } from "./utils/fs-text.js";
+import { readWatchlistInStore } from "./portfolio-store.js";
 import { printable } from "./utils/printable.js";
 import { checkTicker, tickerFileStem, tickerSlug, type Ticker } from "./ticker.js";
 export type { ScreeningLogEntry };
@@ -72,10 +72,10 @@ export async function readRoutinePrompt(
 const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING: ${message}`);
 
 /**
- * Reads watchlist.md and returns the entries of the given currency. An entry whose ticker does not
- * parse (of any currency) throws: this is the strict reader, which refuses it (ADR-0016). `inbox:check` and
- * `inbox:ingest` use it for the rules of an entry (a watchlist they cannot read is not a watchlist with no entry in
- * it), and so do the tests of the ticker boundary.
+ * The watchlist of the given currency. With the engine's store it is the store's (#140: `watch` and `stop_watching`
+ * change it, `watchlist.md` is only its view); while the store holds none it is `watchlist.md`, as before, and an
+ * entry whose ticker does not parse (of any currency) throws: this is the strict reader, which refuses it (ADR-0016).
+ * The tests of the ticker boundary use it.
  */
 export async function readWatchlist(currency: Currency): Promise<WatchlistEntry[]> {
   return readWatchlistEntries(currency);
@@ -94,10 +94,16 @@ export async function readWatchlistSkippingBadTickers(
 }
 
 async function readWatchlistEntries(currency: Currency, onSkip?: (message: string) => void): Promise<WatchlistEntry[]> {
+  return (await readAllWatchlistEntries(onSkip)).filter((e) => e.currency === currency);
+}
+
+/** The whole watchlist: the store's, or while it holds none the entries of `watchlist.md`. */
+async function readAllWatchlistEntries(onSkip?: (message: string) => void): Promise<WatchlistEntry[]> {
+  const inStore = await readWatchlistInStore();
+  if (inStore !== null) return inStore;
   const raw = await readTextFile(join(projectDir(), "watchlist.md"));
   assertSchemaVersion(raw, "watchlist.md");
-  const block = extractYamlBlock(raw);
-  return parseWatchlistBlock(block, onSkip).filter((e) => e.currency === currency);
+  return parseWatchlistBlock(extractYamlBlock(raw), onSkip);
 }
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────
@@ -643,32 +649,22 @@ export async function readRulesVersion(): Promise<string> {
 
 // ─── Watchlist — writing ──────────────────────────────────────────────────────
 
-/** Reads all the watchlist.md tickers regardless of currency; an entry that does not parse is skipped with a warning (ADR-0016). */
+/** Reads all the tickers of the watchlist regardless of currency; an entry that does not parse is skipped with a warning (ADR-0016). */
 export async function readAllWatchlistTickers(): Promise<Ticker[]> {
-  const raw = await readTextFile(join(projectDir(), "watchlist.md"));
-  assertSchemaVersion(raw, "watchlist.md");
-  const block = extractYamlBlock(raw);
-  return parseWatchlistBlock(block, warnSkipped).map((e) => e.ticker);
-}
-
-/** Adds an entry to watchlist.md (in the existing YAML block). */
-export async function addWatchlistEntry(entry: WatchlistEntry): Promise<void> {
-  const filePath = join(projectDir(), "watchlist.md");
-  const raw = await readTextFile(filePath);
-  assertSchemaVersion(raw, "watchlist.md");
-  const updated = applyAddWatchlistEntry(raw, entry);
-  if (updated === raw) return; // already there
-  await writeFile(filePath, updated, "utf8");
-  console.log(`[vault-io] watchlist.md: added ${entry.ticker}`);
+  return (await readAllWatchlistEntries(warnSkipped)).map((e) => e.ticker);
 }
 
 /**
- * Date each entry joined the watchlist: the `created` of its thesis
- * (`thesis_link`). Without a thesis or a date, the entry is left out.
+ * Date each entry joined the watchlist: the `date` of its `watch` command or, for an entry seeded from `watchlist.md`,
+ * the `created` of its thesis (`thesis_link`). Without either, the entry is left out.
  */
 export async function readWatchlistAddedOn(entries: readonly WatchlistEntry[]): Promise<Map<string, string>> {
   const addedOn = new Map<string, string>();
   for (const entry of entries) {
+    if (entry.date !== undefined) {
+      addedOn.set(entry.ticker, entry.date);
+      continue;
+    }
     const slug = /\[\[(tesis-[^\]|]+)/.exec(entry.thesis_link ?? "")?.[1];
     if (!slug) continue;
     const raw = await readTextFile(join(projectDir(), "tesis", `${slug}.md`)).catch(() => "");
@@ -684,22 +680,16 @@ export async function readWatchlistAddedOn(entries: readonly WatchlistEntry[]): 
 }
 
 /**
- * Removes a ticker from watchlist.md (drops it from the YAML block) and
- * archives its thesis note if there is one. `log` lets screening:prepare send
- * progress to stderr: its stdout is the file list the Routine reads.
+ * Archives the thesis note of a ticker that leaves the watchlist, if it has one (its `status` becomes `archived`, with the
+ * reason). The watchlist itself is the engine's state: the flows that retire a ticker drop a `stop_watching` command in
+ * `inbox/` (`inbox-proposals.ts`) and never edit it (#140). `log` lets screening:prepare send progress to stderr: its
+ * stdout is the file list the Routine reads.
  */
-export async function retireWatchlistEntry(
+export async function archiveThesis(
   ticker: Ticker,
   reason: string,
   log: (msg: string) => void = console.log,
 ): Promise<void> {
-  const filePath = join(projectDir(), "watchlist.md");
-  const raw = await readTextFile(filePath);
-  assertSchemaVersion(raw, "watchlist.md");
-  const updated = applyRetireWatchlistEntry(raw, ticker);
-  await writeFile(filePath, updated, "utf8");
-  log(`[vault-io] watchlist.md: removed ${ticker}`);
-
   // Archive the thesis if it exists
   const thesisCandidates = [`tesis-${tickerFileStem(ticker)}.md`, `tesis-${tickerSlug(ticker)}.md`];
   for (const name of thesisCandidates) {
@@ -781,8 +771,6 @@ export interface ScreeningCandidateMeta extends ScreeningSelection {
   /** Setups current at prepare, one line per setup (describeSetup). */
   setups: string[];
 }
-
-const ASSET_CLASSES: readonly AssetClass[] = ["equity", "commodity", "etf"];
 
 /** Resolves a logs/pending-screening/ filename, checking it does not escape the directory. */
 function screeningCandidatePath(filename: string): string {

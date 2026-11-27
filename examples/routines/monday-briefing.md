@@ -28,10 +28,11 @@ installed in `$ENGINE_DIR` by the SessionStart hook. The system prompt is
 3. Read `/tmp/briefing-prompt.md` and write the report to `/tmp/briefing.md`. Use web search for
    the macro and sector section and cite each source; if search fails, say so in that section.
 4. `npm run --silent monday-briefing:finalize < /tmp/briefing.md`. It validates the report, writes the log,
-   retires the watchlist entries, archives their theses and queues the email in `logs/outbox/`.
+   archives the theses of the tickers it retires, drops a `stop_watching` command for each in `inbox/`
+   (the inbox workflow applies it) and queues the email in `logs/outbox/`.
 5. Commit and push (change the `finance-agent/` prefix to your data path):
    ```bash
-   git add -A -- finance-agent/logs/ finance-agent/portfolio.md finance-agent/watchlist.md finance-agent/tesis/
+   git add -A -- finance-agent/logs/ finance-agent/portfolio.md finance-agent/tesis/
    # the stops the briefing proposes are a new batch of set_stop commands in inbox/ (never state)
    [ -d finance-agent/inbox ] && git add -A -- finance-agent/inbox/
    git diff --cached --quiet || git commit -m "chore(logs): Monday briefing $(date -u +%F)"
