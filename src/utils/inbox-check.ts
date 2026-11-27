@@ -6,6 +6,7 @@ import { CURRENCIES, type Currency, type Difference, type Lot } from "../types.j
 import type { Ticker } from "../ticker.js";
 import { formatMoney, zero, type Money } from "../money.js";
 import { round } from "./round.js";
+import { isDeepStrictEqual } from "node:util";
 import { uniqueDecisionIds } from "./decision-id.js";
 import type { SaleShare } from "./portfolio-lots.js";
 import {
@@ -27,7 +28,8 @@ import {
 } from "./inbox-handlers.js";
 import { parseBatch, type CommandKind, type InboxIssue, type ParsedBatch, type ParsedCommand } from "./inbox-parse.js";
 import {
-  idKey,
+  pinKey,
+  type ReplayResult,
   isCorrection,
   isReplayFailure,
   emptyState,
@@ -83,6 +85,8 @@ export interface RunContext {
    * `correct` command replays. Absent, a correction cannot be checked and is refused for that.
    */
   ledger?: readonly LedgerFile[];
+  /** The silos before the first batch, from `portfolio.md` (the store's `starting`): what the ledger is replayed over. Absent: empty ones. */
+  starting?: InboxState;
   /** A replay's own: the commands it runs in place of the ones a file holds (by file name, then command position). */
   overrides?: ReadonlyMap<string, ReadonlyMap<number, Command>>;
   /** A replay's own: the id the log holds for each id this run gives, by `idKey`. */
@@ -110,6 +114,9 @@ export interface Earlier {
   today: string;
   /** The batches applied before the run and the clean files of the run so far, in order; see `RunContext.ledger`. */
   ledger?: readonly LedgerFile[];
+  starting?: InboxState;
+  /** The file under check: a replay's pins are of one file. */
+  name?: string;
   /** How many clean batches of the run have applied something before this one: a correction needs them applied first. */
   appliedInRun?: number;
   /** The commands of this file that a replay runs in another form, by position; see `RunContext.overrides`. */
@@ -340,7 +347,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
   // A replay keeps the id the log holds for a record whatever day or ticker its correction gives it.
   const nextId = (date: string, subject: string, type: string): string => {
     const id = newId(date, subject, type);
-    return earlier.pins?.get(idKey(id)) ?? id;
+    return earlier.pins?.get(pinKey(earlier.name, id)) ?? id;
   };
   const entryCostsTaken = new Map(earlier.entryCostsTaken);
   /** The lots this batch opened, as the batch leaves them: a `set_stop` later in it can change their initial stop. */
@@ -868,7 +875,7 @@ function checkCorrections(state: InboxState, parsed: ParsedBatch, earlier: Earli
 
   const { ledger } = earlier;
   const options = {
-    initial: emptyState(state),
+    initial: earlier.starting ?? emptyState(state),
     history: earlier.entry.history,
     rulesVersion: earlier.rulesVersion,
     today: earlier.today,
@@ -895,10 +902,17 @@ function checkCorrections(state: InboxState, parsed: ParsedBatch, earlier: Earli
   // One correction at a time, so that the one that fails is named; the ones accepted before it stay in the replay.
   const accepted: Correction[] = [];
   let latest = base;
+  const shown = (r: ReplayResult) => patchesOf(r.lines, earlier.entry.history, r.undated);
   for (const correction of corrections) {
     const next = replay(runFiles, ledger, [...accepted, correction], options);
     if (isReplayFailure(next)) fail(correction.command, correction.line, next.reason);
-    else {
+    else if (isDeepStrictEqual(shown(next), shown(latest))) {
+      fail(
+        correction.command,
+        correction.line,
+        `cannot correct ${quoted(correction.fix.id)}: it changes nothing in the record`,
+      );
+    } else {
       accepted.push(correction);
       latest = next;
     }
@@ -1179,6 +1193,8 @@ export function runFiles(state: InboxState, files: readonly InboxFile[], run: Ru
       entry: run.entry,
       today: run.today,
       ...(ledger !== undefined ? { ledger } : {}),
+      ...(run.starting !== undefined ? { starting: run.starting } : {}),
+      name,
       appliedInRun,
       ...(run.overrides?.get(name) !== undefined ? { overrides: run.overrides.get(name) } : {}),
       ...(run.pins !== undefined ? { pins: run.pins } : {}),

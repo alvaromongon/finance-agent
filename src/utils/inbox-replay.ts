@@ -39,9 +39,13 @@ export type RunFiles = (state: InboxState, files: readonly InboxFile[], run: Run
  * after `a.yaml`, so the counter is read as an order and not as part of the name.
  */
 export function ledgerOrder<T extends { name: string }>(files: readonly T[]): T[] {
+  const names = new Set(files.map((f) => f.name));
+  // A trailing number is a counter only when the file without it is there too: `2026-11-05.yaml` is a date.
   const split = (name: string): [string, number] => {
     const match = /^(.*)-(\d+)(\.ya?ml)$/i.exec(name);
-    return match === null ? [name, 0] : [`${match[1]}${match[3]}`, Number(match[2])];
+    return match !== null && names.has(`${match[1]}${match[3]}`)
+      ? [`${match[1]}${match[3]}`, Number(match[2])]
+      : [name, 0];
   };
   return [...files].sort((a, b) => {
     const [nameA, countA] = split(a.name);
@@ -56,6 +60,9 @@ export function ledgerOrder<T extends { name: string }>(files: readonly T[]): T[
  * the log holds even when the day in it is the day of the run (a deposit has no date of its own).
  */
 export const idKey = (id: string): string => id.split("-").slice(-2).join("-");
+
+/** What a replay's pins are keyed by: the file and the `idKey`, since two applied batches with one text write the same keys. */
+export const pinKey = (file: string | undefined, id: string): string => `${file ?? ""}|${idKey(id)}`;
 
 /** A `correct` command of a batch: where it is, and what it says. */
 export interface Correction {
@@ -283,10 +290,23 @@ export function withTelemetry(rebuilt: InboxState, old: InboxState): InboxState 
   };
 }
 
-/** The id the log holds for a line a replay wrote: the one with the same key in `history`, else the replay's own. */
-function canonicalId(history: readonly Decision[]): (id: string) => string {
-  const byKey = new Map(history.map((d) => [idKey(d.id), d.id]));
-  return (id) => byKey.get(idKey(id)) ?? id;
+/**
+ * The id the log holds for each line a replay wrote, by the replay's id: the n-th line of the replay with a key (`idKey`) is the
+ * n-th line of the log with it. A line the log has no counterpart of is not in the map.
+ */
+export function canonicalIds(lines: readonly Decision[], history: readonly Decision[]): Map<string, string> {
+  const held = new Map<string, string[]>();
+  for (const d of history) held.set(idKey(d.id), [...(held.get(idKey(d.id)) ?? []), d.id]);
+  const seen = new Map<string, number>();
+  const found = new Map<string, string>();
+  for (const line of lines) {
+    const key = idKey(line.id);
+    const n = seen.get(key) ?? 0;
+    seen.set(key, n + 1);
+    const id = held.get(key)?.[n];
+    if (id !== undefined) found.set(line.id, id);
+  }
+  return found;
 }
 
 /** True for two numbers that are one value: the lines are written by one code, so only float noise may differ. */
@@ -394,14 +414,22 @@ function run(
   }
   const taken = new Set<string>();
   for (const silo of Object.values(result.state)) for (const l of silo.lots) taken.add(l.entryId);
+  // The line of a deposit has no date of its own: each batch is given a day of its own, so that two batches with one text
+  // (a monthly deposit) are not told apart by the number the ids count up with, as the log's, of different days, are not.
+  const dayOf = (index: number): string => {
+    const day = new Date(`${options.today}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() - index);
+    return day.toISOString().slice(0, 10);
+  };
   const lines: Decision[] = [];
   const sources = new Map<string, LineSource>();
   const undated = new Set<string>();
-  for (const check of result.checks) {
+  for (const [index, check] of result.checks.entries()) {
     const written = decisionsOf(check.trades, check.text!, {
       rulesVersion: options.rulesVersion,
       takenIds: taken,
-      today: options.today,
+      today: dayOf(index),
+      file: check.name,
       ...(options.pins ? { pins: options.pins } : {}),
     });
     let at = 0;
@@ -483,7 +511,8 @@ export function replay(
   if (all.length === 0) return first;
 
   // Each correction names a record by the id the log holds; the command that wrote it is the one that is run again.
-  const canonical = canonicalId(options.history);
+  const canon = canonicalIds(first.lines, options.history);
+  const canonical = (id: string): string => canon.get(id) ?? id;
   const written = new Map(first.lines.map((l) => [canonical(l.id), first.sources.get(l.id)!]));
   const commands = new Map<string, Command>(
     baseParsed.flatMap((batch, i) => batch.commands.map((c) => [`${base[i].name}#${c.position}`, c.command] as const)),
@@ -524,9 +553,7 @@ export function replay(
   }
   const last = all[all.length - 1];
   // The record keeps its id whatever its date or its ticker becomes: the lots and the lines of the log cite it.
-  const pins = new Map(first.lines.map((l) => [idKey(l.id), canonical(l.id)] as const));
-  for (const silo of Object.values(first.state))
-    for (const lot of silo.lots) pins.set(idKey(lot.entryId), canonical(lot.entryId));
+  const pins = new Map(first.lines.map((l) => [pinKey(first.sources.get(l.id)!.file, l.id), canonical(l.id)] as const));
   const second = run(runFiles, options.initial, base, baseParsed, { ...options, overrides, pins });
   if (isFailure(second)) {
     return {
@@ -539,9 +566,9 @@ export function replay(
     };
   }
   // A sale that now takes other lots writes other lines than the ones in the log: the log is append-only, so it is not rebuilt.
-  const keys = (lines: readonly Decision[]): Set<string> => new Set(lines.map((l) => idKey(l.id)));
-  const before = keys(first.lines);
-  const after = keys(second.lines);
+  const keys = (r: Replayed): Set<string> => new Set(r.lines.map((l) => pinKey(r.sources.get(l.id)?.file, l.id)));
+  const before = keys(first);
+  const after = keys(second);
   const moved = [...before].filter((k) => !after.has(k)).length + [...after].filter((k) => !before.has(k)).length;
   if (moved > 0) {
     return {

@@ -17,6 +17,7 @@ parentheses so a code comment that cites it can be found here.
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize`                             |
 | [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                                               |
 | [Apply the inbox](#apply-the-inbox)                           | `inbox:ingest`                                                                              |
+| [Repair the state](#repair-the-state)                         | `state:repair`                                                                              |
 | [Evaluate decisions](#evaluate-decisions)                     | `decisions:evaluate`, `decisions:chart`, `screening:outcomes`                               |
 | [Email delivery](#email-delivery)                             | `outbox:send` and every flow that sends                                                     |
 
@@ -516,7 +517,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Steps**:
   1. Read the store if it reads (a store that does not read is an input, not an error), the decision history and every batch of
      `inbox/applied/` (plus a batch applied and not yet moved), in order.
-  2. Apply the batches' commands again over empty silos, the [corrections](glossary.md#correction) included, through the runner of the inbox.
+  2. Apply the batches' commands again over the silos as the store began (`starting_silos`, from `portfolio.md`; empty ones if it began empty), the [corrections](glossary.md#correction) included, through the runner of the inbox.
   3. Check the result against the decision log: every line the batches write must be in the log with the same figures, and every
      inbox line of the log must be one the batches write. A batch that does not replay is a disagreement too.
   4. Disagreement: **refuse, change nothing** and print each difference with the batch, command and line. Agreement: write

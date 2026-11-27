@@ -542,14 +542,12 @@ export async function readDecisionHistory(archiveDir: string | undefined = decis
   const seen = new Set<string>();
   // The corrections (#139) are applied once the quarters are together: a correction can sit in another quarter than its line.
   return withCorrections(
-    [...archived, ...(await readLiveLines())]
-      .filter((d) => {
-        if (seen.has(d.id)) return false;
-        seen.add(d.id);
-        return true;
-      })
-      .sort((a, b) => a.date.localeCompare(b.date)),
-  );
+    [...archived, ...(await readLiveLines())].filter((d) => {
+      if (seen.has(d.id)) return false;
+      seen.add(d.id);
+      return true;
+    }),
+  ).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 let archiveDirUnsetNoted = false;

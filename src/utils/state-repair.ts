@@ -16,7 +16,7 @@ import type { InboxState } from "./inbox-handlers.js";
 import { runFiles } from "./inbox-check.js";
 import {
   currenciesOf,
-  idKey,
+  canonicalIds,
   isReplayFailure,
   ledgerOrder,
   patchesOf,
@@ -41,6 +41,8 @@ export interface RepairInput {
   history: readonly Decision[];
   /** The store that is replaced, when it reads; `null` when it does not (or there is none). */
   old: InboxState | null;
+  /** The silos before the first batch (the store's `starting`, or its last readable copy's); absent: the portfolio began empty. */
+  starting?: InboxState;
   rulesVersion: string;
   /** The day of the run, YYYY-MM-DD. */
   today: string;
@@ -73,8 +75,9 @@ const silo = (text: string): Currency | null =>
 function disagreements(result: ReplayResult, history: readonly Decision[]): Finding[] {
   const found: Finding[] = [];
   const log = history.filter((d) => d.source === "portfolio-sync" && INBOX_LINES.includes(d.type));
-  const logByKey = new Map(log.map((d) => [idKey(d.id), d]));
-  const batchByKey = new Map(result.lines.map((d) => [idKey(d.id), d]));
+  const logById = new Map(log.map((d) => [d.id, d]));
+  const canon = canonicalIds(result.lines, log);
+  const matched = new Set(canon.values());
   const at = (id: string): string => {
     const source = result.sources.get(id);
     return source === undefined
@@ -82,7 +85,7 @@ function disagreements(result: ReplayResult, history: readonly Decision[]): Find
       : `inbox/applied/${printable(source.file)}, command ${source.command}, line ${source.line}`;
   };
   for (const line of result.lines) {
-    const held = logByKey.get(idKey(line.id));
+    const held = logById.get(canon.get(line.id) ?? "");
     if (held === undefined) {
       found.push({
         currency: line.currency,
@@ -103,7 +106,7 @@ function disagreements(result: ReplayResult, history: readonly Decision[]): Find
     }
   }
   for (const held of log) {
-    if (!batchByKey.has(idKey(held.id))) {
+    if (!matched.has(held.id)) {
       found.push({
         currency: held.currency,
         text: `${held.currency} ${held.type} ${quoted(held.id)}: in logs/decisions.jsonl, but no batch in inbox/applied/ writes it`,
@@ -121,13 +124,15 @@ export function planRepair(input: RepairInput): Repair {
   const applied = ledgerOrder(input.applied);
   const batches = applied.length;
   const currencies = CURRENCIES.filter((c) => input.old?.[c] !== undefined || currenciesOf(applied).includes(c));
-  // The silos start empty: the old store's, when it reads, give their day of sync; one it lacks is of today.
-  const blank = Object.fromEntries(
-    currencies.map((c) => [
-      c,
-      { currency: c, cash: zero(c), positions: [], lots: [], syncedAt: input.old?.[c]?.syncedAt ?? input.now },
-    ]),
-  ) as InboxState;
+  // The silos start as the store began (`starting`), else empty: the old store's, when it reads, give their day of sync; one it lacks is of today.
+  const blank =
+    input.starting ??
+    Object.fromEntries(
+      currencies.map((c) => [
+        c,
+        { currency: c, cash: zero(c), positions: [], lots: [], syncedAt: input.old?.[c]?.syncedAt ?? input.now },
+      ]),
+    );
   const result = replay(runFiles, applied, [], {
     initial: blank,
     history: input.history,

@@ -210,20 +210,21 @@ are possible.
 
 ## Commands
 
-| Command                                 | What it does                                          |
-| --------------------------------------- | ----------------------------------------------------- |
-| `npm run demo -- --currency EUR\|USD`   | One heartbeat against the example brain, offline      |
-| `npm run heartbeat:eu` / `heartbeat:us` | One heartbeat for a silo                              |
-| `npm run weekly-screening`              | Weekly screening (API mode)                           |
-| `npm run monday-briefing`               | Monday briefing (API mode)                            |
-| `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report |
-| `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart   |
-| `npm run decision:record`               | Records a cash flow or a stop adjustment (JSON stdin) |
-| `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio |
-| `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each  |
-| `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security         |
-| `npm run outbox:send`                   | Sends the queued emails (relay)                       |
-| `npm run smoke-test`                    | Connectivity check                                    |
+| Command                                 | What it does                                                                                                                              |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run demo -- --currency EUR\|USD`   | One heartbeat against the example brain, offline                                                                                          |
+| `npm run heartbeat:eu` / `heartbeat:us` | One heartbeat for a silo                                                                                                                  |
+| `npm run weekly-screening`              | Weekly screening (API mode)                                                                                                               |
+| `npm run monday-briefing`               | Monday briefing (API mode)                                                                                                                |
+| `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report                                                                                     |
+| `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart                                                                                       |
+| `npm run decision:record`               | Records a cash flow or a stop adjustment (JSON stdin)                                                                                     |
+| `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio                                                                                     |
+| `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each                                                                                      |
+| `npm run state:repair`                  | Rebuilds a corrupt `state/portfolio.json` from the decision log and `inbox/applied/`, or refuses ([flow](docs/flows.md#repair-the-state)) |
+| `npm run analyze -- --ticker <TICKER>`  | Technicals and current setups of one security                                                                                             |
+| `npm run outbox:send`                   | Sends the queued emails (relay)                                                                                                           |
+| `npm run smoke-test`                    | Connectivity check                                                                                                                        |
 
 `decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit` or `withdrawal`; a buy, a sale and a currency [conversion](docs/glossary.md#conversion) are no longer recorded there but with the `buy`, `sale` and `convert` commands of a batch in `inbox/` (so is a split, with `split`). The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
 gives the JSON for each and the order that keeps the P&L right. What to delete, move and archive

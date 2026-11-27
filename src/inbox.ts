@@ -171,6 +171,7 @@ async function plan(
     entry: await entryContext(toRun, store, history, mustKnowRules, atrSource),
     today: now.toISOString().slice(0, 10),
     ...(ledger !== undefined ? { ledger } : {}),
+    ...(store.starting !== undefined ? { starting: store.starting } : {}),
   });
   return {
     waiting: all.filter(isWaiting).map((file) => file.name),

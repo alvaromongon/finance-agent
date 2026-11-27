@@ -61,7 +61,7 @@ function auditLine(
  */
 export async function repairStore(now: Date = new Date()): Promise<RepairOutcome> {
   const today = now.toISOString().slice(0, 10);
-  const { store: existing, problem } = await readStoreForRepair();
+  const { store: existing, problem, starting } = await readStoreForRepair();
   // A store that reads first gets what an earlier run left in it written to the log.
   const old = existing === null ? null : await writePendingDecisions(existing);
 
@@ -79,6 +79,7 @@ export async function repairStore(now: Date = new Date()): Promise<RepairOutcome
     applied: [...batches, ...waiting],
     history,
     old: old === null ? null : asState(old),
+    ...(starting !== undefined ? { starting: asState({ silos: starting } as PortfolioStore) } : {}),
     rulesVersion,
     today,
     now: now.toISOString(),
@@ -123,6 +124,7 @@ export async function repairStore(now: Date = new Date()): Promise<RepairOutcome
   const at = now.toISOString();
   const committed: PortfolioStore = {
     silos: plan.state,
+    ...(starting !== undefined ? { starting } : {}),
     ...(old?.accountEnv !== undefined ? { accountEnv: old.accountEnv } : {}),
     unmoved: old?.unmoved ?? [],
     pendingDecisions: lines.map((d) => JSON.stringify(d)),

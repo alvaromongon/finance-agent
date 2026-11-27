@@ -134,12 +134,23 @@ async function readLastReadable(): Promise<{ store: PortfolioStore | null; probl
  * The store for the repair (#139): what reads, or why it does not. The repair rebuilds a store that does not read from
  * the audit trail, so a store that is unreadable is an input to it, not an error.
  */
-export async function readStoreForRepair(): Promise<{ store: PortfolioStore | null; problem: string | null }> {
+export async function readStoreForRepair(): Promise<{
+  store: PortfolioStore | null;
+  problem: string | null;
+  /** What the store began with, from its last readable copy when the store itself does not read. */
+  starting?: PortfolioStore["starting"];
+}> {
   try {
-    return { store: await readStore(), problem: null };
+    const store = await readStore();
+    return { store, problem: null, ...(store?.starting !== undefined ? { starting: store.starting } : {}) };
   } catch (err) {
     if (!(err instanceof StoreUnreadableError)) throw err;
-    return { store: null, problem: err.message };
+    const { store } = await readLastReadable();
+    return {
+      store: null,
+      problem: err.message,
+      ...(store?.starting !== undefined ? { starting: store.starting } : {}),
+    };
   }
 }
 
@@ -488,11 +499,13 @@ export async function storeFromPortfolioFile(): Promise<PortfolioStore> {
   }
   const read = silosOfText(raw);
   const accountEnv = extractFrontmatter(raw)?.account_env;
+  const silos = {
+    ...(read.EUR ? { EUR: requireWhole(read.EUR) } : {}),
+    ...(read.USD ? { USD: requireWhole(read.USD) } : {}),
+  };
   return {
-    silos: {
-      ...(read.EUR ? { EUR: requireWhole(read.EUR) } : {}),
-      ...(read.USD ? { USD: requireWhole(read.USD) } : {}),
-    },
+    silos,
+    starting: silos,
     ...(typeof accountEnv === "string" ? { accountEnv } : {}),
     unmoved: [],
     pendingDecisions: [],

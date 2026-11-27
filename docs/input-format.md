@@ -378,7 +378,7 @@ and each difference it found (empty when the broker and the engine agree); a sil
 one: the batches applied whose files are still in `inbox/`, and the decision-log lines of their trades not yet in
 `logs/decisions.jsonl`. `resolved_rejections` lists the [rejected batches](glossary.md#rejected-batch) that a later batch
 replaced or discarded (`file`, the `sha256` of its text, `how`, the batch that settled it as `by`, and `at`): a file of
-`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). The reader is strict: a number that is not plain decimal, an amount in another currency, a
+`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). `starting_silos` (optional, #139) is the `silos` as the store began, from `portfolio.md`: what a correction and the repair apply the batches of `inbox/applied/` over (a store without it began empty). A cash flow told with `decision:record` is in no batch, so a log that holds one is refused by the repair, which changes nothing. The reader is strict: a number that is not plain decimal, an amount in another currency, a
 ticker that does not parse or another `schema_version` is refused, naming the file and the field, instead of read
 partially.
 
@@ -397,15 +397,7 @@ the inbox format (see [#124](https://github.com/alvaromongon/finance-agent/issue
 rebuilds the store from the decision log and the batches in `inbox/applied/`, the audit trail, and **refuses, changing nothing, when
 the two disagree, saying where**. The owner runs it on purpose, when the store does not read or is wrong; the engine never runs it by itself.
 
-1. It reads the batches of `inbox/applied/` in order and applies their commands again, over empty silos (the corrections too, as
-   `inbox:ingest` does). That gives the cash, the lots and the positions.
-2. It checks the result against the log: every line the batches write (an `entry`, `exit`, `deposit`, `withdrawal`, `fx_conversion` or `split`) must be
-   in `logs/decisions.jsonl` with the same figures once its `correction` lines are applied, and every such line the log holds must be one the
-   batches write. A batch that no longer reads or is no longer accepted is a disagreement too.
-3. If they disagree it stops: the store is not written, the exit code is 1, and each difference is printed with the file, the command and the
-   line of the batch, and what the log holds against what the batch gives.
-4. If they agree, it writes the rebuilt store (the origin and rules of each lot, the prices and the snapshot of a silo are kept from the log and
-   from the store being replaced when it reads) and says what differed, or that there was nothing to repair.
+The steps are in [Repair the state](flows.md#repair-the-state).
 
 **Every run writes a `repair` line to the decision log** per silo, a refusal and a run with nothing to repair included: the date, the
 `result` (`rebuilt`, `unchanged` or `refused`) and the `differences` it found. Neither the batches nor a line of the log is ever edited. It

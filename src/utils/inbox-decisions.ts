@@ -9,7 +9,7 @@ import { buildDecision, type Decision } from "../decisions.js";
 import { exactAmount } from "../money.js";
 import type { Trade } from "./inbox-check.js";
 import { uniqueDecisionIds } from "./decision-id.js";
-import { idKey } from "./inbox-replay.js";
+import { pinKey } from "./inbox-replay.js";
 import { round } from "./round.js";
 
 export interface DecisionContext {
@@ -20,6 +20,8 @@ export interface DecisionContext {
   today: string;
   /** A replay's own (#139): the id the log holds for each id given, by `idKey`, so a corrected record keeps its id. */
   pins?: ReadonlyMap<string, string>;
+  /** A replay's own: the file the trades are of, which scopes `pins`. */
+  file?: string;
 }
 
 /**
@@ -32,7 +34,7 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
   const newId = uniqueDecisionIds(context.takenIds, createHash("sha256").update(text).digest("hex"));
   const nextId = (date: string, subject: string, type: string): string => {
     const id = newId(date, subject, type);
-    return context.pins?.get(idKey(id)) ?? id;
+    return context.pins?.get(pinKey(context.file, id)) ?? id;
   };
   return trades.flatMap((trade): Decision[] => {
     // A deposit or a withdrawal moved the cash of a silo (#139): its line is what a correction names, and the shadow
