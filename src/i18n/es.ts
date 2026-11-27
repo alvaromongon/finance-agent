@@ -139,9 +139,9 @@ export const es: Messages = {
       ``,
       `Tras revisar la cuenta, cuéntale al motor lo ocurrido con un lote en \`inbox/\` (una \`sale\` si el stop se`,
       `ejecutó; un \`set_stop\` o un \`clear_stop\` si no; guía: \`routines/portfolio-sync.md\`) para que el resto`,
-      `del sistema deje de razonar sobre una posición que ya no existe. Un stop que el motor haya propuesto ya espera`,
-      `allí como \`set_stop\`.`,
+      `del sistema deje de razonar sobre una posición que ya no existe.`,
     ],
+    breachOutroStopWaiting: [`Un stop que el motor haya propuesto ya espera allí como \`set_stop\`.`],
     lotsIntro: [
       `## \`portfolio.md\`: problema con los lotes`,
       ``,

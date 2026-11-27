@@ -143,9 +143,9 @@ export const en = {
       ``,
       `After checking the account, tell the engine what happened with a batch in \`inbox/\` (a \`sale\` if the stop`,
       `executed; a \`set_stop\` or a \`clear_stop\` if it did not; guide: \`routines/portfolio-sync.md\`) so the`,
-      `rest of the system stops reasoning about a position that no longer exists. A stop the engine proposed is already`,
-      `waiting there as a \`set_stop\`.`,
+      `rest of the system stops reasoning about a position that no longer exists.`,
     ],
+    breachOutroStopWaiting: [`A stop the engine proposed is already waiting there as a \`set_stop\`.`],
     lotsIntro: [
       `## \`portfolio.md\`: problem with the lots`,
       ``,

@@ -350,7 +350,8 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
       if (proposal) stopProposals.push(proposal);
     }
   } finally {
-    await dropStopProposals(stopProposals, `heartbeat-${currency.toLowerCase()}`);
+    const { dropped, waiting } = await dropStopProposals(stopProposals, `heartbeat-${currency.toLowerCase()}`);
+    digest.stopProposed = dropped.length + waiting.length > 0;
   }
 }
 
