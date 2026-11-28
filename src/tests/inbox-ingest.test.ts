@@ -123,7 +123,9 @@ describe("inbox:ingest", () => {
     });
 
     it("dates the line of a deposit with its own date, so the rebuilt cash is never negative (#202)", async () => {
+      // The silo starts empty, so the buy is paid by the deposit: dated by the run day, the cash would go negative.
       await rm(dir("inbox", "2026-11-12.yaml"));
+      await writeFile(dir("portfolio.md"), portfolioMd({ eurCash: "0.00" }), "utf8");
       await drop(
         "2026-11-12.yaml",
         batch("command: deposit\namount: 250.50 EUR\ndate: 2026-09-10", BUY("costs: 1.50 EUR"), STOP),
@@ -148,6 +150,7 @@ describe("inbox:ingest", () => {
         reference: "EXSA.DE",
       });
       assert.deepEqual(history.warnings, []);
+      assert.equal(history.base.value, 0);
       assert.deepEqual(history.flows, [{ date: "2026-09-10", amount: 250.5 }]);
       // Between the deposit and the buy the cash is the base plus the deposit: never below zero.
       assert.ok(history.days.every((d) => d.value >= 0));
