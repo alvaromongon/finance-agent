@@ -70,7 +70,6 @@ const escalated: Signal[] = [
 
 const digest = (over: Partial<HeartbeatDigest> = {}): HeartbeatDigest => ({
   currency: "USD",
-  syncedAt: "2026-09-02T14:10:00Z",
   minAtr: 2,
   breaches: [],
   lotsWarnings: [],
@@ -126,10 +125,10 @@ describe("renderHeartbeatDigest", () => {
     assert.doesNotMatch(email.body, /## Stops|## Señales/);
   });
 
-  it("the crossed stop places the age of the manual sync and the market data", () => {
+  it("the crossed stop names the market data and sends the owner to the inbox (#194)", () => {
     const { body } = renderHeartbeatDigest(digest({ breaches }))!;
 
-    assert.match(body, /2026-09-02/, "says since when the account has not been synced");
+    assert.doesNotMatch(body, /última sincronización|sincronizas/, "no longer claims a manual sync date");
     assert.match(body, /210,77 USD/, "market price");
     assert.match(body, /213,00/, "recorded stop");
     assert.match(body, /routines\/portfolio-sync\.md/, "links the sync guide");
@@ -196,7 +195,7 @@ describe("onlyNew / digestKeys", () => {
     );
     assert.match(
       text,
-      /Corrige `Lots` a mano: que exista y se lea, que cada `Volume` sea la suma de las `Units` de sus lotes y cada `Entry id` sea una entrada del registro/,
+      /Corrige los lotes con un lote de comandos en `inbox\/` \(un comando `correct` o `split`; `docs\/input-format\.md`\)\. Solo mientras no exista `state\/portfolio\.json` se corrige `Lots` a mano: cada `Volume` debe ser la suma de las `Units` de sus lotes y cada `Entry id` una entrada del registro/,
     );
   });
 

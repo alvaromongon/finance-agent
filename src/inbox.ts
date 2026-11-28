@@ -254,7 +254,12 @@ export async function checkInbox(now: Date = new Date()): Promise<InboxOutcome> 
   const { checks } = planned.run;
   const problems = renderIssues(checks);
   // Warnings never change the exit code: a position without a stop is for the owner to know, not a rejected batch.
-  const warnings = renderWarnings(checks);
+  // The strategy is configuration (#142): an invalid file is named here as `inbox:ingest` names it (#194). It never changes what a batch accepts.
+  const { problems: configurationProblems } = await resolveConfiguration(["strategies/base.md"], { save: false });
+  const warnings = [
+    ...describeProblems(configurationProblems).map((line) => `WARNING, configuration: ${line}.`),
+    ...renderWarnings(checks),
+  ];
   const waiting =
     planned.waiting.length > 0
       ? [`${planned.waiting.length} batch(es) already applied, waiting to be moved by the next ingest.`]

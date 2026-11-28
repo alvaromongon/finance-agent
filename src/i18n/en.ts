@@ -127,13 +127,13 @@ export const en = {
       armed: "armed breakout",
       escalated: "to analysis",
     },
-    breachIntro: (syncedAt: string) => [
+    breachIntro: [
       `## Stops crossed — check your broker`,
       ``,
       `These positions trade **below their recorded stop-loss**.`,
       ``,
-      `The engine cannot know whether the broker already executed the stop: the portfolio is`,
-      `synced by you and its last sync is from **${syncedAt}**.`,
+      `The engine cannot know whether the broker already executed the stop: it knows only what you`,
+      `told it with a batch in \`inbox/\`.`,
       `Check the account and, if the stop did not fire, decide with the discipline of`,
       `\`strategies/base.md\` (respect the stop even if the thesis is still alive).`,
       ``,
@@ -156,8 +156,9 @@ export const en = {
     ],
     lotsOutro: [
       ``,
-      `Fix \`Lots\` by hand: it must exist and be readable, each \`Volume\` must be the sum of the \`Units\` of its lots and`,
-      `every \`Entry id\` must be an entry of the log (\`logs/decisions.jsonl\`; see \`docs/input-format.md\`).`,
+      `Correct the lots with a batch in \`inbox/\` (a \`correct\` or a \`split\` command; \`docs/input-format.md\`). Only while there is no`,
+      `\`state/portfolio.json\` is \`Lots\` fixed by hand: each \`Volume\` must be the sum of the \`Units\` of its lots and every`,
+      `\`Entry id\` must be an entry of the log (\`logs/decisions.jsonl\`).`,
     ],
     noStopIntro: [
       `## Positions without a stop`,
@@ -299,9 +300,9 @@ export const en = {
       `profit into one that allows a loss. If the position is already in profit and you want`,
       `to lock in part of it, option 2 (trimming volume) is usually better than tightening the stop.`,
     ],
-    tightOutro: (syncedAt: string) => [
+    tightOutro: [
       ``,
-      `The real stop lives in your broker: the engine only knows the stop of its own state (last sync: **${syncedAt}**).`,
+      `The real stop lives in your broker: the engine only knows the stop of its own state.`,
       `If you change it there, tell the engine with a \`set_stop\` (or a batch) in \`inbox/\` (guide:`,
       `\`routines/portfolio-sync.md\`). When the engine itself proposes a stop, it drops the \`set_stop\` there for you.`,
     ],
