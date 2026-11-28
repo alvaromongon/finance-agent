@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Currency } from "../types.js";
+import { CURRENCIES, type AnySilo, type Currency, type PortfolioSnapshot } from "../types.js";
+import type { Decision } from "../decisions.js";
 import {
   DUST_LIMIT,
   addCounted,
+  asNumber,
+  maxMoney,
+  minMoney,
   countedInCents,
   exactAmount,
   formatMoney,
@@ -13,6 +17,7 @@ import {
   shareMoney,
   subtractCounted,
   sumCounted,
+  zero,
   type Money,
   unitsWorthACent,
   unitsWorthHalfACent,
@@ -91,6 +96,115 @@ describe("money carries its currency (#130, ADR-0017)", () => {
     const amount: Money = money(5, silo);
     const eur: Money<"EUR"> = money(5, "EUR");
     assert.equal(addCounted(amount, eur, "x"), 10);
+  });
+});
+
+describe("an amount is not a number to the compiler (#145)", () => {
+  const silo = <C extends Currency>(currency: C, cash: number): PortfolioSnapshot<C> => ({
+    currency,
+    cash: money(cash, currency),
+    positions: [],
+    lots: [],
+    syncedAt: "2026-11-28T00:00:00.000Z",
+  });
+
+  // Checked by `npm run typecheck`: `@ts-expect-error` fails it if the line ever compiles. At run time an amount is a
+  // number, so every line below runs and gives the number it would give; only the compiler tells the currencies apart.
+  it("does not compile + or - on amounts, in the same currency or in two", () => {
+    /* eslint-disable @typescript-eslint/restrict-plus-operands -- the lines are the ones that must not compile */
+    const eur = money(10, "EUR");
+    const usd = money(5, "USD");
+    // @ts-expect-error a sum with + is a plain number that has lost the currency: addCounted keeps it
+    const plain = eur + eur;
+    // @ts-expect-error EUR and USD amounts cannot be added with +
+    const mixed = eur + usd;
+    // @ts-expect-error EUR and USD amounts cannot be subtracted with -
+    const difference = usd - eur;
+    assert.deepEqual([plain, mixed, difference], [20, 15, -5]);
+    /* eslint-enable @typescript-eslint/restrict-plus-operands */
+  });
+
+  it("does not compile an amount where a plain number is wanted, or Math.max and Math.min on amounts", () => {
+    const eur = money(10, "EUR");
+    // @ts-expect-error Math.max takes numbers: maxMoney takes two amounts of one currency
+    const larger = Math.max(eur, money(3, "EUR"));
+    // @ts-expect-error Math.min takes numbers: minMoney takes two amounts of one currency
+    const smaller = Math.min(eur, money(3, "EUR"));
+    // @ts-expect-error an amount is not a number: asNumber is the way out, in the open
+    const plain: number = eur;
+    // @ts-expect-error arithmetic on an amount and a number needs the number out of the amount first
+    const doubled = eur * 2;
+    assert.deepEqual([larger, smaller, plain, doubled], [10, 3, 10, 20]);
+  });
+
+  it("does not compile two currencies compared with <, <=, > or >=, and compares one currency", () => {
+    const eur = money(10, "EUR");
+    const usd = money(5, "USD");
+    // @ts-expect-error EUR and USD amounts cannot be ordered
+    const mixed = eur > usd;
+    assert.equal(mixed, true);
+    assert.ok(
+      money(3, "EUR") < eur && eur >= money(10, "EUR"),
+      "two amounts of one currency compare with the operators",
+    );
+  });
+
+  it("takes the larger and the smaller of two amounts of one currency, and refuses two currencies", () => {
+    const small = money(3, "USD");
+    const large = money(10, "USD");
+    assert.equal(maxMoney(small, large), 10);
+    assert.equal(minMoney(large, small), 3);
+    assert.equal(minMoney(zero("USD"), small), 0);
+    // @ts-expect-error EUR and USD amounts have no larger
+    maxMoney(small, money(1, "EUR"));
+    // @ts-expect-error EUR and USD amounts have no smaller
+    minMoney(money(1, "EUR"), small);
+  });
+
+  it("is a number at run time: it round-trips JSON and asNumber is the identity", () => {
+    const amount = money(12.34, "EUR");
+    assert.equal(JSON.stringify({ amount }), '{"amount":12.34}');
+    assert.equal(asNumber(amount), 12.34);
+    assert.equal(asNumber(7), 7);
+  });
+
+  it("keeps the two silos apart in a loop over both: an amount of one is not added to a total of the other", () => {
+    const silos: AnySilo[] = [silo("EUR", 100), silo("USD", 40)];
+    let eurTotal = zero("EUR");
+    let usdTotal = zero("USD");
+    for (const s of silos) {
+      if (s.currency === "EUR") eurTotal = addCounted(eurTotal, s.cash, "the EUR total");
+      else usdTotal = addCounted(usdTotal, s.cash, "the USD total");
+    }
+    assert.deepEqual([eurTotal, usdTotal], [100, 40]);
+
+    // Never called: these are the mixes the compiler must refuse.
+    const mixes = (s: AnySilo): void => {
+      // @ts-expect-error the silo of this turn may be the USD one: its cash is not a EUR amount
+      eurTotal = addCounted(eurTotal, s.cash, "the EUR total");
+      // @ts-expect-error the cash of a EUR silo is not a USD amount, wherever the silo came from
+      if (s.currency === "EUR") usdTotal = addCounted(usdTotal, s.cash, "the USD total");
+    };
+    assert.equal(typeof mixes, "function");
+  });
+
+  it("walks the silos of a store by currency with each silo's own type", () => {
+    const store: { readonly [C in Currency]?: PortfolioSnapshot<C> } = { EUR: silo("EUR", 100), USD: silo("USD", 40) };
+    const cashes = CURRENCIES.flatMap((c) => store[c]?.cash ?? []);
+    // @ts-expect-error the cash of one silo or the other is not an amount of the EUR silo
+    const eurCashes: Money<"EUR">[] = cashes;
+    assert.deepEqual(eurCashes, [100, 40]);
+    // @ts-expect-error the EUR silo's cash is not a USD amount
+    const usdCash: Money<"USD"> | undefined = store.EUR?.cash;
+    assert.equal(usdCash, 100);
+  });
+
+  it("makes a decision's money the amount of its silo's currency", () => {
+    const exit = { currency: "USD", costs: money(1, "USD") } as Decision<"USD">;
+    const cost: Money<"USD"> | undefined = exit.costs;
+    // @ts-expect-error the costs of a USD decision are not a EUR amount
+    const euros: Money<"EUR"> | undefined = exit.costs;
+    assert.deepEqual([cost, euros], [1, 1]);
   });
 });
 
@@ -196,11 +310,15 @@ describe("shareMoney: whole cents, never negative, adding up exactly", () => {
       );
       const shares = shareMoney(total, weights);
       assert.equal(shares.length, weights.length);
+      const where = `${asNumber(total)} over ${JSON.stringify(weights)}`;
       for (const s of shares) {
-        assert.equal(money(s, "EUR"), s, `${s} is not whole cents (${total} over ${JSON.stringify(weights)})`);
-        assert.ok(total < 0 ? s <= 0 : s >= 0, `${s} has the wrong sign (${total} over ${JSON.stringify(weights)})`);
+        assert.equal(money(asNumber(s), "EUR"), s, `${asNumber(s)} is not whole cents (${where})`);
+        assert.ok(
+          total < zero("EUR") ? s <= zero("EUR") : s >= zero("EUR"),
+          `${asNumber(s)} has the wrong sign (${where})`,
+        );
       }
-      assert.equal(sumCounted(shares, "x", "EUR"), total, `${total} over ${JSON.stringify(weights)}`);
+      assert.equal(sumCounted(shares, "x", "EUR"), total, where);
     }
   });
 });

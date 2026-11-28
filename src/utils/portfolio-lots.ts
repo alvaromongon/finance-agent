@@ -9,7 +9,10 @@ import { UNITS_TOLERANCE } from "./units.js";
 import type { Ticker } from "../ticker.js";
 import {
   addCounted,
+  asNumber,
   countedInCents,
+  maxMoney,
+  minMoney,
   shareExactAmount,
   shareMoney,
   subtractCounted,
@@ -217,7 +220,7 @@ function entryCostsShare<C extends Currency>(
   const total = t.lot.entryCosts;
   if (total == null) return undefined;
   const remainder = subtractCounted(total, taken, `the entry costs of ${lotName(t.lot)} left`);
-  const left = Math.max(remainder, zero(currency)) as Money<C>;
+  const left = maxMoney(remainder, zero(currency));
   if (t.unitsLeft === 0) return left;
   if (!(t.lot.entryUnits > 0)) {
     throw new SaleRefusal(
@@ -225,11 +228,11 @@ function entryCostsShare<C extends Currency>(
     );
   }
   const share = countedInCents(
-    (total * t.unitsSold) / t.lot.entryUnits,
+    (asNumber(total) * t.unitsSold) / t.lot.entryUnits,
     `the entry costs of ${lotName(t.lot)} taken by the sale`,
     currency,
   );
-  return Math.min(share, left) as Money<C>;
+  return minMoney(share, left);
 }
 
 /** How a lot is named in a refusal: its entry id and ticker. */

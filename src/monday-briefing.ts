@@ -51,7 +51,7 @@ import { fetchBenchmarks } from "./utils/benchmark.js";
 import { formatRegimeLines } from "./utils/market-regime.js";
 import { assertMailConfigured, sendSummaryEmail } from "./mailer.js";
 import { extractRetireList, extractPlanSummary } from "./utils/vault-parser.js";
-import { formatMoney } from "./money.js";
+import { asNumber, formatMoney } from "./money.js";
 import { readTextFile } from "./utils/fs-text.js";
 import {
   filterSafeRetireList,
@@ -166,8 +166,8 @@ export async function prepareBriefing(
   const entriesByTicker = new Map([...eurWatchlist, ...usdWatchlist].map((entry) => [entry.ticker, entry] as const));
   // Value of each silo: the base of each setup's ticket.
   const silos = {
-    EUR: { cash: eurPortfolio.cash, value: siloValue(eurPortfolio) },
-    USD: { cash: usdPortfolio.cash, value: siloValue(usdPortfolio) },
+    EUR: { cash: asNumber(eurPortfolio.cash), value: siloValue(eurPortfolio) },
+    USD: { cash: asNumber(usdPortfolio.cash), value: siloValue(usdPortfolio) },
   };
   // Market regime of each silo: one more eligibility rule.
   const benchmarks = await fetchBenchmarks(provider, ["EUR", "USD"]);

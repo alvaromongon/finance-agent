@@ -14,7 +14,7 @@
 // itself: `stateDifferences` says so, and neither a correction nor the repair touches such a store.
 import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
 import { PATCH_FIELDS, type Decision, type PatchField } from "../decisions.js";
-import { countedInCents, formatMoney, zero, type Money } from "../money.js";
+import { asNumber, countedInCents, formatMoney, zero, type Money } from "../money.js";
 import type { Ticker } from "../ticker.js";
 import { decisionsOf } from "./inbox-decisions.js";
 import { silosOf, type Command, type Correct, type InboxState } from "./inbox-handlers.js";
@@ -158,7 +158,8 @@ export function correctedCommand(command: Command, fix: Correct): Command | { re
     if (fix.amount !== undefined) {
       return { reason: `a ${command.kind} has no "amount": correct its "units" and "price"` };
     }
-    const costs: Money | undefined = fix.costs === undefined ? command.costs : fix.costs === 0 ? undefined : fix.costs;
+    const costs: Money | undefined =
+      fix.costs === undefined ? command.costs : fix.costs === zero(command.currency) ? undefined : fix.costs;
     const next = {
       ...command,
       ...(fix.ticker !== undefined ? { ticker: fix.ticker } : {}),
@@ -289,7 +290,7 @@ export function withTelemetry(rebuilt: InboxState, old: InboxState): InboxState 
       ...(was.totalCash !== undefined
         ? {
             totalCash: countedInCents(
-              was.totalCash + (silo.cash - was.cash),
+              asNumber(was.totalCash) + (asNumber(silo.cash) - asNumber(was.cash)),
               `the ${silo.currency} total cash after the replay`,
               silo.currency,
             ),
@@ -354,8 +355,8 @@ export function patchesOf(
     const patch: NonNullable<Decision["patch"]> = {};
     for (const field of PATCH_FIELDS) {
       if (field === "date" && undated.has(line.id)) continue;
-      const now = line[field];
-      const was = original[field];
+      const now = patchValue(line[field]);
+      const was = patchValue(original[field]);
       if (now === undefined && was === undefined) continue;
       if (now === undefined) {
         if (removable.includes(field)) patch[field] = null;
@@ -376,6 +377,10 @@ export function patchesOf(
  * The names of the rejected batches the applied ones refer to (`replaces:` and `discard`): they were awaiting an answer
  * when the batch was applied, and the replay has no `inbox/rejected/` to tell it so.
  */
+/** A field of a line as a correction patch holds it: an amount is its plain number. */
+const patchValue = (value: string | number | Money | null | undefined): string | number | null | undefined =>
+  typeof value === "object" && value !== null ? asNumber(value) : value;
+
 function awaitingOf(parsed: readonly ParsedBatch[]): Set<string> {
   const names = new Set<string>();
   for (const batch of parsed) {

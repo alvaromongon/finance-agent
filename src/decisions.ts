@@ -23,7 +23,7 @@ import {
   SETUP_STATES,
   TREND_BIASES,
 } from "./types.js";
-import { money, type Money } from "./money.js";
+import { asNumber, money, type Money } from "./money.js";
 import type {
   Benchmark,
   Conviction,
@@ -78,14 +78,19 @@ export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx
 export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
 
-export interface Decision {
+/**
+ * One line of the decision log. `C` is the silo's currency, which its money (`costs`, `pnl`, `entry_costs`)
+ * is in (ADR-0017): code that holds the silo's lots and its decisions together takes a `Decision<C>`, and a
+ * line read from the log, whose silo is only known at run time, is a bare `Decision` (`Decision<Currency>`).
+ */
+export interface Decision<C extends Currency = Currency> {
   id: string;
   /** Date of the event, YYYY-MM-DD. */
   date: string;
   /** `null` in money flows (deposit, withdrawal, fx_conversion). */
   ticker: Ticker | null;
   /** Silo. In `fx_conversion`, the one the money comes from. */
-  currency: Currency;
+  currency: C;
   origin: DecisionOrigin;
   source: DecisionSource;
   type: DecisionType;
@@ -126,9 +131,9 @@ export interface Decision {
   result?: RepairResult;
   differences?: string[];
   /** Costs in the silo currency (FX fee, transaction tax). */
-  costs?: Money;
+  costs?: Money<C>;
   /** `exit`: realized result, negative on a loss. Used by the two-month rule. */
-  pnl?: Money;
+  pnl?: Money<C>;
   /** Stop at entry: the base of R. In an `exit`, the one of its lot (part of the lot snapshot). */
   stop_initial?: number;
   /** `adjust_stop`: stop level after the adjustment. */
@@ -185,7 +190,7 @@ export interface Decision {
    * Snapshot: this exit's share of the lot's entry costs, in the silo currency: pro rata to the units
    * it sold, the remainder on the last exit of the lot, so the exits add up to the lot's costs.
    */
-  entry_costs?: Money;
+  entry_costs?: Money<C>;
   /** Snapshot: date of the entry, YYYY-MM-DD. */
   entry_date?: string;
   /**
@@ -202,6 +207,13 @@ export interface Decision {
   /** Linked Markdown log, relative to the data directory (VAULT_PROJECT_DIR). */
   log_link?: string;
 }
+
+/**
+ * True if the line is of the silo `currency`. The one check that makes a line read from the log, whose silo is only
+ * known at run time, a `Decision<C>`: its money is then `Money<C>`, the same type as the silo's own.
+ */
+export const isInSilo = <C extends Currency>(decision: Decision, currency: C): decision is Decision<C> =>
+  decision.currency === currency;
 
 /** How a candidate entered the screening (ADR-0012); carried by the candidate, the result and the decision. */
 export type ScreeningSelection = Pick<Decision, "rank" | "score" | "exploration">;
@@ -608,6 +620,8 @@ export function validateDecision(raw: unknown): Decision {
   }
   // Canonical tickers: a decision written in another case reads as its upper-case value.
   const decision = raw as unknown as Decision;
+  // The three amounts are still the numbers the line was written with, not yet whole cents.
+  const written = raw as unknown as Partial<Record<"costs" | "pnl" | "entry_costs", number | null>>;
   const { benchmark, ...rest } = decision;
   // A benchmark whose ticker does not parse is dropped, not the whole line (it is a side measurement, and
   // the line was accepted before the ticker became a parsed value): the decision keeps its other fields.
@@ -622,9 +636,9 @@ export function validateDecision(raw: unknown): Decision {
       ? { patch: { ...decision.patch, ticker: parseTicker(decision.patch.ticker) } }
       : {}),
     // Settled money is whole cents from here on, whatever the line or the owner wrote.
-    ...(decision.costs != null ? { costs: money(decision.costs, decision.currency) } : {}),
-    ...(decision.pnl != null ? { pnl: money(decision.pnl, decision.currency) } : {}),
-    ...(decision.entry_costs != null ? { entry_costs: money(decision.entry_costs, decision.currency) } : {}),
+    ...(written.costs != null ? { costs: money(written.costs, decision.currency) } : {}),
+    ...(written.pnl != null ? { pnl: money(written.pnl, decision.currency) } : {}),
+    ...(written.entry_costs != null ? { entry_costs: money(written.entry_costs, decision.currency) } : {}),
     ...(benchmark && benchmarkTicker && "ticker" in benchmarkTicker
       ? { benchmark: { ...benchmark, ticker: benchmarkTicker.ticker } }
       : {}),
@@ -794,11 +808,11 @@ export function twoMonthRuleWarning(
         d.type === "exit" &&
         d.ticker === ticker &&
         d.pnl != null &&
-        d.pnl < 0 &&
+        asNumber(d.pnl) < 0 &&
         d.date <= date &&
         addMonths(d.date, 2) > date,
     )
-    .map((d) => ({ pnl: d.pnl!, currency: d.currency, date: d.date, until: addMonths(d.date, 2) }));
+    .map((d) => ({ pnl: asNumber(d.pnl!), currency: d.currency, date: d.date, until: addMonths(d.date, 2) }));
   return losses.length === 0 ? null : m.twoMonthRule(ticker, losses);
 }
 
@@ -915,10 +929,12 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
     throw new Error(`Invalid decision:record input:\n- ${errors.join("\n- ")}`);
   }
   const input = raw as unknown as OwnerDecisionInput;
+  // Still the number the owner wrote, not yet whole cents.
+  const written = raw as { costs?: number | null };
   return {
     ...input,
     ...(has("ticker") ? { ticker: parseTicker(input.ticker) } : {}),
-    ...(input.costs != null ? { costs: money(input.costs, input.currency) } : {}),
+    ...(written.costs != null ? { costs: money(written.costs, input.currency) } : {}),
   };
 }
 

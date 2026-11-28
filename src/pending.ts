@@ -6,6 +6,7 @@
 // Closing a pending escalation is not done here (#141): it is a `resolve` command dropped in inbox/ (ADR-0018), the
 // only way to change the list. Recording the answer and closing the escalation are two things: the first writes the
 // decision log and the email, the second the store.
+import { asNumber } from "./money.js";
 import { validateRecommendation } from "./claude-analyst.js";
 import { siloValue } from "./utils/sizing.js";
 import { recordDecision } from "./decision.js";
@@ -65,7 +66,7 @@ async function buildSignal(filename: string): Promise<Signal> {
     price: meta.price,
     entry,
     position,
-    cash: portfolio.cash,
+    cash: asNumber(portfolio.cash),
     // The silo is valued at resolve time: the size is computed on the current state.
     siloValue: siloValue(portfolio),
     // Snapshot from the detection date (ADR-0006), not from resolve time.

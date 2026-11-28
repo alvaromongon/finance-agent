@@ -3,7 +3,7 @@
  * what each exit carries. Hand-calculated expectations; the inbox that uses it is tested in
  * inbox-handlers.test.ts and inbox-ingest.test.ts.
  */
-import { addCounted, money, zero, type Money } from "../money.js";
+import { addCounted, asNumber, money, zero, type Money } from "../money.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { planSale, type SalePlanInput, SaleRefusal } from "../utils/portfolio-lots.js";
@@ -305,7 +305,7 @@ describe("planSale: what each exit carries", () => {
       ];
       const shares = planSale(flip, sale(2, { price: 100, pnl: money(90, "EUR") }), new Map());
       assert.equal(
-        shares.reduce((sum, s) => sum + s.pnl, 0),
+        shares.reduce((sum, s) => sum + asNumber(s.pnl), 0),
         90,
       );
       assert.deepEqual(
@@ -351,7 +351,7 @@ describe("planSale: what each exit carries", () => {
     const l = lot("a", 3, { entryCosts: money(1, "EUR") });
     const prior = new Map<string, Money>();
     let current = l;
-    const shares: (number | undefined)[] = [];
+    const shares: (Money | undefined)[] = [];
     for (let i = 0; i < 3; i++) {
       const [share] = planSale([current], sale(1), prior);
       shares.push(share.entryCosts);
@@ -420,10 +420,10 @@ describe("planSale: the costs of a sale never go negative (BLOCKING of the 4th r
 });
 
 describe("planSale: a lot's entry costs shared across several partial sales", () => {
-  const sellInParts = (entryCosts: Money, entryUnits: number, parts: number[]): number[] => {
+  const sellInParts = (entryCosts: Money, entryUnits: number, parts: number[]): Money[] => {
     let current = lot("a", entryUnits, { entryCosts });
     const prior = new Map<string, Money>();
-    const shares: number[] = [];
+    const shares: Money[] = [];
     for (const units of parts) {
       const [share] = planSale([current], sale(units), prior);
       shares.push(share.entryCosts!);
@@ -444,11 +444,11 @@ describe("planSale: a lot's entry costs shared across several partial sales", ()
     for (const [costs, units, parts] of cases) {
       const shares = sellInParts(money(costs, "EUR"), units, parts);
       assert.ok(
-        shares.every((x) => x >= 0),
+        shares.every((x) => asNumber(x) >= 0),
         `${costs} ${JSON.stringify(parts)}: ${JSON.stringify(shares)}`,
       );
       assert.equal(
-        Math.round(shares.reduce((a, b) => a + b, 0) * 100),
+        Math.round(shares.reduce((a, b) => a + asNumber(b), 0) * 100),
         Math.round(costs * 100),
         `${costs} ${JSON.stringify(parts)}`,
       );

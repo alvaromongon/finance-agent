@@ -153,6 +153,13 @@ export interface PortfolioSnapshot<C extends Currency = Currency> {
 }
 
 /**
+ * A silo of either currency, as the union of the two: what a loop over both silos holds, so that each element is
+ * one silo's snapshot and `silo.currency === "EUR"` narrows its amounts to `Money<"EUR">`. Not the same as
+ * `PortfolioSnapshot` (`PortfolioSnapshot<Currency>`), whose amounts and currency are not tied to each other.
+ */
+export type AnySilo = { [C in Currency]: PortfolioSnapshot<C> }[Currency];
+
+/**
  * Heartbeat triggers. All escalate to the reasoner and count for the cooldown:
  * `setup` is a candidate with a triggered entry setup (ADR-0013);
  * `approaching_stop` and `big_move` monitor the risk of held and watched assets.

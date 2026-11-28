@@ -7,7 +7,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../../config.js";
 import { benchmarkFields, buildDecision, type Decision, type DecisionOrigin } from "../../decisions.js";
-import { exactAmount, money } from "../../money.js";
+import { asNumber, exactAmount, money } from "../../money.js";
 import { readPortfolio, requireReadable } from "../../portfolio-store.js";
 import { parseTicker } from "../../ticker.js";
 import type { Currency, Lot } from "../../types.js";
@@ -216,7 +216,7 @@ function applyLotChange(md: string, currency: Currency, lots: readonly Lot[], ch
       set("entryUnits", num(lot.entryUnits, 0));
       set("entryPrice", num(lot.entryPrice, 2));
       set("initialStop", lot.initialStop == null ? NONE : num(lot.initialStop, 2));
-      set("entryCosts", lot.entryCosts == null ? NONE : num(lot.entryCosts, 2));
+      set("entryCosts", lot.entryCosts == null ? NONE : num(asNumber(lot.entryCosts), 2));
       set("origin", lot.origin);
       set("rulesVersion", lot.rulesVersion);
       set("rulesViolations", lot.rulesViolations.length > 0 ? lot.rulesViolations.join(", ") : NONE);

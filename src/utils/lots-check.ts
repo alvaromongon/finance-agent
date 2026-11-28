@@ -5,10 +5,10 @@
 // Two levels, because the heartbeat must not read the decision log on its alerting path:
 // `volumeMismatches` needs `portfolio.md` alone (each lot names its Ticker), `lotsMismatches` adds
 // every check that needs the log.
-import type { Decision } from "../decisions.js";
-import type { Lot, PortfolioSnapshot, Position } from "../types.js";
+import { isInSilo, type Decision } from "../decisions.js";
+import type { Currency, Lot, PortfolioSnapshot, Position } from "../types.js";
 import type { Ticker } from "../ticker.js";
-import { unitsWorthHalfACent } from "../money.js";
+import { asNumber, type Money, unitsWorthHalfACent } from "../money.js";
 import { UNITS_TOLERANCE } from "./units.js";
 import { portfolioWhere } from "./portfolio-where.js";
 
@@ -82,7 +82,10 @@ function volumeProblems(portfolio: PortfolioSnapshot, unreadable: ReadonlySet<Ti
  * An entry is open when no exit citing it has `lot_units_left` = 0. Entries whose log line carries no
  * `units` predate the lot contract (#52) and are out of that check (`entriesWithoutLot`).
  */
-export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly Decision[]): string[] {
+export function lotsMismatches<C extends Currency>(
+  portfolio: PortfolioSnapshot<C>,
+  decisions: readonly Decision[],
+): string[] {
   const at = where(portfolio);
   const byId = new Map(decisions.map((d) => [d.id, d]));
   const problems: string[] = [];
@@ -109,7 +112,7 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
       );
     } else if (decision.ticker == null) {
       problems.push(`${at}: lot ${lot.entryId} is an entry in the decision log that has no ticker`);
-    } else if (decision.currency !== portfolio.currency) {
+    } else if (!isInSilo(decision, portfolio.currency)) {
       problems.push(
         `${at}: lot ${lot.entryId} is an entry of ${decision.ticker} recorded in ${decision.currency}, not ${portfolio.currency}`,
       );
@@ -149,8 +152,10 @@ export function lotsMismatches(portfolio: PortfolioSnapshot, decisions: readonly
   return problems;
 }
 
+const amountText = (amount: Money | null): string => (amount === null ? "—" : String(asNumber(amount)));
+
 /** What the lot's snapshot of its entry says differently from the entry in the log. */
-function snapshotDifferences(lot: Lot, entry: Decision): string[] {
+function snapshotDifferences<C extends Currency>(lot: Lot<C>, entry: Decision<C>): string[] {
   const differences: string[] = [];
   const num = (field: string, lotValue: number | null, logValue: number | null | undefined, tolerance: number) => {
     const a = lotValue ?? null;
@@ -177,7 +182,7 @@ function snapshotDifferences(lot: Lot, entry: Decision): string[] {
   const lotCosts = lot.entryCosts ?? null;
   const logCosts = entry.costs ?? null;
   if (lotCosts !== logCosts) {
-    differences.push(`Entry costs ${lotCosts ?? "—"} differs from ${logCosts ?? "—"}`);
+    differences.push(`Entry costs ${amountText(lotCosts)} differs from ${amountText(logCosts)}`);
   }
   text("Date", lot.date, entry.date);
   text("Origin", lot.origin, entry.origin);
@@ -271,7 +276,12 @@ export function splitRatio(scaled: SplitShape, original: SplitShape, unitsTolera
   return follows(scaled.price, original.price) && follows(scaled.stop, original.stop) ? r : null;
 }
 
-function isSplitOf(lot: Lot, entry: Decision, logUnits: number | null, unitsTolerance: number): boolean {
+function isSplitOf<C extends Currency>(
+  lot: Lot<C>,
+  entry: Decision<C>,
+  logUnits: number | null,
+  unitsTolerance: number,
+): boolean {
   if (logUnits === null || entry.price == null) return false;
   const lotShape = { units: lot.entryUnits, price: lot.entryPrice, stop: lot.initialStop };
   return (

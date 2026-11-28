@@ -9,7 +9,7 @@
 // - The watchlist (#140) is part of the store too: `watchlist` (the entries) and `starting_watchlist` (the entries the
 //   store began with, from `watchlist.md`, what a correction and the repair replay the `watch` and `stop_watching`
 //   commands over). `renderWatchlistView` is `watchlist.md`, generated from it.
-import { canCountInCents, money, type Money } from "../money.js";
+import { asNumber, canCountInCents, money, type Money } from "../money.js";
 import { checkTicker, type Ticker } from "../ticker.js";
 import yaml from "js-yaml";
 import {
@@ -127,7 +127,8 @@ export function plainDecimal(n: number): string {
 
 const decimalOrNull = (n: number | null): string | null => (n === null ? null : plainDecimal(n));
 
-const amountText = (amount: number, currency: Currency): string => `${amount.toFixed(2)} ${currency}`;
+const amountText = <C extends Currency>(amount: Money<C>, currency: C): string =>
+  `${asNumber(amount).toFixed(2)} ${currency}`;
 
 // ─── Encoding ─────────────────────────────────────────────────────────────────
 
@@ -527,7 +528,8 @@ export function renderView(store: PortfolioStore): string {
     const silo = store.silos[currency];
     if (silo === undefined) continue;
     const num = numberFormat(currency);
-    const money2 = (n: number): string => (currency === "EUR" ? `${num(n, 2)} €` : `$${num(n, 2)}`);
+    const money2 = (amount: Money): string =>
+      currency === "EUR" ? `${num(asNumber(amount), 2)} €` : `$${num(asNumber(amount), 2)}`;
     lines.push(
       `## ${currency} — Cash`,
       "",
@@ -548,7 +550,7 @@ export function renderView(store: PortfolioStore): string {
           num(p.volume, 0),
           num(p.avgPrice, 2),
           num(p.currentPrice, 2),
-          num(p.pl, 2),
+          num(asNumber(p.pl), 2),
           numberOrNone(p.stopLoss, (n) => num(n, 2)),
         ]),
       ),
@@ -565,7 +567,7 @@ export function renderView(store: PortfolioStore): string {
           num(l.entryUnits, 0),
           num(l.entryPrice, 2),
           numberOrNone(l.initialStop, (n) => num(n, 2)),
-          numberOrNone(l.entryCosts, (n) => num(n, 2)),
+          numberOrNone(l.entryCosts === null ? null : asNumber(l.entryCosts), (n) => num(n, 2)),
           l.origin,
           l.rulesVersion === "" ? NONE : l.rulesVersion,
           l.rulesViolations.length > 0 ? l.rulesViolations.join(", ") : NONE,
