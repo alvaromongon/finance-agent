@@ -91,10 +91,11 @@ connected to the routine to push there (the routine settings have no option for 
 reads a session branch: the next heartbeat, the email relay and the Monday briefing all look at
 the default branch.
 
-The paths each flow commits are the same as in the Actions callers: `logs/` and `inbox/` for
-escalations (the routine commits no state: the `resolve` batch is applied by the inbox workflow; the briefing and the
-screening also drop their watchlist proposals there, which `inbox:ingest` applies); plus `tesis/` for the briefing and the
-screening, and `screening-log.md` for the screening.
+The paths each flow commits are the same as in the Actions callers, and never state (the store and the views generated
+from it): `logs/` and `inbox/` for escalations (the `resolve` batch is applied by the inbox workflow); the briefing adds
+`telemetry/` (the prices it refreshes) and `tesis/`, and the screening `tesis/` and `screening-log.md`. The briefing and
+the screening drop their watchlist proposals in `inbox/`, which `inbox:ingest` applies
+([why](../README.md#state-writes-never-overlap)).
 
 ## Waking the routine
 
