@@ -8,14 +8,7 @@
 //    Shared by index.ts ("api" backend) and pending.ts ("handoff" backend), so
 //    both produce exactly the same for the same Recommendation.
 // 2. `recordOwnerDecision` (`npm run decision:record`): the owner's stop adjustments, deposits and withdrawals, so nobody edits the JSONL by hand. Trades go only through the inbox (ADR-0018, #152).
-import {
-  appendDecisions,
-  readAccountEnv,
-  readDecisionHistory,
-  readDecisions,
-  readRulesVersion,
-  writeDecisionLog,
-} from "./vault-io.js";
+import { appendDecisions, readDecisionHistory, readDecisions, readRulesVersion, writeDecisionLog } from "./vault-io.js";
 import { blockCodes, evaluateRecommendation } from "./utils/sizing.js";
 import { sendAlert } from "./mailer.js";
 import { YahooFinanceProvider } from "./providers/yahoo-finance.js";
@@ -32,7 +25,7 @@ import {
 } from "./decisions.js";
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
 import { portfolioWhere } from "./utils/portfolio-where.js";
-import { changeCash } from "./portfolio-store.js";
+import { changeCash, readAccountEnv } from "./portfolio-store.js";
 import type { Currency, Recommendation, Signal } from "./types.js";
 import { tickerFileStem } from "./ticker.js";
 import type { StopProposal } from "./utils/stop-proposals.js";

@@ -483,8 +483,15 @@ describe("the portfolio state port", () => {
         await seed();
         await rm(file());
         await store.recordPrices("USD", TCK_AT_110);
-        const { readAccountEnv } = await import("../vault-io.js");
-        assert.equal(await readAccountEnv(), "demo");
+        assert.equal(await store.readAccountEnv(), "demo");
+      });
+
+      it("account_env is the text's while there is no store, and none with neither (#146)", async () => {
+        assert.equal(await store.readAccountEnv(), undefined);
+        await put(
+          portfolioMd([TCK_ROW], [TCK_LOT]).replace("schema_version: 2\n", "schema_version: 2\naccount_env: real\n"),
+        );
+        assert.equal(await store.readAccountEnv(), "real");
       });
 
       it("a store that does not read is not the base of a price: nothing is written and the run goes on", async () => {
