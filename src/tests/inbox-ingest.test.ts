@@ -98,6 +98,30 @@ describe("inbox:ingest", () => {
       await drop("2026-11-12.yaml", batch("command: deposit\namount: 250.50 EUR", BUY("costs: 1.50 EUR"), STOP));
     });
 
+    it("leaves the lines of the deposit and the buy that the reconstruction of the silo counts (#197)", async () => {
+      assert.equal((await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"))).exitCode, 0);
+      const { reconstructSilo } = await import("../utils/silo-performance.js");
+      const { readDecisionHistory } = await import("../vault-io.js");
+      const { weekdayBars } = await import("./fixtures/weekday-bars.js");
+      const closes = Array.from({ length: 50 }, () => 100);
+      const history = reconstructSilo({
+        currency: "EUR",
+        portfolio: (await store.readPortfolio("EUR")).portfolio,
+        decisions: await readDecisionHistory(),
+        start: "2026-09-01",
+        asOf: "2026-11-12",
+        bars: new Map([
+          ["SAP.DE", weekdayBars("2026-09-01", closes)],
+          ["EXSA.DE", weekdayBars("2026-09-01", closes)],
+        ]),
+        reference: "EXSA.DE",
+      });
+      // Today's 1049.00 less the deposit (+250.50) and the buy (-201.50) is the 1000.00 the silo began with.
+      assert.deepEqual(history.warnings, []);
+      assert.equal(history.base.value, 1000);
+      assert.deepEqual(history.flows, [{ date: "2026-11-12", amount: 250.5 }]);
+    });
+
     it("is applied to the store, moved to applied/, and the view is generated from the store", async () => {
       const result = await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"));
       assert.equal(result.exitCode, 0);
@@ -1029,17 +1053,16 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await snapshot(), before);
     });
 
-    it("what decision:record still records keeps working beside the inbox: a deposit moves the store's cash, and the lots check stays clean", async () => {
+    it("decision:record refuses a deposit, and changes nothing: the cash is moved by the inbox's deposit command (#197)", async () => {
       await drop("a.yaml", batch(BUY(), STOP));
       await inbox.ingestInbox();
+      const before = await snapshot();
       const { recordOwnerDecision } = await import("../decision.js");
-      await recordOwnerDecision({ type: "deposit", currency: "EUR", amount: 50 }, provider, "2026-09-21");
-      const eur = (await store.readPortfolio("EUR")).portfolio;
-      assert.equal(eur.cash, 1000 - 200 + 50);
-      assert.match(await read("portfolio.md"), /\| Available cash \| 850,00 € \|/);
-      const { lotsMismatches } = await import("../utils/lots-check.js");
-      const { readDecisionHistory } = await import("../vault-io.js");
-      assert.deepEqual(lotsMismatches(eur, await readDecisionHistory()), []);
+      await assert.rejects(
+        recordOwnerDecision({ type: "deposit", currency: "EUR", amount: 50 }, provider, "2026-09-21"),
+        /a deposit is told to the engine with a deposit command in inbox\//,
+      );
+      assert.deepEqual(await snapshot(), before);
     });
 
     it("a sale over two lots writes one exit per lot, and the two-month rule sees the loss of the second", async () => {

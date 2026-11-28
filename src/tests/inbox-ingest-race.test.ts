@@ -253,17 +253,17 @@ describe("inbox:ingest as a compare-and-swap", () => {
     assert.equal(seen.has("state-commit.ts"), false, "stop detection takes no lock and waits for no write");
   });
 
-  describe("decision:record, the other command that moves the store's cash", () => {
+  describe("decision:record, the other command that writes the log", () => {
     const provider = { getPrices: async () => new Map<string, number>(), getHistorical: async () => [] };
-    const deposit = { type: "deposit", currency: "EUR", amount: 50, date: "2026-11-12" };
+    const adjustment = { type: "adjust_stop", ticker: "SAP.DE", currency: "EUR", stop: 90, date: "2026-11-12" };
     const lines = async () => (await readFile(inRemote("logs", "decisions.jsonl"), "utf8")).trim().split("\n");
 
-    it("a deposit that loses the race is recorded over the new state: both cash movements stand, one log line", async () => {
+    it("a stop adjustment that loses the race is recorded over the new state: the other run's cash stands, one log line", async () => {
       const { recordCommitted } = await import("../decision-record.js");
       remote.raceOnce(setCash("1300.00 EUR"));
-      const [decision] = await recordCommitted(deposit, remote, 3, provider);
-      assert.equal(decision.type, "deposit");
-      assert.equal(await eurCash(), "1350.00 EUR");
+      const [decision] = await recordCommitted(adjustment, remote, 3, provider);
+      assert.equal(decision.type, "adjust_stop");
+      assert.equal(await eurCash(), "1300.00 EUR");
       assert.equal((await lines()).length, 1, "the lost attempt's log line was thrown away with it");
       assert.equal(remote.published.length, 1);
     });
@@ -271,7 +271,7 @@ describe("inbox:ingest as a compare-and-swap", () => {
     it("that keeps losing records nothing and says so: the owner says it again", async () => {
       const { recordCommitted } = await import("../decision-record.js");
       for (let i = 0; i < 2; i++) remote.raceOnce(setCash("1300.00 EUR"));
-      await assert.rejects(recordCommitted(deposit, remote, 2, provider), /Nothing was recorded.*Say it again/);
+      await assert.rejects(recordCommitted(adjustment, remote, 2, provider), /Nothing was recorded.*Say it again/);
       assert.equal(await eurCash(), "1300.00 EUR");
       await assert.rejects(lines(), /ENOENT/);
     });

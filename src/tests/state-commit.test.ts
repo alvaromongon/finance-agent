@@ -334,15 +334,13 @@ describe("GitStateRemote, over a real git remote in a temporary folder", () => {
 
 describe("every writer of the engine's store", () => {
   /**
-   * The modules that write the store (call `saveStore`, `changeCash` or `seedStore`) and how each
+   * The modules that write the store (call `saveStore` or `seedStore`) and how each
    * one's write is serialized with the others (#134). The heartbeat and the briefing are not among them (#133): they
    * record the last prices as telemetry (`recordPrices`) and never write the store. A new writer fails this test until it is listed here with its
    * answer.
    */
   const WRITERS: Record<string, string> = {
     "inbox.ts": "compare-and-swap: `ingestCommitted` (`inbox:ingest`)",
-    "decision.ts":
-      "compare-and-swap: `recordCommitted` in `decision-record.ts` (`decision:record`: deposits, withdrawals, conversions)",
     "state-repair.ts": "compare-and-swap: `repairCommitted` (`state:repair`, #139)",
   };
 
@@ -357,7 +355,7 @@ describe("every writer of the engine's store", () => {
       const text = readFileSync(join(src, entry), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/^\s*\/\/.*$/gm, "");
-      if (/\b(saveStore|changeCash|seedStore)\(/.test(text)) found.push(entry);
+      if (/\b(saveStore|seedStore)\(/.test(text)) found.push(entry);
     }
     assert.deepEqual(found.sort(), Object.keys(WRITERS).sort());
   });

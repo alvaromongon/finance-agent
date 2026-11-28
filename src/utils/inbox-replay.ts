@@ -11,7 +11,7 @@
 // What a replay is not: it does not know the watchlist, the proposals or the prices of the day a batch was applied,
 // so the origin and the rules a lot broke come from the decision log (`restoreMetadata`), and a store that did
 // not start empty, or whose files were applied in an order other than the order of their names, does not replay to
-// itself: `stateDifferences` says so, and neither a correction nor the repair touches such a store.
+// itself: `stateDifferences` says so, and only the repair refuses such a store (a correction no longer checks it).
 import { CURRENCIES, type Currency, type Lot, type PortfolioSnapshot, type Position } from "../types.js";
 import { PATCH_FIELDS, type Decision, type PatchField } from "../decisions.js";
 import { asNumber, countedInCents, formatMoney, zero, type Money } from "../money.js";

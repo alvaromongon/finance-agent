@@ -51,7 +51,6 @@ import {
 import { volumeMismatches } from "./utils/lots-check.js";
 import { skippedWarner } from "./utils/warn-skipped.js";
 import { stalenessOf, type Staleness } from "./utils/staleness.js";
-import { addCounted, asNumber, countedInCents, formatMoney } from "./money.js";
 import {
   assertPortfolioSections,
   assertSchemaVersion,
@@ -427,50 +426,6 @@ export function ignoringLots<C extends Currency>(read: PortfolioRead<C>): Portfo
 }
 
 // ─── Writing ──────────────────────────────────────────────────────────────────
-
-/**
- * The silo with its cash (and its total cash, when it has one) moved by `delta`, in cents. Refuses, in words, a
- * movement that takes the available cash below zero: the cash is the store's, so there is no guessing it away.
- */
-function withCashChange<C extends Currency>(silo: PortfolioSnapshot<C>, delta: number): PortfolioSnapshot<C> {
-  if (delta === 0) return silo;
-  const by = countedInCents(delta, `the ${silo.currency} cash movement`, silo.currency);
-  if (asNumber(silo.cash) + asNumber(by) < 0) {
-    throw new Error(
-      `${STORE_WHERE}: this needs ${formatMoney(Math.abs(asNumber(by)))} ${silo.currency}, more than the available cash of ` +
-        `${formatMoney(silo.cash)} ${silo.currency} (nothing was recorded)`,
-    );
-  }
-  return {
-    ...silo,
-    cash: addCounted(silo.cash, by, `the ${silo.currency} cash after the movement`),
-    ...(silo.totalCash !== undefined
-      ? { totalCash: addCounted(silo.totalCash, by, `the ${silo.currency} total cash after the movement`) }
-      : {}),
-  };
-}
-
-/**
- * Moves the cash of the silos of the store, all in one write (a deposit, a withdrawal or a conversion told to
- * `decision:record`, #152); `false`, having done nothing, while there is no store (the cash is then the owner's cell of
- * `portfolio.md`). With `dryRun` every refusal comes and nothing is written.
- */
-export async function changeCash(
-  moves: readonly (readonly [Currency, number])[],
-  { dryRun = false } = {},
-): Promise<boolean> {
-  const store = await readStore();
-  if (store === null) return false;
-  let silos = store.silos;
-  for (const [currency, delta] of moves) {
-    silos = {
-      ...silos,
-      [currency]: withCashChange(readFromStore({ ...store, silos }, currency, false).portfolio, delta),
-    };
-  }
-  if (!dryRun) await writeStore({ ...store, silos });
-  return true;
-}
 
 /**
  * Records the prices the heartbeat and the Monday briefing saw (#133). With the store they are telemetry: written to

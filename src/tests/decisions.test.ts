@@ -609,16 +609,18 @@ describe("validateDecision: lot_units_left of an exit (#52)", () => {
 });
 
 describe("validateOwnerInput", () => {
-  it("refuses a buy and a sale, naming the inbox command that replaces them (#152)", () => {
+  it("refuses a buy, a sale, a deposit and a withdrawal, naming the inbox command that replaces them (#152, #197)", () => {
     for (const [type, command] of [
       ["entry", "buy"],
       ["exit", "sale"],
+      ["deposit", "deposit"],
+      ["withdrawal", "withdrawal"],
     ] as const) {
       assert.throws(
         () => validateOwnerInput({ type, ticker: "CAT", currency: "USD", price: 30, units: 2 }),
         (err: Error) =>
           err.message.includes(`a ${command} is told to the engine with a ${command} command in inbox/`) &&
-          err.message.includes("[adjust_stop, deposit, withdrawal]") &&
+          err.message.includes("[adjust_stop]") &&
           !err.message.includes("type must be one of [entry"),
       );
     }
@@ -629,8 +631,8 @@ describe("validateOwnerInput", () => {
       () => validateOwnerInput({ type: "fx_conversion", currency: "EUR", amount: 100, fx_rate: 1.1 }),
       (err: Error) =>
         err.message.includes("a currency conversion is told to the engine with a convert command in inbox/") &&
-        err.message.includes("[adjust_stop, deposit, withdrawal]") &&
-        !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
+        err.message.includes("[adjust_stop]") &&
+        !err.message.includes("type must be one of [adjust_stop]; got"),
     );
   });
 
@@ -639,7 +641,7 @@ describe("validateOwnerInput", () => {
       () => validateOwnerInput({ type: "reconcile", currency: "EUR" }),
       (err: Error) =>
         err.message.includes("a reconciliation is told to the engine with a snapshot command in inbox/") &&
-        err.message.includes("[adjust_stop, deposit, withdrawal]"),
+        err.message.includes("[adjust_stop]"),
     );
   });
 
@@ -648,15 +650,27 @@ describe("validateOwnerInput", () => {
       () => validateOwnerInput({ type: "split", currency: "EUR", ticker: "KO" }),
       (err: Error) =>
         err.message.includes("a split is told to the engine with a split command in inbox/") &&
-        err.message.includes("[adjust_stop, deposit, withdrawal]") &&
-        !err.message.includes("type must be one of [adjust_stop, deposit, withdrawal]; got"),
+        err.message.includes("[adjust_stop]") &&
+        !err.message.includes("type must be one of [adjust_stop]; got"),
     );
   });
 
-  it("refuses the fields of a trade: units and pnl", () => {
+  it("refuses the fields of a trade or a cash flow: units, pnl and amount", () => {
     assert.throws(
-      () => validateOwnerInput({ type: "adjust_stop", ticker: "CAT", currency: "USD", stop: 27, units: 2, pnl: 1 }),
-      (err: Error) => err.message.includes("units does not apply") && err.message.includes("pnl does not apply"),
+      () =>
+        validateOwnerInput({
+          type: "adjust_stop",
+          ticker: "CAT",
+          currency: "USD",
+          stop: 27,
+          units: 2,
+          pnl: 1,
+          amount: 50,
+        }),
+      (err: Error) =>
+        err.message.includes("units does not apply") &&
+        err.message.includes("pnl does not apply") &&
+        err.message.includes("amount does not apply"),
     );
   });
 
@@ -668,10 +682,6 @@ describe("validateOwnerInput", () => {
     assert.throws(
       () => validateOwnerInput({ type: "adjust_stop", currency: "USD" }),
       (err: Error) => err.message.includes("ticker is required") && err.message.includes("stop is required"),
-    );
-    assert.throws(
-      () => validateOwnerInput({ type: "deposit", currency: "EUR", amount: 50, ticker: "X" }),
-      /ticker does not apply/,
     );
     assert.throws(() => validateOwnerInput({ type: "buy_proposal", currency: "EUR" }), /type must be one of/);
   });
@@ -771,7 +781,7 @@ describe("validateDecision: units of an exit (B1 of PR #56)", () => {
 
 describe("validateOwnerInput — money is whole cents (ADR-0017)", () => {
   it("costs given with sub-cent decimals are rounded to the cent", () => {
-    const input = validateOwnerInput({ type: "withdrawal", currency: "EUR", amount: 100, costs: 1.234 });
+    const input = validateOwnerInput({ type: "adjust_stop", ticker: "CAT", currency: "USD", stop: 27, costs: 1.234 });
     assert.equal(input.costs, 1.23);
   });
 });

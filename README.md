@@ -61,7 +61,7 @@ Every variable is documented in [`.env.example`](.env.example). Copy it to `.env
 In GitHub Actions they come from repository variables and secrets.
 
 1. **Data directory.** Copy [`examples/brain/`](examples/brain) to your own repository and set `VAULT_PROJECT_DIR` to it. Fill in:
-   - `inbox/`, where your starting portfolio is a batch of commands, as [`examples/brain/inbox/2026-09-01-start.yaml`](examples/brain/inbox/2026-09-01-start.yaml) is (the demo starts from it): the first `deposit` of a currency creates that silo, so you need no `portfolio.md`, and `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`), kept in sync with your broker ([Portfolio sync](examples/brain/routines/portfolio-sync.md); the [deposit command](docs/input-format.md#inboxyaml)). Every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a split with a `split` command, a stop change with a `set_stop` command (the engine drops its own stop proposals there too, [below](#the-engines-stop-proposals)), a cash flow with `decision:record`, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
+   - `inbox/`, where your starting portfolio is a batch of commands, as [`examples/brain/inbox/2026-09-01-start.yaml`](examples/brain/inbox/2026-09-01-start.yaml) is (the demo starts from it): the first `deposit` of a currency creates that silo, so you need no `portfolio.md`, and `npm run inbox:ingest` makes the engine's own store from it (`state/portfolio.json`), kept in sync with your broker ([Portfolio sync](examples/brain/routines/portfolio-sync.md); the [deposit command](docs/input-format.md#inboxyaml)). Every buy and sale is told with a batch of commands in `inbox/` (the only way a trade is recorded), a currency conversion with a `convert` command, a split with a `split` command, a stop change with a `set_stop` command (the engine drops its own stop proposals there too, [below](#the-engines-stop-proposals)), a deposit or a withdrawal with a `deposit` or `withdrawal` command, and `portfolio.md` is a view the engine generates, overwritten at each change ([format](docs/input-format.md#stateportfoliojson)). A batch the engine rejects is never forgotten: it stays in `inbox/rejected/` and is named in every heartbeat digest until a later batch replaces it (`replaces:`) or discards it (`discard`);
    - `watchlist.md`, the [watchlist](docs/glossary.md#watchlist) you start from: the first `npm run inbox:ingest` seeds the store with it, and from then on the watchlist is engine state, changed with `watch` and `stop_watching` commands in `inbox/` (the weekly screening and the Monday briefing drop theirs there too) and `watchlist.md` is a view the engine generates ([format](docs/input-format.md#stateportfoliojson));
    - `screening-universe.md` and the theses, which you keep editing by hand.
    - The configuration files (`strategies/base.md`, `portfolio-policy.md`, `screening-universe.md` and the `routines/` prompts) are validated each time a run reads them: the engine keeps the last valid version in `state/config/`, runs on it while a file you edited does not validate, and says so in every heartbeat digest and in the Monday briefing email ([the files](docs/input-format.md#configuration-files), [last valid configuration](docs/glossary.md#last-valid-configuration)).
@@ -168,7 +168,7 @@ no workflow) to apply only what you run yourself. A proposal already waiting in 
 
 The engine's state (`state/portfolio.json`, the [store](docs/glossary.md#store), which holds the
 [watchlist](docs/glossary.md#watchlist) too, and the `portfolio.md` and `watchlist.md` views generated
-from it) is written by runs that can start at any time: the three triggers of `inbox.yml` and `decision:record`. The
+from it) is written by runs that can start at any time: the three triggers of `inbox.yml`. The
 heartbeat and the briefing write no state: **prices are [telemetry](docs/glossary.md#telemetry)**, kept in
 `telemetry/prices-<ccy>.json` and shown in the generated `portfolio.md`, never in the store. Any trigger is valid as long as the writes do not overlap
 ([ADR-0018](docs/decisions/0018-commands-are-the-only-way-to-change-state.md)):
@@ -237,7 +237,7 @@ are possible.
 | `npm run monday-briefing`               | Monday briefing (API mode)                                                                                                                |
 | `npm run decisions:evaluate`            | Writes `logs/decisions-evaluation.md`: the SLO report                                                                                     |
 | `npm run decisions:chart`               | Writes `logs/decisions-evaluation.svg`: SLI 1 chart                                                                                       |
-| `npm run decision:record`               | Records a cash flow or a stop adjustment (JSON stdin)                                                                                     |
+| `npm run decision:record`               | Records a stop adjustment (JSON stdin)                                                                                                    |
 | `npm run inbox:check`                   | Checks the batches in `inbox/` against your portfolio                                                                                     |
 | `npm run inbox:ingest`                  | Applies the batches in `inbox/`: all or nothing each                                                                                      |
 | `npm run state:repair`                  | Rebuilds a corrupt `state/portfolio.json` from the decision log and `inbox/applied/`, or refuses ([flow](docs/flows.md#repair-the-state)) |
@@ -245,8 +245,8 @@ are possible.
 | `npm run outbox:send`                   | Sends the queued emails (relay)                                                                                                           |
 | `npm run smoke-test`                    | Connectivity check                                                                                                                        |
 
-`decision:record` takes one JSON event on stdin: `adjust_stop`, `deposit` or `withdrawal`; a buy, a sale and a currency [conversion](docs/glossary.md#conversion) are no longer recorded there but with the `buy`, `sale` and `convert` commands of a batch in `inbox/` (so is a split, with `split`). The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
-gives the JSON for each and the order that keeps the P&L right. What to delete, move and archive
+`decision:record` takes one JSON event on stdin: `adjust_stop`; a buy, a sale, a deposit, a withdrawal and a currency [conversion](docs/glossary.md#conversion) are no longer recorded there but with the `buy`, `sale`, `deposit`, `withdrawal` and `convert` commands of a batch in `inbox/` (so is a split, with `split`). The [portfolio sync guide](examples/brain/routines/portfolio-sync.md)
+gives the example of each and the order that keeps the P&L right. What to delete, move and archive
 in `logs/`, and how `DECISIONS_ARCHIVE_DIR` reads old quarters back: [Log retention](docs/log-retention.md).
 
 ## Docker

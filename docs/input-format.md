@@ -318,11 +318,11 @@ drop a batch of commands in `inbox/` ([below](#inboxyaml)). Commit `state/` with
 
 `decision:record` no longer records a buy or a sale (#152): they are told to the engine with a `buy` or a `sale`
 command in a batch, the only way a trade is recorded; `entry` and `exit` are refused there with a message that names
-the command. What it still records, with the store, writes the store, never the cell of `portfolio.md`: a deposit and a
-withdrawal move the cash. A currency [conversion](glossary.md#conversion) is no longer told there (#135): it is the `convert` command of a batch,
-and `decision:record` refuses an `fx_conversion` with a message that names it. As the inbox does, it refuses (before
-anything is recorded) a movement that would take the cash of a silo below zero. A stop change is `set_stop` in a batch
-(`adjust_stop` only writes the log line).
+the command. Nor does it record a deposit or a withdrawal (#197): they are the `deposit` and `withdrawal` commands of a batch, which
+move the cash and write their line of the log. A currency [conversion](glossary.md#conversion) is no longer told there
+(#135): it is the `convert` command of a batch, and `decision:record` refuses an `fx_conversion` with a message that names
+it. What it still records is the log line of a stop adjustment (`adjust_stop`), and it writes no state: a stop change is
+`set_stop` in a batch.
 
 ```json
 {
@@ -382,7 +382,7 @@ and each difference it found (empty when the broker and the engine agree); a sil
 one: the batches applied whose files are still in `inbox/`, and the decision-log lines of their trades not yet in
 `logs/decisions.jsonl`. `resolved_rejections` lists the [rejected batches](glossary.md#rejected-batch) that a later batch
 replaced or discarded (`file`, the `sha256` of its text, `how`, the batch that settled it as `by`, and `at`): a file of
-`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). `closed_escalations` lists the [pending escalations](glossary.md#pending-escalation) a `resolve` command closed (see _A pending escalation is closed by a command_, below); a file of `logs/pending/` not listed there is still open (a store without the field closed none). `starting_silos` (optional, #139) is the `silos` as the store began, from `portfolio.md`: what a correction and the repair apply the batches of `inbox/applied/` over (a store without it began empty). A cash flow told with `decision:record` is in no batch, so a log that holds one is refused by the repair, which changes nothing. The reader is strict: a number that is not plain decimal, an amount in another currency, a
+`inbox/rejected/` not listed there still awaits an answer (a store without the field settled none). `closed_escalations` lists the [pending escalations](glossary.md#pending-escalation) a `resolve` command closed (see _A pending escalation is closed by a command_, below); a file of `logs/pending/` not listed there is still open (a store without the field closed none). `starting_silos` (optional, #139) is the `silos` as the store began, from `portfolio.md`: what a correction and the repair apply the batches of `inbox/applied/` over (a store without it began empty). The reader is strict: a number that is not plain decimal, an amount in another currency, a
 ticker that does not parse or another `schema_version` is refused, naming the file and the field, instead of read
 partially.
 

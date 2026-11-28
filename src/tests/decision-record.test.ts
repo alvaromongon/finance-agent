@@ -1,7 +1,7 @@
 /**
- * Tests of `decision:record`: what the owner narrates (a stop adjustment, a deposit, a withdrawal, a currency
- * conversion) reaches the decision log with origin, related proposal and silo benchmark computed by the engine, and
- * with the engine's store the cash of its silos. A buy and a sale are not told here but through the inbox (#152).
+ * Tests of `decision:record`: what the owner narrates (a stop adjustment) reaches the decision log with origin,
+ * related proposal and silo benchmark computed by the engine. A buy, a sale, a deposit, a withdrawal, a conversion, a
+ * split and a reconciliation are not told here but through the inbox (#152, #197).
  * Temporary vault, fake provider, no network.
  * Same pattern as pending.test.ts: VAULT_PROJECT_DIR before the first import.
  */
@@ -136,17 +136,21 @@ describe("decision:record (recordOwnerDecision)", () => {
     return adjust;
   };
 
-  describe("a buy and a sale are told through the inbox, no longer here (#152)", () => {
+  describe("what moves the portfolio is told through the inbox, no longer here (#152, #197)", () => {
     for (const [type, command] of [
       ["entry", "buy"],
       ["exit", "sale"],
+      ["deposit", "deposit"],
+      ["withdrawal", "withdrawal"],
     ] as const) {
       it(`a ${type} is refused, naming the ${command} command, and nothing is written`, async () => {
         const log = await readFile(decisionsPath(), "utf8");
         const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
         await assert.rejects(
           recordAll({ type, ticker: "ADBE", currency: "USD", price: 500, units: 1, stop: 440 }),
-          new RegExp(`a ${command} is told to the engine with a ${command} command in inbox/`),
+          new RegExp(
+            `a ${type === "entry" || type === "exit" ? command : type} is told to the engine with a ${command} command in inbox/`,
+          ),
         );
         assert.equal(await readFile(decisionsPath(), "utf8"), log);
         assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
@@ -206,18 +210,6 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.equal(raw.trim().split("\n").length, 4);
   });
 
-  it("a deposit or a withdrawal is a flow without a ticker", async () => {
-    const d = await record({ type: "deposit", currency: "EUR", amount: 50 });
-    assert.equal(d.type, "deposit");
-    assert.equal(d.ticker, null);
-    assert.equal(d.amount, 50);
-
-    const w = await record({ type: "withdrawal", currency: "USD", amount: 20 });
-    assert.equal(w.type, "withdrawal");
-    assert.equal(w.ticker, null);
-    assert.equal(w.origin, "propietario");
-  });
-
   it("an invalid input or one with a nonexistent related_id does not touch the log", async () => {
     const warn = mock.method(console, "warn", () => {});
     try {
@@ -232,61 +224,24 @@ describe("decision:record (recordOwnerDecision)", () => {
     assert.equal((await readLines()).length, 1);
   });
 
-  describe("with the engine's store (#132): the cash is the store's", () => {
-    const storeCash = async (currency: "EUR" | "USD"): Promise<string> =>
-      JSON.parse(await readFile(join(vaultDir, "state", "portfolio.json"), "utf8")).silos[currency].cash;
-    const seed = async () => (await import("../portfolio-store.js")).seedStore(new Date("2026-11-12T00:00:00Z"));
+  it("a deposit with its amount is refused with the same message, and a cash flow leaves the store and the log as they were", async () => {
+    const log = await readFile(decisionsPath(), "utf8");
+    await assert.rejects(
+      recordAll({ type: "deposit", currency: "EUR", amount: 50 }),
+      /a deposit is told to the engine with a deposit command in inbox\//,
+    );
+    await assert.rejects(
+      recordAll({ type: "adjust_stop", ticker: "ADBE", currency: "USD", stop: 470, amount: 50 }),
+      /amount does not apply/,
+    );
+    assert.equal(await readFile(decisionsPath(), "utf8"), log);
+  });
 
-    it("a deposit and a withdrawal move the cash, and the view shows it", async () => {
-      await seed();
-      await recordAll({ type: "deposit", currency: "EUR", amount: 250 });
-      assert.equal(await storeCash("EUR"), "1250.00 EUR");
-      await recordAll({ type: "withdrawal", currency: "EUR", amount: 50.5 });
-      assert.equal(await storeCash("EUR"), "1199.50 EUR");
-      assert.match(await readFile(join(vaultDir, "portfolio.md"), "utf8"), /\| Available cash \| 1199,50 € \|/);
-    });
-
-    it("a withdrawal that leaves the cash below zero is refused before anything is recorded, as the inbox refuses it", async () => {
-      await seed();
-      await assert.rejects(
-        recordAll({ type: "withdrawal", currency: "EUR", amount: 5000 }),
-        /more than the available cash/,
-      );
-      await recordAll({ type: "withdrawal", currency: "EUR", amount: 1000 });
-      assert.equal(await storeCash("EUR"), "0.00 EUR", "all of it can be withdrawn, as the inbox allows");
-      assert.equal((await readLines()).length, 2, "the proposal and the withdrawal of 1000");
-    });
-
-    it("a currency conversion is refused, naming the convert command, with nothing recorded and no cash moved (#135)", async () => {
-      await seed();
-      await assert.rejects(
-        recordAll({ type: "fx_conversion", currency: "EUR", amount: 100, received: 116, costs: 1 }),
-        /a currency conversion is told to the engine with a convert command in inbox\//,
-      );
-      assert.equal((await readLines()).length, 1, "only the proposal of the seed");
-      assert.equal(await storeCash("EUR"), "1000.00 EUR");
-      assert.equal(await storeCash("USD"), "1000.00 USD");
-    });
-
-    it("a store that cannot be written after the log is said to be, and never tells the owner to edit by hand", async () => {
-      await seed();
-      // The temporary file the store is written through is a folder: the write fails, the dry run (which writes nothing) does not.
-      await mkdir(join(vaultDir, "state", `portfolio.json.${process.pid}.tmp`), { recursive: true });
-      const error = await recordAll({ type: "deposit", currency: "EUR", amount: 5 }).then(
-        () => undefined,
-        (err: Error) => err,
-      );
-      assert.match(error?.message ?? "", /the decision IS recorded in the log, but the cash was not updated/);
-      assert.doesNotMatch(error?.message ?? "", /by hand|portfolio\.md was not updated/);
-      assert.match(error?.message ?? "", /deposit or a withdrawal command in inbox\//);
-      assert.equal((await readLines()).length, 2);
-    });
-
-    it("without a store the cash is the owner's cell: a deposit only reaches the log", async () => {
-      const portfolio = await readFile(join(vaultDir, "portfolio.md"), "utf8");
-      await recordAll({ type: "deposit", currency: "EUR", amount: 250 });
-      assert.equal(await readFile(join(vaultDir, "portfolio.md"), "utf8"), portfolio);
-      assert.equal((await readLines()).length, 2);
-    });
+  it("a currency conversion is refused, naming the convert command, with nothing recorded (#135)", async () => {
+    await assert.rejects(
+      recordAll({ type: "fx_conversion", currency: "EUR", amount: 100, received: 116, costs: 1 }),
+      /a currency conversion is told to the engine with a convert command in inbox\//,
+    );
+    assert.equal((await readLines()).length, 1, "only the proposal of the seed");
   });
 });

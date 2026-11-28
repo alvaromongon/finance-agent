@@ -8,7 +8,7 @@
  * first out and writes one exit per lot with its snapshot). Since #152 only the inbox tells the engine
  * a trade, and it writes the origin `propietario`; these tests need `sistema` trades (they count for the
  * cutoff), so they write them with `fixtures/record-trade.ts`, which writes what `decision:record` wrote
- * for a trade before. The deposits go through `decision:record` (`recordOwnerDecision`). The tests that
+ * for a trade before. The deposits are written with it too (`recordDeposit`). The tests that
  * need an exit nothing would write (an oversold lot, an exit from before the snapshot) append the line
  * themselves, with `appendExit`.
  *
@@ -248,18 +248,17 @@ describe("measurable exits: the five R tests of spec #27", () => {
     mock.method(console, "log", () => {});
     mock.method(console, "warn", () => {});
 
-    const { recordOwnerDecision } = await import("../decision.js");
     ({ buildDecision } = await import("../decisions.js"));
     ({ appendDecisions } = await import("../vault-io.js"));
     const { FixturesProvider } = await import("../providers/fixtures.js");
     const provider = new FixturesProvider(market);
-    const { recordTrade } = await import("./fixtures/record-trade.js");
-    // A trade the way `decision:record` wrote it before #152 (fixtures/record-trade.ts); the rest, as it does now.
+    const { recordDeposit, recordTrade } = await import("./fixtures/record-trade.js");
+    // A trade or a deposit the way `decision:record` wrote it before #152 and #197 (fixtures/record-trade.ts).
     record = async (raw) => {
       const { type } = raw as { type: string };
-      return type === "entry" || type === "exit"
-        ? (await recordTrade(raw as import("./fixtures/record-trade.js").TradeInput, provider, TODAY))[0]
-        : (await recordOwnerDecision(raw, provider, TODAY))[0];
+      return type === "deposit"
+        ? (await recordDeposit(raw as Parameters<typeof recordDeposit>[0], provider, TODAY))[0]
+        : (await recordTrade(raw as import("./fixtures/record-trade.js").TradeInput, provider, TODAY))[0];
     };
     ({ loadEvaluationReport } = await import("../decisions-evaluation-run.js"));
     ({ renderDecisionsEvaluation, extractCutBoard } = await import("../utils/decisions-evaluation-render.js"));

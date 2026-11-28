@@ -7,7 +7,7 @@
 //    not blocked, sends the alert.
 //    Shared by index.ts ("api" backend) and pending.ts ("handoff" backend), so
 //    both produce exactly the same for the same Recommendation.
-// 2. `recordOwnerDecision` (`npm run decision:record`): the owner's stop adjustments, deposits and withdrawals, so nobody edits the JSONL by hand. Trades go only through the inbox (ADR-0018, #152).
+// 2. `recordOwnerDecision` (`npm run decision:record`): the owner's stop adjustments, so nobody edits the JSONL by hand. Everything that moves the portfolio goes only through the inbox (ADR-0018, #152, #197).
 import { appendDecisions, readDecisionHistory, readDecisions, readRulesVersion, writeDecisionLog } from "./vault-io.js";
 import { blockCodes, evaluateRecommendation } from "./utils/sizing.js";
 import { sendAlert } from "./mailer.js";
@@ -21,12 +21,10 @@ import {
   twoMonthRuleWarning,
   validateOwnerInput,
   type Decision,
-  type DecisionOrigin,
 } from "./decisions.js";
 import { benchmarkOnDate, type PriceSource } from "./utils/benchmark.js";
-import { portfolioWhere } from "./utils/portfolio-where.js";
-import { changeCash, readAccountEnv } from "./portfolio-store.js";
-import type { Currency, Recommendation, Signal } from "./types.js";
+import { readAccountEnv } from "./portfolio-store.js";
+import type { Recommendation, Signal } from "./types.js";
 import { tickerFileStem } from "./ticker.js";
 import type { StopProposal } from "./utils/stop-proposals.js";
 
@@ -117,14 +115,12 @@ export async function recordDecision(
 export type OwnerDecisionProvider = PriceSource;
 
 /**
- * Records what the owner narrates that is not a trade: a stop adjustment, a deposit or a withdrawal. A buy and a sale are told to the engine only through the inbox (`inbox/`, ADR-0018), which keeps the
- * lots and writes the entry and exit lines of the log as telemetry: `validateOwnerInput` refuses them here. The
- * engine fills in what the owner need not know: id, rules version, silo benchmark and the system proposal an
- * adjustment comes from (which decides the origin, ADR-0009 §8).
- *
- * With the engine's store a deposit or a withdrawal also moves the cash of its silo, as the inbox's
- * deposit and withdrawal commands do: all the checks run before the log is written, and the write that follows is
- * the one the checks tried. Returns the decisions recorded (one).
+ * Records what the owner narrates that is not told through the inbox: a stop adjustment, one line of the log. Everything
+ * that moves the portfolio (a buy, a sale, a deposit, a withdrawal, a conversion, a split) is told to the engine only
+ * through the inbox (`inbox/`, ADR-0018), which keeps the lots and the cash and writes the lines of the log as telemetry:
+ * `validateOwnerInput` refuses them here. The engine fills in what the owner need not know: id, rules version, silo
+ * benchmark and the system proposal an adjustment comes from (which decides the origin, ADR-0009 §8). Returns the
+ * decisions recorded (one).
  */
 export async function recordOwnerDecision(
   raw: unknown,
@@ -141,67 +137,29 @@ export async function recordOwnerDecision(
     benchmarkOnDate(provider, input.currency, date, today),
   ]);
 
-  const common = {
-    date,
-    currency: input.currency,
-    source: "portfolio-sync" as const,
-    ...benchmarkFields(benchmark),
-    rules_version: rulesVersion,
-  };
   const byId = (id: string | undefined) => (id ? history.find((d) => d.id === id) : undefined);
   const explicit = byId(input.related_id);
   if (input.related_id && !explicit) {
     throw new Error(`related_id ${input.related_id} does not exist in logs/decisions.jsonl`);
   }
-  const originFrom = (related: Decision | undefined): DecisionOrigin => input.origin ?? originOf(related);
 
-  let decisions: Decision[];
-  /** A deposit or a withdrawal: the cash the store moves while it exists. */
-  let cashFlow: (readonly [Currency, number])[] | undefined;
-  switch (input.type) {
-    case "adjust_stop": {
-      const ticker = input.ticker!;
-      const proposal = explicit ?? findRelatedProposal(history, { ticker, date, types: ["adjust_stop"] });
-      decisions = [
-        buildDecision({
-          ...common,
-          type: "adjust_stop",
-          ticker,
-          origin: originFrom(proposal),
-          price: input.price,
-          stop: input.stop,
-          related_id: proposal?.id,
-        }),
-      ];
-      break;
-    }
-    case "deposit":
-    case "withdrawal":
-      decisions = [
-        buildDecision({
-          ...common,
-          type: input.type,
-          ticker: null,
-          origin: "propietario",
-          amount: input.amount,
-        }),
-      ];
-      cashFlow = [[input.currency, input.type === "deposit" ? input.amount! : -input.amount!]];
-      break;
-  }
-
-  // With the store the cash is the store's: the flow moves it (the dry run first, so a refusal records nothing).
-  if (cashFlow !== undefined && (await changeCash(cashFlow, { dryRun: true }))) {
-    await appendDecisions(decisions);
-    await changeCash(cashFlow).catch((err: unknown) => {
-      throw new Error(
-        `${portfolioWhere(input.currency)}: the decision IS recorded in the log, but the cash was not updated ` +
-          `(${(err as Error).message}); correct the cash with a deposit or a withdrawal command in inbox/`,
-        { cause: err },
-      );
-    });
-    return decisions;
-  }
+  const ticker = input.ticker!;
+  const proposal = explicit ?? findRelatedProposal(history, { ticker, date, types: ["adjust_stop"] });
+  const decisions = [
+    buildDecision({
+      date,
+      currency: input.currency,
+      source: "portfolio-sync",
+      ...benchmarkFields(benchmark),
+      rules_version: rulesVersion,
+      type: "adjust_stop",
+      ticker,
+      origin: input.origin ?? originOf(proposal),
+      price: input.price,
+      stop: input.stop,
+      related_id: proposal?.id,
+    }),
+  ];
   await appendDecisions(decisions);
   return decisions;
 }
