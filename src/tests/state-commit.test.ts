@@ -344,7 +344,6 @@ describe("every writer of the engine's store", () => {
     "decision.ts":
       "compare-and-swap: `recordCommitted` in `decision-record.ts` (`decision:record`: deposits, withdrawals, conversions)",
     "state-repair.ts": "compare-and-swap: `repairCommitted` (`state:repair`, #139)",
-    "demo.ts": "a throwaway copy of the example brain in a temporary folder: no remote",
   };
 
   it("are exactly these, and each says how its write is serialized", () => {

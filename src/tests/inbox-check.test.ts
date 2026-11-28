@@ -447,7 +447,10 @@ describe("inbox:check", () => {
     it("is refused for a silo the portfolio lacks, a date in the future and a ticker listed twice", async () => {
       await writeFile(join(vaultDir, "portfolio.md"), portfolioMd().split("## USD — Cash")[0], "utf8");
       await drop("a.yaml", batch(SNAP("1 USD", "positions: []")));
-      assert.match((await checkInbox()).lines[0], /command 1, line 3: there is no USD silo in the portfolio$/);
+      assert.match(
+        (await checkInbox()).lines[0],
+        /command 1, line 3: there is no USD silo in the portfolio: deposit first \(the first deposit creates it\)$/,
+      );
       await drop("a.yaml", batch(SNAP("1 EUR", "positions: []", "2099-01-01")));
       assert.match((await checkInbox()).lines[0], /command 1, line 3: the snapshot's date 2099-01-01 is in the future/);
       await drop(
@@ -710,10 +713,13 @@ describe("inbox:check", () => {
   it("a portfolio with only an EUR section gives a reason for each USD command, not a crash (N7)", async () => {
     const eurOnly = portfolioMd().split("## USD — Cash")[0];
     await writeFile(join(vaultDir, "portfolio.md"), eurOnly, "utf8");
-    await drop("a.yaml", batch("command: deposit\namount: 5 EUR", "command: deposit\namount: 5 USD", BUY));
+    await drop("a.yaml", batch("command: deposit\namount: 5 EUR", "command: withdrawal\namount: 5 USD", BUY));
     const { lines, exitCode } = await checkInbox();
     assert.equal(exitCode, 1);
-    assert.match(lines[0], /^inbox\/a\.yaml: command 2, line 5: there is no USD silo in the portfolio$/);
+    assert.match(
+      lines[0],
+      /^inbox\/a\.yaml: command 2, line 5: there is no USD silo in the portfolio: deposit first \(the first deposit creates it\)$/,
+    );
     assert.match(lines[1], /^inbox\/a\.yaml: command 3, line 7: there is no USD silo/);
     assert.equal(lines.length, 3);
   });
@@ -836,10 +842,13 @@ describe("inbox:check", () => {
         await withPortfolio(portfolioMd().split("## USD — Cash")[0]);
         await drop(
           "a.yaml",
-          batch("command: deposit\namount: 5", "command: deposit\namount: 5 USD", "command: deposit\namount: 5 EUR"),
+          batch("command: deposit\namount: 5", "command: withdrawal\namount: 5 USD", "command: deposit\namount: 5 EUR"),
         );
         const { lines } = await checkInbox();
-        assert.match(lineOf(lines, 2)!, /command 2, line 5: there is no USD silo in the portfolio$/);
+        assert.match(
+          lineOf(lines, 2)!,
+          /command 2, line 5: there is no USD silo in the portfolio: deposit first \(the first deposit creates it\)$/,
+        );
         assert.match(lineOf(lines, 3)!, /command 3, line 7: not checked: command 1 could not be read/);
       });
     });

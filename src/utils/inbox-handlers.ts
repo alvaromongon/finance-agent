@@ -422,7 +422,7 @@ const refused = (reason: string): { reason: string } => ({ reason });
 function siloOf<C extends Currency>(state: InboxState, currency: C): PortfolioSnapshot<C> | { reason: string } {
   const silo = (state as Silos)[currency];
   if (silo?.currency !== currency) {
-    return refused(`there is no ${currency} silo in the portfolio`);
+    return refused(`there is no ${currency} silo in the portfolio: deposit first (the first deposit creates it)`);
   }
   return silo;
 }
@@ -462,7 +462,25 @@ const show = (amount: number | Money, currency: Currency): string => `${formatMo
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
-export function deposit<C extends Currency>(state: InboxState, command: Deposit<C>): HandlerResult {
+/**
+ * Adds the cash to the silo of its currency; the first deposit of a currency creates that silo (#196): no positions, no
+ * lots, never compared with the broker, and synced the day of the batch (`inbox:ingest` stamps the time it was applied).
+ */
+export function deposit<C extends Currency>(
+  state: InboxState,
+  command: Deposit<C>,
+  { today }: Pick<BatchContext, "today">,
+): HandlerResult {
+  if ((state as Silos)[command.currency] === undefined) {
+    const empty: PortfolioSnapshot<C> = {
+      currency: command.currency,
+      cash: zero(command.currency),
+      positions: [],
+      lots: [],
+      syncedAt: `${today}T00:00:00.000Z`,
+    };
+    return { state: withSilo(state, movedCash(empty, command.amount, "the deposit")) };
+  }
   const silo = siloOf(state, command.currency);
   if (isRefusal(silo)) return silo;
   return { state: withSilo(state, movedCash(silo, command.amount, "the deposit")) };
@@ -1133,7 +1151,7 @@ export function applyCommand(state: InboxState, command: Command, context: Batch
   try {
     switch (command.kind) {
       case "deposit":
-        return deposit(state, command);
+        return deposit(state, command, context);
       case "withdrawal":
         return withdrawal(state, command);
       case "convert":

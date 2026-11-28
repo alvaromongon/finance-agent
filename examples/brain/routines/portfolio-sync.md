@@ -10,7 +10,8 @@ hand it to a Claude Code session as its instructions. The file format is
 
 ## Before you start: the store
 
-The first `npm run inbox:ingest` makes the engine's own store (`state/portfolio.json`) from `portfolio.md`, which must
+The first `npm run inbox:ingest` makes the engine's own store (`state/portfolio.json`), from a `deposit` batch (the first
+deposit of a currency creates its [silo](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#silo): `inbox/2026-09-01-start.yaml` of this example) or from an old `portfolio.md`, which must
 read whole (a row that does not read is refused, not dropped). From then on **`portfolio.md` is a view the engine
 generates, overwritten at every change: never edit it**, not its cash, not `last_manual_sync`, not a stop, not
 `Lots`. Everything below changes the store. An account is **stale** until you send a `snapshot` of it, and again when its
