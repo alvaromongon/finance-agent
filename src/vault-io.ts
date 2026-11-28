@@ -50,6 +50,7 @@ import type { ScreeningLogRow as ScreeningLogEntry } from "./utils/vault-parser.
 import { readTextFile } from "./utils/fs-text.js";
 import { readWatchlistInStore } from "./portfolio-store.js";
 import { printable } from "./utils/printable.js";
+import { skippedWarner } from "./utils/warn-skipped.js";
 import { checkTicker, tickerFileStem, tickerSlug, type Ticker } from "./ticker.js";
 export type { ScreeningLogEntry };
 
@@ -69,7 +70,7 @@ export async function readRoutinePrompt(
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
 /** What the readers that skip a row they cannot read do with the reason, unless given another sink (ADR-0016). */
-const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING: ${message}`);
+const warnSkipped = skippedWarner("vault-io");
 
 /**
  * The watchlist of the given currency. With the engine's store it is the store's (#140: `watch` and `stop_watching`

@@ -49,6 +49,7 @@ import {
   type PriceTelemetry,
 } from "./utils/price-telemetry.js";
 import { volumeMismatches } from "./utils/lots-check.js";
+import { skippedWarner } from "./utils/warn-skipped.js";
 import { stalenessOf, type Staleness } from "./utils/staleness.js";
 import { addCounted, countedInCents, formatMoney } from "./money.js";
 import {
@@ -252,7 +253,7 @@ function readFromStore<C extends Currency>(store: PortfolioStore, currency: C, w
 }
 
 /** What the flows that skip a row they cannot read do with the reason (ADR-0016). */
-const warnSkipped = (message: string): void => console.warn(`[vault-io] WARNING: ${message}`);
+const warnSkipped = skippedWarner("portfolio-store");
 
 /**
  * Reads the portfolio of one silo. Throws `ENOENT` if there is no `portfolio.md`, and refuses a file that
