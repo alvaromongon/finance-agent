@@ -18,6 +18,14 @@ const problem = (command: string): string => {
 };
 
 describe("inbox format", () => {
+  it("reads a deposit's optional date, as a conversion's, and refuses a withdrawal's (#202)", () => {
+    const { commands, issues } = parseBatch(batch("command: deposit\namount: 5 EUR\ndate: 2026-09-01"));
+    assert.deepEqual(issues, []);
+    assert.deepEqual(commands[0].command, { kind: "deposit", currency: "EUR", amount: 5, date: "2026-09-01" });
+    assert.match(problem("command: deposit\namount: 5 EUR\ndate: 2026-02-30"), /"date" must be a calendar date/);
+    assert.match(problem("command: withdrawal\namount: 5 EUR\ndate: 2026-09-01"), /date/);
+  });
+
   it("reads the commands with their amounts, currency and optional fields", () => {
     const { commands, issues } = parseBatch(
       batch(
