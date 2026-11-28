@@ -203,6 +203,8 @@ interface CashMove {
   line: number;
   currency: Currency;
   amount: Money;
+  /** A deposit's own date (#202), when the command gave one. */
+  date?: string;
 }
 export type CashTrade = (CashMove & { kind: "deposit" }) | (CashMove & { kind: "withdrawal" });
 
@@ -445,6 +447,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         line,
         currency: read.currency,
         amount: read.amount,
+        ...(read.kind === "deposit" && read.date !== undefined ? { date: read.date } : {}),
       })),
       ...splits.map(({ command, line, read, currency }): Trade => ({
         kind: "split",

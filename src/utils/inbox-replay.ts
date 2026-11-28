@@ -491,9 +491,9 @@ function run(
   };
 }
 
-/** A trade whose line is dated the day of the run: the command gave no date (a deposit, a conversion without one). */
+/** A trade whose line is dated the day of the run: the command gave no date (a withdrawal, a deposit or a conversion without one). */
 const isUndated = (trade: Trade): boolean =>
-  trade.kind === "deposit" || trade.kind === "withdrawal" || (trade.kind === "convert" && trade.date === undefined);
+  trade.kind === "withdrawal" || ((trade.kind === "deposit" || trade.kind === "convert") && trade.date === undefined);
 
 const isFailure = (value: Replayed | ReplayFailure): value is ReplayFailure => "reason" in value;
 

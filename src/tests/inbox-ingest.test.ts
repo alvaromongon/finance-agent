@@ -122,6 +122,40 @@ describe("inbox:ingest", () => {
       assert.deepEqual(history.flows, [{ date: "2026-11-12", amount: 250.5 }]);
     });
 
+    it("dates the line of a deposit with its own date, so the rebuilt cash is never negative (#202)", async () => {
+      // The silo starts empty, so the buy is paid by the deposit: dated by the run day, the cash would go negative.
+      await rm(dir("inbox", "2026-11-12.yaml"));
+      await writeFile(dir("portfolio.md"), portfolioMd({ eurCash: "0.00" }), "utf8");
+      await drop(
+        "2026-11-12.yaml",
+        batch("command: deposit\namount: 250.50 EUR\ndate: 2026-09-10", BUY("costs: 1.50 EUR"), STOP),
+      );
+      assert.equal((await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"))).exitCode, 0);
+      const deposit = (await log()).find((l) => l.type === "deposit");
+      assert.equal(deposit?.date, "2026-09-10");
+      const { reconstructSilo } = await import("../utils/silo-performance.js");
+      const { readDecisionHistory } = await import("../vault-io.js");
+      const { weekdayBars } = await import("./fixtures/weekday-bars.js");
+      const closes = Array.from({ length: 50 }, () => 100);
+      const history = reconstructSilo({
+        currency: "EUR",
+        portfolio: (await store.readPortfolio("EUR")).portfolio,
+        decisions: await readDecisionHistory(),
+        start: "2026-09-01",
+        asOf: "2026-11-12",
+        bars: new Map([
+          ["SAP.DE", weekdayBars("2026-09-01", closes)],
+          ["EXSA.DE", weekdayBars("2026-09-01", closes)],
+        ]),
+        reference: "EXSA.DE",
+      });
+      assert.deepEqual(history.warnings, []);
+      assert.equal(history.base.value, 0);
+      assert.deepEqual(history.flows, [{ date: "2026-09-10", amount: 250.5 }]);
+      // Between the deposit and the buy the cash is the base plus the deposit: never below zero.
+      assert.ok(history.days.every((d) => d.value >= 0));
+    });
+
     it("is applied to the store, moved to applied/, and the view is generated from the store", async () => {
       const result = await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"));
       assert.equal(result.exitCode, 0);

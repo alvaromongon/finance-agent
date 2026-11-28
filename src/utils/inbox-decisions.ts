@@ -38,12 +38,13 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
   };
   return trades.flatMap((trade): Decision[] => {
     // A deposit or a withdrawal moved the cash of a silo (#139): its line is what a correction names, and the shadow
-    // portfolio replays. The command has no date: the line is of the day of the run.
+    // portfolio replays. The line is of the deposit's own date (#202), or of the day of the run when it gave none.
     if (trade.kind === "deposit" || trade.kind === "withdrawal") {
+      const day = trade.date ?? context.today;
       return [
         buildDecision({
-          id: nextId(context.today, trade.currency, trade.kind),
-          date: context.today,
+          id: nextId(day, trade.currency, trade.kind),
+          date: day,
           ticker: null,
           currency: trade.currency,
           source: "portfolio-sync",

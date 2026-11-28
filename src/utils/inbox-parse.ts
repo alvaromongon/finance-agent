@@ -82,7 +82,7 @@ const COMMAND_KINDS = [
 ] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 const FIELDS: Record<CommandKind, readonly string[]> = {
-  deposit: ["command", "amount"],
+  deposit: ["command", "amount", "date"],
   withdrawal: ["command", "amount"],
   convert: ["command", "amount", "received", "rate", "costs", "date"],
   buy: ["command", "ticker", "date", "units", "price", "costs"],
@@ -348,8 +348,10 @@ function readCommand(raw: unknown): Command | Unread {
 
   if (kind === "deposit" || kind === "withdrawal") {
     const read = positive(amount("amount", true, true), "amount");
+    // Only a deposit takes a date (#202); a withdrawal's `date` is refused as an unknown field.
+    const when = kind === "deposit" ? date(false) : undefined;
     if (problems.length > 0 || read === undefined) return unread();
-    return { kind, currency: read.currency, amount: money(read.value, read.currency) };
+    return { kind, currency: read.currency, amount: money(read.value, read.currency), ...(when ? { date: when } : {}) };
   }
 
   if (kind === "convert") {

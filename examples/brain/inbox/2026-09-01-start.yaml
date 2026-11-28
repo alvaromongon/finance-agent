@@ -5,8 +5,10 @@ schema_version: 1
 commands:
   - command: deposit
     amount: 1560.00 EUR
+    date: 2026-09-01
   - command: deposit
     amount: 1210.00 USD
+    date: 2026-09-01
   - command: buy
     ticker: SAP.DE
     date: 2026-09-15

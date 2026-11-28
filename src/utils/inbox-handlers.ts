@@ -50,6 +50,8 @@ export interface Deposit<C extends Currency = Currency> {
   kind: "deposit";
   currency: C;
   amount: Money<C>;
+  /** YYYY-MM-DD, when given: the day of the line in the decision log; the day of the run otherwise. */
+  date?: string;
 }
 
 /** Cash out of a silo. */
