@@ -24,7 +24,7 @@ installed in `$ENGINE_DIR` by the SessionStart hook. The system prompt is
 1. Evaluate the decision log first: `npm run --silent decisions:evaluate`. It writes
    `logs/decisions-evaluation.md`, which the briefing prompt reads.
 2. `npm run --silent monday-briefing:prepare > /tmp/briefing-prompt.md`. It refreshes the prices in
-   `portfolio.md` and prints the user prompt. Progress goes to stderr.
+   `telemetry/` and prints the user prompt. Progress goes to stderr.
 3. Read `/tmp/briefing-prompt.md` and write the report to `/tmp/briefing.md`. Use web search for
    the macro and sector section and cite each source; if search fails, say so in that section.
 4. `npm run --silent monday-briefing:finalize < /tmp/briefing.md`. It validates the report, writes the log,
@@ -32,8 +32,9 @@ installed in `$ENGINE_DIR` by the SessionStart hook. The system prompt is
    (the inbox workflow applies it) and queues the email in `logs/outbox/`.
 5. Commit and push (change the `finance-agent/` prefix to your data path):
    ```bash
-   git add -A -- finance-agent/logs/ finance-agent/portfolio.md finance-agent/tesis/
-   # the stops the briefing proposes are a new batch of set_stop commands in inbox/ (never state)
+   # the prices it refreshes are telemetry; the stops it proposes are a new batch of set_stop commands in
+   # inbox/. The routine never commits state: the inbox workflow applies the batches.
+   git add -A -- finance-agent/logs/ finance-agent/telemetry/ finance-agent/tesis/
    [ -d finance-agent/inbox ] && git add -A -- finance-agent/inbox/
    git diff --cached --quiet || git commit -m "chore(logs): Monday briefing $(date -u +%F)"
    git pull --rebase origin <default-branch> && git push origin <default-branch>
