@@ -557,6 +557,16 @@ export async function readPortfolioView(): Promise<string> {
   return readFile(portfolioPath(), "utf8").catch(() => "");
 }
 
+/**
+ * `account_env` (`demo` | `real`) of the portfolio: the store's, or while there is none the one in the text of
+ * `portfolio.md`; `undefined` with neither. A store that does not read gives its last readable copy (#146).
+ */
+export async function readAccountEnv(): Promise<string | undefined> {
+  const { store } = await readLastReadable();
+  const env = store !== null ? store.accountEnv : extractFrontmatter(await readPortfolioView())?.account_env;
+  return typeof env === "string" ? env : undefined;
+}
+
 // ─── The watchlist (#140) ─────────────────────────────────────────────────────
 
 /**

@@ -630,13 +630,6 @@ function parseDecisionLines(raw: string, source: string): Decision[] {
   return decisions;
 }
 
-/** `account_env` from the portfolio.md frontmatter (`demo` | `real`); `undefined` if missing. */
-export async function readAccountEnv(): Promise<string | undefined> {
-  const raw = await readTextFile(join(projectDir(), "portfolio.md")).catch(() => "");
-  const env = extractFrontmatter(raw)?.account_env;
-  return typeof env === "string" ? env : undefined;
-}
-
 /**
  * `version` from the strategies/base.md frontmatter (ADR-0009 §5), read through the configuration port (#142). Without
  * one (the file invalid and no last valid version) no decision is recorded: a decision without a rules version cannot be

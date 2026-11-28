@@ -36,6 +36,17 @@ const STORAGE_LAYER: readonly string[] = [
   "configuration.ts",
 ];
 
+/** The one module that opens `portfolio.md`: the portfolio state port. The rest of the storage layer goes through it (#146). */
+const PORTFOLIO_PORT: readonly string[] = ["portfolio-store.ts"];
+
+/** Whether a source opens `portfolio.md` (builds its path or reads or writes it by name); a comment does not. */
+export function opensPortfolioFile(source: string): boolean {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  return /\b(?:join|resolve|readFile|readTextFile|safeRead|writeFile)\((?:[^()]|\([^()]*\))*["']portfolio\.md["']/.test(
+    code,
+  );
+}
+
 /** What a module imports to read or write a file (`node:fs`) or to parse a stored value (the storage layer's parsers). */
 const FILE_MODULES = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
 const PARSER_MODULES = ["parse", "vault-parser", "portfolio-codec", "portfolio-writer", "fs-text"];
@@ -140,16 +151,11 @@ describe("the state boundary: only the storage layer reads or writes state or pa
     }
   });
 
-  it("no flow reads portfolio.md as a source: nothing outside the storage layer opens the file (#132)", () => {
+  it("only the port opens portfolio.md: no other module, in the storage layer or outside it (#146)", () => {
     // `portfolio.md` is the view the port generates from the store; the port is the only door to the state.
     const named = sources(SRC)
-      .filter((file) => !STORAGE_LAYER.includes(file))
-      .filter((file) => {
-        const code = readFileSync(join(SRC, file), "utf8")
-          .replace(/\/\*[\s\S]*?\*\//g, "")
-          .replace(/^\s*\/\/.*$/gm, "");
-        return /\b(?:join|resolve|readFile|readTextFile|safeRead|writeFile)\([^)]*["']portfolio\.md["']/.test(code);
-      });
+      .filter((file) => !PORTFOLIO_PORT.includes(file))
+      .filter((file) => opensPortfolioFile(readFileSync(join(SRC, file), "utf8")));
     assert.deepEqual(named, []);
   });
 
@@ -159,6 +165,12 @@ describe("the state boundary: only the storage layer reads or writes state or pa
   });
 
   describe("the detector", () => {
+    it("flags a module that opens portfolio.md and not a comment or another file", () => {
+      assert.equal(opensPortfolioFile(`const raw = await readTextFile(join(projectDir(), "portfolio.md"));`), true);
+      assert.equal(opensPortfolioFile(`// readFile(join(dir, "portfolio.md"))`), false);
+      assert.equal(opensPortfolioFile(`await readTextFile(join(projectDir(), "watchlist.md"));`), false);
+    });
+
     it("flags a file system import and an import of a storage parser, value or re-export, in one line or several", () => {
       assert.equal(stateOffences(`import { readFile } from "node:fs/promises";`).length, 1);
       assert.equal(stateOffences(`import { parseMarkdownNumber } from "./utils/parse.js";`).length, 1);
