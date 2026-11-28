@@ -63,7 +63,6 @@ export async function runHeartbeat(currency: Currency, deps: HeartbeatDeps): Pro
   const today = new Date().toISOString().slice(0, 10);
   const digest: HeartbeatDigest = {
     currency,
-    syncedAt: "",
     minAtr: config.strategy.stopMinAtr,
     breaches: [],
     lotsWarnings: [],
@@ -124,7 +123,6 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
     currency,
     { lastReadable: true },
   );
-  digest.syncedAt = portfolio.syncedAt;
   if (storeProblem !== undefined) {
     digest.storeProblem = storeProblem;
     console.warn(`[finance-agent] WARNING, state: ${storeProblem}; watching the last state that read`);

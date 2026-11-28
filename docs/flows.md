@@ -467,7 +467,8 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      summary with the number of each, and exit 1; exit 0 when there is none. A clean batch whose commands leave a
      position they touched (a buy, a sale, a `set_stop` or `clear_stop`) with no stop gets a warning line for it,
      naming the silo, which does not change the exit code. So does each difference a `snapshot` found (see
-     [Apply the inbox](#apply-the-inbox)): the check says what the broker and the engine hold and the size of it.
+     [Apply the inbox](#apply-the-inbox)): the check says what the broker and the engine hold and the size of it. A `strategies/base.md` that does not validate gets the
+     same `WARNING, configuration:` line `inbox:ingest` prints (#194); it never changes what a batch accepts.
 - **Writes**: nothing, neither in `inbox/` nor in the state. The [heartbeat](#heartbeat) never runs a batch: it reads
   only the list of the rejected files, to name them in its digest, so a batch with errors does not affect its stop
   check. The check names the rejected batches awaiting an answer in a line of its own, which does not change the exit

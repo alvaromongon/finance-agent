@@ -35,8 +35,6 @@ import { configurationWarningLines } from "./configuration-warning.js";
 
 export interface HeartbeatDigest {
   currency: Currency;
-  /** Last manual sync of portfolio.md: tells how old the account state is. */
-  syncedAt: string;
   /** Tight-stop warning threshold (STOP_MIN_ATR). */
   minAtr: number;
   breaches: StopBreach[];
@@ -225,7 +223,7 @@ export function renderHeartbeatDigest(
 function breachSection(d: HeartbeatDigest, m: Messages): string[] {
   const fmt = (n: number) => formatNumber(m, n);
   return [
-    ...m.heartbeatDigest.breachIntro(d.syncedAt.slice(0, 10)),
+    ...m.heartbeatDigest.breachIntro,
     ...m.heartbeatDigest.breachHeader,
     ...d.breaches.map(
       (b) =>
@@ -337,7 +335,7 @@ function tightStopSection(d: HeartbeatDigest, m: Messages): string[] {
     ),
     ...t.tightOptions,
     ...(belowEntry.length > 0 ? t.tightBelowEntry(belowEntry.map((s) => s.ticker).join(", ")) : []),
-    ...t.tightOutro(d.syncedAt.slice(0, 10)),
+    ...t.tightOutro,
   ];
 }
 

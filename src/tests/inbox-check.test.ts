@@ -49,6 +49,18 @@ describe("inbox:check", () => {
     await rm(inbox(), { recursive: true, force: true });
     await mkdir(inbox(), { recursive: true });
     await writeFile(join(vaultDir, "portfolio.md"), portfolioMd({ usd: [SAP] }), "utf8");
+    await mkdir(join(vaultDir, "strategies"), { recursive: true });
+    await writeFile(join(vaultDir, "strategies", "base.md"), `---\nversion: "1.4"\n---\n`, "utf8");
+  });
+
+  it("warns, as inbox:ingest does, when strategies/base.md is not valid, and still checks the batch (#194)", async () => {
+    await drop("a.yaml", batch("command: deposit\namount: 5 EUR"));
+    await writeFile(join(vaultDir, "strategies", "base.md"), "# the version line was deleted\n", "utf8");
+
+    const { lines, exitCode } = await checkInbox();
+
+    assert.equal(exitCode, 0, "a bad strategy never rejects a batch");
+    assert.match(lines.join("\n"), /WARNING, configuration: strategies\/base\.md is not valid/);
   });
 
   it("says a missing or empty inbox is nothing to check and exits 0", async () => {
@@ -826,7 +838,7 @@ describe("inbox:check", () => {
     const before = await snapshot();
     await checkInbox();
     assert.deepEqual(await snapshot(), before);
-    assert.deepEqual((await readdir(vaultDir)).sort(), ["inbox", "portfolio.md"]);
+    assert.deepEqual((await readdir(vaultDir)).sort(), ["inbox", "portfolio.md", "strategies"]);
     assert.deepEqual((await readdir(inbox())).sort(), ["a.yaml", "b.yaml", "c.yaml"]);
   });
 

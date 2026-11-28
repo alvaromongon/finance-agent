@@ -123,13 +123,13 @@ export const es: Messages = {
       armed: "ruptura armada",
       escalated: "a análisis",
     },
-    breachIntro: (syncedAt) => [
+    breachIntro: [
       `## Stops cruzados — verifica tu bróker`,
       ``,
       `Estas posiciones cotizan **por debajo de su stop-loss registrado**.`,
       ``,
-      `El motor no puede saber si el bróker ya ejecutó el stop: la cartera la`,
-      `sincronizas tú y su última sincronización es del **${syncedAt}**.`,
+      `El motor no puede saber si el bróker ya ejecutó el stop: solo sabe lo que le`,
+      `has contado con un lote en \`inbox/\`.`,
       `Comprueba la cuenta y, si el stop no saltó, decide con la disciplina de`,
       `\`strategies/base.md\` (respetar el stop aunque la tesis siga viva).`,
       ``,
@@ -152,8 +152,9 @@ export const es: Messages = {
     ],
     lotsOutro: [
       ``,
-      `Corrige \`Lots\` a mano: que exista y se lea, que cada \`Volume\` sea la suma de las \`Units\` de sus lotes y cada`,
-      `\`Entry id\` sea una entrada del registro (\`logs/decisions.jsonl\`; ver \`docs/input-format.md\`).`,
+      `Corrige los lotes con un lote de comandos en \`inbox/\` (un comando \`correct\` o \`split\`; \`docs/input-format.md\`). Solo mientras no`,
+      `exista \`state/portfolio.json\` se corrige \`Lots\` a mano: cada \`Volume\` debe ser la suma de las \`Units\` de sus lotes y cada`,
+      `\`Entry id\` una entrada del registro (\`logs/decisions.jsonl\`).`,
     ],
     noStopIntro: [
       `## Posiciones sin stop`,
@@ -296,9 +297,9 @@ export const es: Messages = {
       `beneficio en uno que admite pérdida. Si la posición ya va ganando y quieres`,
       `asegurar parte, la opción 2 (recortar volumen) suele ser mejor que ceñir el stop.`,
     ],
-    tightOutro: (syncedAt) => [
+    tightOutro: [
       ``,
-      `El stop real vive en tu bróker: el motor solo conoce el stop de su propio estado (última sincronización: **${syncedAt}**).`,
+      `El stop real vive en tu bróker: el motor solo conoce el stop de su propio estado.`,
       `Si lo cambias allí, cuéntaselo al motor con un \`set_stop\` (o un lote) en \`inbox/\` (guía:`,
       `\`routines/portfolio-sync.md\`). Cuando es el propio motor quien propone un stop, deja allí el \`set_stop\` por ti.`,
     ],

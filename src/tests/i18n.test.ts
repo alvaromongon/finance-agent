@@ -184,7 +184,6 @@ describe("English renders", () => {
   it("the heartbeat digest, with en-US numbers and no Spanish", () => {
     const digest: HeartbeatDigest = {
       currency: "USD",
-      syncedAt: "2026-09-02T14:10:00Z",
       minAtr: 2,
       lotsWarnings: [],
       tickerWarnings: [],
@@ -240,7 +239,6 @@ describe("English renders", () => {
 describe("English heartbeat digest, the silo and the broker (#138)", () => {
   const digest: HeartbeatDigest = {
     currency: "EUR",
-    syncedAt: "2026-09-02T14:10:00Z",
     minAtr: 2,
     lotsWarnings: [],
     tickerWarnings: [],
@@ -296,7 +294,6 @@ describe("English heartbeat digest, lots section", () => {
     const email = renderHeartbeatDigest(
       {
         currency: "USD",
-        syncedAt: "2026-09-02T14:10:00Z",
         minAtr: 2,
         lotsWarnings: ["portfolio.md (USD): Lots row 1 skipped"],
         tickerWarnings: [],
@@ -325,7 +322,7 @@ describe("English heartbeat digest, lots section", () => {
     );
     assert.match(
       text,
-      /Fix `Lots` by hand: it must exist and be readable, each `Volume` must be the sum of the `Units` of its lots and every `Entry id` must be an entry of the log/,
+      /Correct the lots with a batch in `inbox\/` \(a `correct` or a `split` command; `docs\/input-format\.md`\)\. Only while there is no `state\/portfolio\.json` is `Lots` fixed by hand: each `Volume` must be the sum of the `Units` of its lots and every `Entry id` must be an entry of the log/,
     );
     assert.doesNotMatch(`${email.subject}\n${email.body}`, SPANISH);
   });

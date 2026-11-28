@@ -64,7 +64,6 @@ describe("pending escalations are closed by a command (#141)", () => {
     const pendingEscalations = await escalations.readOpenEscalations();
     return digestMod.renderHeartbeatDigest({
       currency: "USD",
-      syncedAt: "2026-11-21T10:00:00Z",
       minAtr: 2,
       breaches: [],
       lotsWarnings: [],
