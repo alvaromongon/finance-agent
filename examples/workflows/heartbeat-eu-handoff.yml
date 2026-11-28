@@ -44,9 +44,10 @@ jobs:
       - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
-          # The price refresh writes the store and the view generated from it (state-paths): if another run
-          # committed state since this one started, the refresh is dropped and the rest is committed.
-          paths: finance-agent/logs/ finance-agent/inbox/ finance-agent/portfolio.md finance-agent/state/portfolio.json finance-agent/state/config/
+          # Prices are telemetry, never state (telemetry/ and the view portfolio.md generated with them): the store,
+          # state/portfolio.json, is written by inbox.yml alone. If another run committed state since this one
+          # started, the view (state-paths) is dropped and the rest is committed.
+          paths: finance-agent/logs/ finance-agent/inbox/ finance-agent/portfolio.md finance-agent/telemetry/ finance-agent/state/config/
           state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat EUR"
 

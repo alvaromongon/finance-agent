@@ -123,7 +123,7 @@ jobs:
       - uses: alvaromongon/finance-agent/.github/actions/commit-changes@v0.2.0
         with:
           artifact: ${{ needs.heartbeat.outputs.changes-artifact }}
-          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/state/portfolio.json finance-agent/state/config/
+          paths: finance-agent/logs/ finance-agent/portfolio.md finance-agent/telemetry/ finance-agent/state/config/
           state-paths: finance-agent/state/ finance-agent/portfolio.md
           message: "chore(logs): heartbeat EUR"
 ```
@@ -146,10 +146,10 @@ runners are possible, for example Claude Code routines with `handoff` (below).
 
 | Example                                                                   | Triggers                                                                           | Commits                                                                                                     |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`                                  |
-| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`                                  |
-| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`                                  |
-| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `inbox/`, `portfolio.md`, `state/portfolio.json`, `state/config/`, `tesis/`                        |
+| [`heartbeat-eu.yml`](examples/workflows/heartbeat-eu.yml)                 | Weekdays 17:00 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `telemetry/`, `state/config/`                                            |
+| [`heartbeat-us.yml`](examples/workflows/heartbeat-us.yml)                 | Weekdays 22:30 UTC                                                                 | `logs/`, `inbox/`, `portfolio.md`, `telemetry/`, `state/config/`                                            |
+| [`heartbeat-eu-handoff.yml`](examples/workflows/heartbeat-eu-handoff.yml) | Weekdays 17:00 UTC, then wakes a routine (handoff runner)                          | `logs/`, `inbox/`, `portfolio.md`, `telemetry/`, `state/config/`                                            |
+| [`monday-briefing.yml`](examples/workflows/monday-briefing.yml)           | Mondays 06:00 UTC                                                                  | `logs/`, `inbox/`, `portfolio.md`, `telemetry/`, `state/config/`, `tesis/`                                  |
 | [`screening.yml`](examples/workflows/screening.yml)                       | Saturdays 08:00 UTC                                                                | `logs/`, `tesis/`, `inbox/`, `screening-log.md`, `state/config/`                                            |
 | [`inbox.yml`](examples/workflows/inbox.yml)                               | Push to `inbox/*.yaml`, every day 05:40 UTC, manual                                | `state/portfolio.json`, `portfolio.md`, `watchlist.md`, `inbox/` (with `applied/` and `rejected/`), `logs/` |
 | [`email-relay.yml`](examples/workflows/email-relay.yml)                   | Push to `logs/outbox/**` or the screening `results.jsonl`, hourly fallback, manual | `logs/`                                                                                                     |
@@ -168,8 +168,9 @@ no workflow) to apply only what you run yourself. A proposal already waiting in 
 
 The engine's state (`state/portfolio.json`, the [store](docs/glossary.md#store), which holds the
 [watchlist](docs/glossary.md#watchlist) too, and the `portfolio.md` and `watchlist.md` views generated
-from it) is written by runs that can start at any time: the three triggers of `inbox.yml`, a heartbeat or a briefing
-refreshing prices, and `decision:record`. Any trigger is valid as long as the writes do not overlap
+from it) is written by runs that can start at any time: the three triggers of `inbox.yml` and `decision:record`. The
+heartbeat and the briefing write no state: **prices are [telemetry](docs/glossary.md#telemetry)**, kept in
+`telemetry/prices-<ccy>.json` and shown in the generated `portfolio.md`, never in the store. Any trigger is valid as long as the writes do not overlap
 ([ADR-0018](docs/decisions/0018-commands-are-the-only-way-to-change-state.md)):
 
 - **The three triggers of `inbox.yml` share one `concurrency` group**, so one run applies the inbox at a time. A run that
@@ -183,11 +184,12 @@ refreshing prices, and `decision:record`. Any trigger is valid as long as the wr
 - **`decision:record` does the same only with `STATE_COMMIT=git`, and no workflow of the engine or of the examples runs
   it**: you run it by hand or from the portfolio-sync routine, where it leaves its files in the working copy for you to
   commit (`git push` refuses a commit made over a stale head, so a write is never overwritten).
-- **The heartbeat and the briefing take no lock.** Stop detection reads the checkout it started from (the last commit)
-  and never waits for a write. Their price refresh reaches the data repository through `commit-changes` with
-  `state-paths`: if another run committed the store or its view since they started, the refresh is dropped with a
-  warning and the rest (logs, briefing files) is committed; the next run refreshes prices again. A push that loses a
-  race is retried from the new head, putting back only the files the run's patch touched.
+- **The heartbeat and the briefing take no lock, and write no state.** Stop detection reads the checkout it started from
+  (the last commit) and never waits for a write. Their last prices go to `telemetry/prices-<ccy>.json` (one file per silo,
+  so the two heartbeats never write the same file) and into the generated `portfolio.md`, which reaches the data repository
+  through `commit-changes` with `state-paths`: if another run committed the store or its view since they started, the view is
+  dropped with a warning and the rest (logs, telemetry, briefing files) is committed; the next run generates it again. A push
+  that loses a race is retried from the new head, putting back only the files the run's patch touched.
 - **Add `logs/decisions.jsonl merge=union` to the `.gitattributes` of your data repository** (with the path of your
   data folder in front). The heartbeat and an ingest both append to that file; with the attribute their lines are
   merged, and without it the heartbeat's patch conflicts, `commit-changes` fails with an error and that heartbeat's

@@ -5,7 +5,7 @@
 // - `encodeStore` / `decodeStore`: the JSON text and the strict reader of it. Numbers are plain decimal text
 //   (never an exponent, so nothing reads `1e-8` differently); every amount of money carries its currency.
 // - `renderView`: the Markdown view, in the tables the old reader reads, so the two stay one format.
-// - `withPrices`: the edit the price refresh makes to a silo of the store.
+// - `withPrices`: the silo with the given prices over its positions (the last prices, `utils/price-telemetry.ts`).
 // - The watchlist (#140) is part of the store too: `watchlist` (the entries) and `starting_watchlist` (the entries the
 //   store began with, from `watchlist.md`, what a correction and the repair replay the `watch` and `stop_watching`
 //   commands over). `renderWatchlistView` is `watchlist.md`, generated from it.

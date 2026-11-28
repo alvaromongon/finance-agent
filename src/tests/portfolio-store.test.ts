@@ -6,7 +6,7 @@
  */
 import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseTicker as tk } from "../ticker.js";
@@ -225,7 +225,7 @@ describe("the portfolio state port", () => {
       const md = portfolioMd([TCK_ROW, "| OTH | 1 | 10 | 10 | 0 | — |"], [TCK_LOT]);
       await put(md);
 
-      await store.refreshPrices("USD", prices);
+      await store.recordPrices("USD", prices);
 
       const text = await readFile(file(), "utf8");
       assert.ok(text.includes("| TCK | 2 | 100 | 110,00 | 20,00 | 80 |"), text);
@@ -237,17 +237,17 @@ describe("the portfolio state port", () => {
 
     it("writes nothing when no value changes, or when there is no portfolio.md", async () => {
       await put(portfolioMd([TCK_ROW], [TCK_LOT]));
-      await store.refreshPrices("USD", new Map());
+      await store.recordPrices("USD", new Map());
       assert.equal(await readFile(file(), "utf8"), portfolioMd([TCK_ROW], [TCK_LOT]));
 
       await rm(file(), { force: true });
-      await store.refreshPrices("USD", prices);
+      await store.recordPrices("USD", prices);
       await assert.rejects(() => readFile(file(), "utf8"), { code: "ENOENT" });
     });
 
     it("refuses a file in another schema_version", async () => {
       await put(portfolioMd([TCK_ROW], [TCK_LOT]).replace("schema_version: 2", "schema_version: 1"));
-      await assert.rejects(() => store.refreshPrices("USD", prices), /schema_version/);
+      await assert.rejects(() => store.recordPrices("USD", prices), /schema_version/);
     });
   });
 
@@ -369,17 +369,140 @@ describe("the portfolio state port", () => {
       });
     });
 
-    it("refreshes the prices in the store and regenerates the view, and writes nothing when no value changes", async () => {
-      await seed();
-      await store.refreshPrices("USD", new Map([[tk("TCK"), 110]]));
-      const { portfolio } = await store.readPortfolio("USD");
-      assert.deepEqual([portfolio.positions[0].currentPrice, portfolio.positions[0].pl], [110, 20]);
-      assert.match(await readFile(file(), "utf8"), /\| TCK \| 2 \| 100\.00 \| 110\.00 \| 20\.00 \| 80\.00 \|/);
+    describe("prices are telemetry, never state (#133)", () => {
+      const telemetryFile = () => join(vaultDir, "telemetry", "prices-usd.json");
+      const TCK_AT_110 = new Map([[tk("TCK"), 110]]);
+      const viewRow = (price: string, pl: string) =>
+        new RegExp(`\\| TCK \\| 2 \\| 100\\.00 \\| ${price} \\| ${pl} \\| 80\\.00 \\|`);
+      const quiet = async <T>(fn: () => Promise<T>): Promise<[T, string[]]> => {
+        const warn = mock.method(console, "warn", () => {});
+        try {
+          return [await fn(), warn.mock.calls.map((c) => String(c.arguments[0]))];
+        } finally {
+          warn.mock.restore();
+        }
+      };
 
-      const before = [await stored(), await readFile(file(), "utf8")];
-      await store.refreshPrices("USD", new Map([[tk("TCK"), 110]]));
-      await store.refreshPrices("USD", new Map());
-      assert.deepEqual([await stored(), await readFile(file(), "utf8")], before);
+      beforeEach(async () => {
+        await rm(join(vaultDir, "telemetry"), { recursive: true, force: true });
+      });
+
+      it("a refresh writes no byte of the store: the last price goes to telemetry/prices-usd.json", async () => {
+        await seed();
+        const state = [await stored(), await readFile(join(vaultDir, "state", "portfolio.last-readable.json"), "utf8")];
+
+        await store.recordPrices("USD", TCK_AT_110);
+
+        assert.deepEqual(
+          [await stored(), await readFile(join(vaultDir, "state", "portfolio.last-readable.json"), "utf8")],
+          state,
+        );
+        assert.deepEqual(JSON.parse(await readFile(telemetryFile(), "utf8")).silos.USD.TCK, {
+          price: "110",
+          volume: "2",
+          avg_price: "100",
+        });
+      });
+
+      it("every read, and the view, still show the last price and its P/L", async () => {
+        await seed();
+        await store.recordPrices("USD", TCK_AT_110);
+
+        const { portfolio } = await store.readPortfolio("USD");
+        assert.deepEqual([portfolio.positions[0].currentPrice, portfolio.positions[0].pl], [110, 20]);
+        const last = await store.readPortfolio("USD", { lastReadable: true });
+        assert.deepEqual([last.portfolio.positions[0].currentPrice, last.portfolio.positions[0].pl], [110, 20]);
+        assert.match(await readFile(file(), "utf8"), viewRow("110\\.00", "20\\.00"));
+        assert.match(await store.readPortfolioView(), viewRow("110\\.00", "20\\.00"));
+        assert.deepEqual(
+          (await store.readStoreIfAny())?.silos.USD?.positions.map((p) => p.currentPrice),
+          [100],
+          "the store, the state ingest works on, is as the owner last told it",
+        );
+      });
+
+      it("writes nothing when no price changes", async () => {
+        await seed();
+        await store.recordPrices("USD", TCK_AT_110);
+        const before = [await readFile(telemetryFile(), "utf8"), await readFile(file(), "utf8")];
+        const mtime = (await stat(telemetryFile())).mtimeMs;
+
+        await store.recordPrices("USD", TCK_AT_110);
+        await store.recordPrices("USD", new Map());
+
+        assert.deepEqual([await readFile(telemetryFile(), "utf8"), await readFile(file(), "utf8")], before);
+        assert.equal((await stat(telemetryFile())).mtimeMs, mtime);
+      });
+
+      it("does not show a price seen before the position changed: an ingest that buys shows the buy price until the next refresh", async () => {
+        await seed();
+        await store.recordPrices("USD", TCK_AT_110);
+        const state = (await store.readStoreIfAny())!;
+        const usd = state.silos.USD!;
+        await store.saveStore({
+          ...state,
+          silos: {
+            ...state.silos,
+            USD: { ...usd, positions: usd.positions.map((p) => ({ ...p, volume: 3, avgPrice: 104 })) },
+          },
+        });
+
+        assert.equal((await store.readPortfolio("USD")).portfolio.positions[0].currentPrice, 100);
+        assert.match(await readFile(file(), "utf8"), /\| TCK \| 3 \| 104\.00 \| 100\.00 \|/);
+
+        await store.recordPrices("USD", new Map([[tk("TCK"), 112]]));
+        assert.equal((await store.readPortfolio("USD")).portfolio.positions[0].currentPrice, 112);
+      });
+
+      it("a silo's refresh leaves the other silo's last prices, and its file, as they were", async () => {
+        await seed();
+        await store.recordPrices("USD", TCK_AT_110);
+        const usd = await readFile(telemetryFile(), "utf8");
+        await store.recordPrices("EUR", new Map([[tk("TCK"), 1]]));
+        assert.equal((await store.readPortfolio("USD")).portfolio.positions[0].currentPrice, 110);
+        assert.equal(await readFile(telemetryFile(), "utf8"), usd, "each heartbeat writes its own file");
+      });
+
+      it("a telemetry file that does not read is said and ignored: it never stops a read, and the next refresh writes it again", async () => {
+        await seed();
+        await mkdir(join(vaultDir, "telemetry"), { recursive: true });
+        await writeFile(telemetryFile(), "{ not json", "utf8");
+
+        const [read, warned] = await quiet(() => store.readPortfolio("USD"));
+        assert.equal(read.portfolio.positions[0].currentPrice, 100, "the state's price");
+        assert.match(warned.join("\n"), /telemetry\/prices-usd\.json: file: is not valid JSON/);
+
+        await quiet(() => store.recordPrices("USD", TCK_AT_110));
+        assert.equal((await store.readPortfolio("USD")).portfolio.positions[0].currentPrice, 110);
+      });
+
+      it("the view a refresh generates keeps account_env, where readAccountEnv finds it", async () => {
+        await put(
+          portfolioMd([TCK_ROW], [TCK_LOT]).replace("schema_version: 2\n", "schema_version: 2\naccount_env: demo\n"),
+        );
+        await seed();
+        await rm(file());
+        await store.recordPrices("USD", TCK_AT_110);
+        const { readAccountEnv } = await import("../vault-io.js");
+        assert.equal(await readAccountEnv(), "demo");
+      });
+
+      it("a store that does not read is not the base of a price: nothing is written and the run goes on", async () => {
+        await seed();
+        await writeFile(storeFile(), "{ not json", "utf8");
+        const [, warned] = await quiet(() => store.recordPrices("USD", TCK_AT_110));
+        assert.match(warned.join("\n"), /prices not updated/);
+        await assert.rejects(() => stat(telemetryFile()), { code: "ENOENT" });
+      });
+
+      it("a silo the store does not hold is not priced", async () => {
+        await seed();
+        const doc = JSON.parse(await stored());
+        delete doc.silos.USD;
+        await writeFile(storeFile(), JSON.stringify(doc), "utf8");
+        await store.recordPrices("USD", TCK_AT_110);
+        await assert.rejects(() => stat(telemetryFile()), { code: "ENOENT" });
+      });
     });
 
     it("the view is the state in the tables the old reader reads: written, then read back, the model is the same", async () => {

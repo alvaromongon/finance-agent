@@ -178,6 +178,7 @@ describe("monday-briefing prepare/finalize", () => {
     await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
     // The last valid copies of the configuration files are state too: one test's must not feed the next.
     await rm(join(vaultDir, "state"), { recursive: true, force: true });
+    await rm(join(vaultDir, "telemetry"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "routines"), { recursive: true });
     await writeFile(join(vaultDir, "portfolio.md"), PORTFOLIO_MD, "utf8");
@@ -237,6 +238,29 @@ describe("monday-briefing prepare/finalize", () => {
         // that is what keeps the report from contradicting its own technicals.
         assert.match(userPrompt, /159,00/);
         assert.doesNotMatch(userPrompt.split("## watchlist.md")[0], /440\.00/);
+      } finally {
+        error.mock.restore();
+      }
+    });
+
+    it("with the engine's store, the refreshed prices are telemetry: the store is untouched and the prompt carries them (#133)", async () => {
+      const { storeFromPortfolioFile, saveStore } = await import("../portfolio-store.js");
+      await saveStore(await storeFromPortfolioFile());
+      const stateFiles = ["portfolio.json", "portfolio.last-readable.json"].map((f) => join(vaultDir, "state", f));
+      const before = await Promise.all(stateFiles.map((f) => readFile(f, "utf8")));
+      const error = mock.method(console, "error", () => {});
+      try {
+        const { userPrompt } = await prepareBriefing(fakeProvider);
+
+        assert.deepEqual(await Promise.all(stateFiles.map((f) => readFile(f, "utf8"))), before);
+        const telemetry = JSON.parse(await readFile(join(vaultDir, "telemetry", "prices-usd.json"), "utf8"));
+        assert.equal(telemetry.silos.USD.MSFT.price, "159");
+        assert.match(userPrompt, /\| MSFT \| 0\.5 \| 420\.00 \| 159\.00 \| -130\.50 \|/);
+        assert.doesNotMatch(userPrompt, /440\.00/);
+        assert.match(
+          await readFile(join(vaultDir, "portfolio.md"), "utf8"),
+          /\| MSFT \| 0\.5 \| 420\.00 \| 159\.00 \|/,
+        );
       } finally {
         error.mock.restore();
       }

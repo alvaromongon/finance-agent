@@ -21,7 +21,7 @@ import {
   readWatchlistSkippingBadTickers,
   writeHeartbeatSent,
 } from "./vault-io.js";
-import { readPortfolio, refreshPrices } from "./portfolio-store.js";
+import { readPortfolio, recordPrices } from "./portfolio-store.js";
 import { readOpenEscalations } from "./inbox-escalations.js";
 import { readAwaitingRejected } from "./inbox-rejected.js";
 import { shouldSkipReanalysis } from "./utils/cooldown.js";
@@ -196,15 +196,16 @@ async function collect(currency: Currency, today: string, deps: HeartbeatDeps, d
   // Previous session close per ticker, for the big_move trigger.
   const previousCloses = (await provider.getPreviousCloses?.(tickers)) ?? new Map<string, number>();
 
-  // 2a. T-06: update Current price and P/L in portfolio.md with the fetched
-  // prices. The T-02 auto-commit persists the change.
+  // 2a. T-06: record the fetched prices as the last prices (telemetry, #133): the generated portfolio.md view shows them
+  // and every read of the portfolio puts them over its positions. The state is not written: `inbox:ingest` is its only
+  // writer, and the stop check below reads the state last applied and the prices just fetched.
   //
   // It goes BEFORE the session guard on purpose: if the market turns out to be
-  // closed, these are the last close prices and refreshing them is harmless
-  // (if they do not change, refreshPrices rewrites nothing). The other
+  // closed, these are the last close prices and recording them is harmless
+  // (if they do not change, recordPrices rewrites nothing). The other
   // way round —aborting before writing— is how the portfolio stayed four days
   // stale in August 2026 while the runs came out green.
-  await refreshPrices(currency, prices);
+  await recordPrices(currency, prices);
 
   // 2b. Crossed-stop warning: a state question, not an analysis one — only the
   // broker account knows whether the stop filled. It goes before the session
