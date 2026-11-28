@@ -23,6 +23,11 @@ describe("example commit paths", () => {
     }
   });
 
+  it("the Monday briefing drops the regenerated view before it pulls", async () => {
+    const text = await readFile(join(EXAMPLES, "routines", "monday-briefing.md"), "utf8");
+    assert.match(text, /git checkout -- \S*portfolio\.md[\s\S]*git pull --rebase/);
+  });
+
   it("a workflow that commits the view of the state guards it with state-paths", async () => {
     const dir = join(EXAMPLES, "workflows");
     const files = (await readdir(dir)).filter((name) => name.endsWith(".yml"));

@@ -37,6 +37,8 @@ installed in `$ENGINE_DIR` by the SessionStart hook. The system prompt is
    git add -A -- finance-agent/logs/ finance-agent/telemetry/ finance-agent/tesis/
    [ -d finance-agent/inbox ] && git add -A -- finance-agent/inbox/
    git diff --cached --quiet || git commit -m "chore(logs): Monday briefing $(date -u +%F)"
+   # recordPrices regenerates the view (portfolio.md) when a store exists; drop it, or the pull refuses to run
+   git checkout -- finance-agent/portfolio.md || true
    git pull --rebase origin <default-branch> && git push origin <default-branch>
    ```
    If the push is rejected, pull with rebase and push again, up to 3 times.
