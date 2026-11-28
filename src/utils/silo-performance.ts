@@ -3,8 +3,8 @@
 // portfolio.md and the series.
 //
 // The decision log (ADR-0006) does not store the silo value, but it does store
-// every trade and every money flow. So the value is rebuilt backwards from
-// today's portfolio.md state: the trades and flows recorded since the start
+// every trade, every money flow and every split. So the value is rebuilt backwards from
+// today's portfolio.md state: the trades, flows and splits recorded since the start
 // date are undone and each session is valued at the close. If something is
 // missing from the log, the reconstruction does not add up (negative cash or
 // units at the start) and a warning is raised instead of hiding it.
@@ -63,6 +63,12 @@ function tradeEffect(d: Decision, currency: Currency): TradeEffect | null {
   return null;
 }
 
+/** The units of a ticker a split of this silo multiplied by `ratio` (4 for a 4 for 1 split, 0.1 for a 1 for 10 reverse split). */
+function splitEffect(d: Decision, currency: Currency): { ticker: Ticker; ratio: number } | null {
+  if (d.type !== "split" || d.currency !== currency || d.ticker == null || d.split_ratio == null) return null;
+  return { ticker: d.ticker, ratio: d.split_ratio };
+}
+
 export interface SiloDay {
   date: string;
   /** Cash + positions at the close. */
@@ -109,16 +115,24 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
   const { currency, portfolio, start, asOf, bars } = input;
   const events = input.decisions
     .filter((d) => d.date >= start && d.date <= asOf)
-    .map((d) => ({ date: d.date, price: d.price, flow: flowAmount(d, currency), trade: tradeEffect(d, currency) }))
-    .filter((e) => e.flow != null || e.trade != null)
+    .map((d) => ({
+      date: d.date,
+      price: d.price,
+      flow: flowAmount(d, currency),
+      trade: tradeEffect(d, currency),
+      split: splitEffect(d, currency),
+    }))
+    .filter((e) => e.flow != null || e.trade != null || e.split != null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // Undo from today back to before the start.
+  // Undo from today back to before the start, last event first: a split multiplies the units held before it, so
+  // what a trade added or took out after it is not the same number of units as before it.
   let cash = asNumber(portfolio.totalCash ?? portfolio.cash);
   const units = new Map<Ticker, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
-  for (const e of events) {
+  for (const e of [...events].reverse()) {
     cash -= (e.flow ?? 0) + (e.trade?.cash ?? 0);
     if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) - e.trade.units);
+    if (e.split) units.set(e.split.ticker, (units.get(e.split.ticker) ?? 0) / e.split.ratio);
   }
 
   const warnings: SiloWarning[] = [];
@@ -166,6 +180,7 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
       const e = events[next];
       cash += (e.flow ?? 0) + (e.trade?.cash ?? 0);
       if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) + e.trade.units);
+      if (e.split) units.set(e.split.ticker, (units.get(e.split.ticker) ?? 0) * e.split.ratio);
       if (e.flow != null) {
         flow += e.flow;
         flows.push({ date: e.date, amount: e.flow });

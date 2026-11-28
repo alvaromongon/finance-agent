@@ -147,6 +147,29 @@ describe("reconstructSilo", () => {
     assertClose(history.base.value, 700);
   });
 
+  it("a split multiplies the units held before it: undone in reverse order, the units at each date are those of the day (#197)", () => {
+    // 5 bought at 60 on Tue, a 4 for 1 split on Wed (20 at 15), 8 sold at 16 on Thu: 12 are left, 828.00 in cash.
+    const decisions = [
+      decision({ type: "entry", date: "2026-09-08", ticker: tk("AAA"), price: 60, amount: 300, units: 5 }),
+      decision({ type: "split", date: "2026-09-09", ticker: tk("AAA"), split_ratio: 4 }),
+      decision({ type: "exit", date: "2026-09-10", ticker: tk("AAA"), price: 16, amount: 128, units: 8 }),
+    ];
+    const bars = new Map([...BARS, ["AAA", weekdayBars("2026-09-03", [50, 50, 50, 60, 15, 16])]]);
+    const history = reconstructSilo(
+      input({
+        decisions,
+        bars,
+        portfolio: snapshot("EUR", 828, [{ ...AAA_POSITION, volume: 12, currentPrice: 16 }]),
+      }),
+    );
+    assert.deepEqual(history.warnings, []);
+    // Nothing held before the buy (undoing the sale and the buy alone would leave 20 − 5 = 15 units).
+    assertClose(history.base.value, 1000);
+    // 1,000 in cash; 700 + 5 × 60; 700 + 20 × 15 (the split is not a gain); 828 + 12 × 16.
+    history.days.forEach((d, i) => assertClose(d.value, [1000, 1000, 1000, 1020][i]));
+    assert.deepEqual(history.flows, []);
+  });
+
   it("warns if the log does not match portfolio.md", () => {
     const fewerUnits = reconstructSilo(input({ portfolio: snapshot("EUR", 700, [{ ...AAA_POSITION, volume: 3 }]) }));
     assert.deepEqual(fewerUnits.warnings, [
