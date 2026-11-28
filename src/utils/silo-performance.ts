@@ -125,14 +125,21 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
     .filter((e) => e.flow != null || e.trade != null || e.split != null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // Undo from today back to before the start, last event first: a split multiplies the units held before it, so
-  // what a trade added or took out after it is not the same number of units as before it.
+  // Units are kept on the split-adjusted basis of the closes (Yahoo publishes the closes before a split already
+  // divided by its ratio): a trade counts at its units times the ratio of every later split, and a split itself
+  // changes nothing. Undo from today back to before the start, last event first, accumulating those ratios.
+  const laterRatio = new Map<Ticker, number>();
+  const adjusted = new Map<object, number>();
   let cash = asNumber(portfolio.totalCash ?? portfolio.cash);
   const units = new Map<Ticker, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
   for (const e of [...events].reverse()) {
     cash -= (e.flow ?? 0) + (e.trade?.cash ?? 0);
-    if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) - e.trade.units);
-    if (e.split) units.set(e.split.ticker, (units.get(e.split.ticker) ?? 0) / e.split.ratio);
+    if (e.split) laterRatio.set(e.split.ticker, (laterRatio.get(e.split.ticker) ?? 1) * e.split.ratio);
+    if (e.trade) {
+      const counted = e.trade.units * (laterRatio.get(e.trade.ticker) ?? 1);
+      adjusted.set(e, counted);
+      units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) - counted);
+    }
   }
 
   const warnings: SiloWarning[] = [];
@@ -179,8 +186,7 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
     for (; next < events.length && events[next].date <= date; next++) {
       const e = events[next];
       cash += (e.flow ?? 0) + (e.trade?.cash ?? 0);
-      if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) + e.trade.units);
-      if (e.split) units.set(e.split.ticker, (units.get(e.split.ticker) ?? 0) * e.split.ratio);
+      if (e.trade) units.set(e.trade.ticker, (units.get(e.trade.ticker) ?? 0) + (adjusted.get(e) ?? 0));
       if (e.flow != null) {
         flow += e.flow;
         flows.push({ date: e.date, amount: e.flow });
