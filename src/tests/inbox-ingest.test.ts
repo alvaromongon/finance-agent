@@ -1053,17 +1053,16 @@ describe("inbox:ingest", () => {
       assert.deepEqual(await snapshot(), before);
     });
 
-    it("what decision:record still records keeps working beside the inbox: a deposit moves the store's cash, and the lots check stays clean", async () => {
+    it("decision:record refuses a deposit, and changes nothing: the cash is moved by the inbox's deposit command (#197)", async () => {
       await drop("a.yaml", batch(BUY(), STOP));
       await inbox.ingestInbox();
+      const before = await snapshot();
       const { recordOwnerDecision } = await import("../decision.js");
-      await recordOwnerDecision({ type: "deposit", currency: "EUR", amount: 50 }, provider, "2026-09-21");
-      const eur = (await store.readPortfolio("EUR")).portfolio;
-      assert.equal(eur.cash, 1000 - 200 + 50);
-      assert.match(await read("portfolio.md"), /\| Available cash \| 850,00 € \|/);
-      const { lotsMismatches } = await import("../utils/lots-check.js");
-      const { readDecisionHistory } = await import("../vault-io.js");
-      assert.deepEqual(lotsMismatches(eur, await readDecisionHistory()), []);
+      await assert.rejects(
+        recordOwnerDecision({ type: "deposit", currency: "EUR", amount: 50 }, provider, "2026-09-21"),
+        /a deposit is told to the engine with a deposit command in inbox\//,
+      );
+      assert.deepEqual(await snapshot(), before);
     });
 
     it("a sale over two lots writes one exit per lot, and the two-month rule sees the loss of the second", async () => {

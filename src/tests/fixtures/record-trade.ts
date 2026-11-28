@@ -1,4 +1,4 @@
-// A buy or a sale written the way `decision:record` wrote it until #152 took the trade part out, for the tests of the
+// A buy, a sale or a deposit written the way `decision:record` wrote it until #152 and #197 took them out, for the tests of the
 // evaluation (measurable-exits). They need trades whose origin is `sistema` and a Lots table of the old `portfolio.md`
 // to match, and the inbox, which is the only way a trade is told to the engine now, writes the origin `propietario`.
 // Test-only: it makes the log lines and the lot of a trade, nothing the engine does any more. Imported after
@@ -43,6 +43,31 @@ export interface TradeInput {
 }
 
 const portfolioPath = (): string => join(config.paths.vaultProjectDir, "portfolio.md");
+
+/**
+ * The line of a deposit written the way `decision:record` wrote it until #197 took the cash path out: the log line
+ * alone, as the inbox's `deposit` command writes it (the state of the evaluation tests is the log).
+ */
+export async function recordDeposit(
+  raw: { currency: Currency; amount: number; date?: string },
+  provider: PriceSource,
+  today: string,
+): Promise<Decision[]> {
+  const date = raw.date ?? today;
+  const deposit = buildDecision({
+    date,
+    currency: raw.currency,
+    source: "portfolio-sync",
+    origin: "propietario",
+    ...benchmarkFields(await benchmarkOnDate(provider, raw.currency, date, today)),
+    rules_version: await readRulesVersion(),
+    type: "deposit",
+    ticker: null,
+    amount: raw.amount,
+  });
+  await appendDecisions([deposit]);
+  return [deposit];
+}
 
 /** The decisions a trade wrote: one entry, or one exit per lot a sale consumed (first in, first out). */
 export async function recordTrade(raw: TradeInput, provider: PriceSource, today: string): Promise<Decision[]> {

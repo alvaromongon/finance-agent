@@ -71,11 +71,12 @@ export type DecisionType = (typeof DECISION_TYPES)[number];
 export const FLOW_TYPES: readonly DecisionType[] = ["deposit", "withdrawal", "fx_conversion"];
 
 /**
- * What the owner narrates and records with `decision:record`. A buy and a sale (the `entry` and `exit` decisions) are
- * told through the inbox only (ADR-0018, #152): the log lines they leave are the inbox's telemetry. A currency
- * conversion is the `convert` command of the inbox too (#135), a split is the `split` command (#137) and a reconciliation with the broker is the `snapshot` command (#138).
+ * What the owner narrates and records with `decision:record`: a stop adjustment, a line of the log alone. Everything that
+ * moves the portfolio is told through the inbox only (ADR-0018): a buy and a sale (the `entry` and `exit` decisions,
+ * #152), a deposit and a withdrawal (#197), a currency conversion (`convert`, #135), a split (`split`, #137) and a
+ * reconciliation with the broker (`snapshot`, #138). The log lines they leave are the inbox's telemetry.
  */
-export const OWNER_TYPES = ["adjust_stop", "deposit", "withdrawal"] as const;
+export const OWNER_TYPES = ["adjust_stop"] as const;
 export type OwnerDecisionType = (typeof OWNER_TYPES)[number];
 
 /**
@@ -842,7 +843,7 @@ export function strengthFields(s: StrengthSnapshot | undefined): Pick<Decision, 
   };
 }
 
-// ─── Flows and stop adjustments narrated by the owner (`decision:record`) ────────────────────────
+// ─── Stop adjustments narrated by the owner (`decision:record`) ────────────────────────
 
 /** What `decision:record` receives on stdin. The engine fills in the rest. */
 export interface OwnerDecisionInput {
@@ -854,8 +855,6 @@ export interface OwnerDecisionInput {
   currency: Currency;
   /** adjust_stop: the price when the stop was adjusted. */
   price?: number;
-  /** deposit, withdrawal: the amount. */
-  amount?: number;
   /** adjust_stop: the new stop. */
   stop?: number;
   costs?: Money;
@@ -868,11 +867,16 @@ export interface OwnerDecisionInput {
 export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (!isObj(raw)) throw new Error("The decision:record input is not a JSON object.");
   const errors: string[] = [];
-  const type = raw.type as OwnerDecisionType | "entry" | "exit" | "fx_conversion" | "split" | "reconcile";
+  const type = raw.type as
+    OwnerDecisionType | "entry" | "exit" | "deposit" | "withdrawal" | "fx_conversion" | "split" | "reconcile";
 
   if (type === "entry" || type === "exit") {
     errors.push(
       `a ${type === "entry" ? "buy" : "sale"} is told to the engine with a ${type === "entry" ? "buy" : "sale"} command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
+    );
+  } else if (type === "deposit" || type === "withdrawal") {
+    errors.push(
+      `a ${type} is told to the engine with a ${type} command in inbox/ (docs/input-format.md › \`inbox/\`), no longer to decision:record: the type must be one of [${OWNER_TYPES.join(", ")}]`,
     );
   } else if (type === "fx_conversion") {
     errors.push(
@@ -895,7 +899,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (raw.date != null && (typeof raw.date !== "string" || !DATE_RE.test(raw.date))) {
     errors.push(`date must be YYYY-MM-DD; got: ${JSON.stringify(raw.date)}`);
   }
-  for (const field of ["price", "amount", "stop"] as const) {
+  for (const field of ["price", "stop"] as const) {
     const v = raw[field];
     if (v != null && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
       errors.push(`${field} must be a number > 0; got: ${JSON.stringify(v)}`);
@@ -904,8 +908,9 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
   if (raw.costs != null && (typeof raw.costs !== "number" || !Number.isFinite(raw.costs) || raw.costs < 0)) {
     errors.push(`costs must be a number >= 0; got: ${JSON.stringify(raw.costs)}`);
   }
-  for (const field of ["units", "pnl"] as const) {
-    if (raw[field] != null) errors.push(`${field} does not apply: it belongs to a buy or a sale, told through inbox/`);
+  for (const field of ["units", "pnl", "amount"] as const) {
+    if (raw[field] != null)
+      errors.push(`${field} does not apply: it belongs to a buy, a sale or a cash flow, told through inbox/`);
   }
   if (raw.origin != null && !DECISION_ORIGINS.includes(raw.origin as DecisionOrigin)) {
     errors.push(`origin must be one of [${DECISION_ORIGINS.join(", ")}]; got: ${JSON.stringify(raw.origin)}`);
@@ -919,11 +924,7 @@ export function validateOwnerInput(raw: unknown): OwnerDecisionInput {
       if ("problem" in checked) errors.push(`ticker: ${checked.problem}`);
     }
   }
-  if (FLOW_TYPES.includes(type) && has("ticker")) errors.push(`ticker does not apply in ${type}`);
   if (type === "adjust_stop" && !has("stop")) errors.push("stop is required in adjust_stop");
-  if ((type === "deposit" || type === "withdrawal") && !has("amount")) {
-    errors.push(`amount is required in ${type}`);
-  }
 
   if (errors.length > 0) {
     throw new Error(`Invalid decision:record input:\n- ${errors.join("\n- ")}`);

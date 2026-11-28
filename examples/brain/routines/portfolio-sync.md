@@ -24,16 +24,14 @@ Every event at the broker is told to the engine through one of two doors, and no
 
 | Event                                      | Door                                                                                           | The engine writes                                                                      |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Buy, sale, a stop set, moved or removed, a currency conversion, a split | a batch in `inbox/` (`buy`, `sale`, `set_stop`, `clear_stop`, `convert`, `split`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the entry and exit lines of the log |
-| Deposit, withdrawal                        | `npm run decision:record`, the event as JSON on stdin                                          | the [decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log) (`logs/decisions.jsonl`; never edit it by hand) and the cash of the store |
+| Buy, sale, deposit, withdrawal, a stop set, moved or removed, a currency conversion, a split | a batch in `inbox/` (`buy`, `sale`, `deposit`, `withdrawal`, `set_stop`, `clear_stop`, `convert`, `split`), checked and applied as a whole | the store (cash, positions, [lots](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#lot)) and the lines of the [decision log](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#decision-log) (`logs/decisions.jsonl`; never edit it by hand) |
 | A stop adjustment you made after a proposal | `npm run decision:record` for the log line, and a `set_stop` command in a batch for the stop    | the log line only                                                                      |
 | What your broker shows today (cash and positions of an account) | a `snapshot` command in a batch                                                  | no state: the differences with the engine's, and the date that makes the account fresh     |
 
-`decision:record` refuses a buy and a sale: they are told with a `buy` or a `sale` command in a batch, the only way a
-trade is recorded; it refuses a currency [conversion](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#conversion) too, which is the `convert` command of a batch. The `convert` command writes its `fx_conversion` line; the `deposit` and `withdrawal` commands of the inbox change the cash and write no log line, while a flow
-told to `decision:record` writes its line, which the
-[shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio) needs to
-buy its benchmark with every flow on its own date. Use one door for a flow, never both: the cash would move twice.
+`decision:record` records only the log line of a stop adjustment. It refuses a buy, a sale, a deposit, a withdrawal, a currency
+[conversion](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#conversion) and a split: each is a command of a batch, the only way the portfolio changes. Each command
+writes its own line of the log (`entry`, `exit`, `deposit`, `withdrawal`, `fx_conversion`, `split`), which the
+[shadow portfolio](https://github.com/alvaromongon/finance-agent/blob/main/docs/glossary.md#shadow-portfolio) needs to buy its benchmark with every flow on its own date.
 
 So you never edit position rows. What you do is **reconcile**: after the events, send a `snapshot` of each account with the
 cash and the units of each position your broker shows. The engine compares it with its own state and tells each
@@ -59,8 +57,7 @@ log and `state/` together.
 
 1. **Money in or out, and currency conversions, first within their date.** Later buys are funded by them, and the
    shadow portfolio buys its benchmark with every flow on its own date, so a wrong or missing date
-   shifts the comparison. `decision:record` refuses a flow that would take the cash of a silo below zero, as the
-   inbox does.
+   shifts the comparison. The inbox refuses a withdrawal or a conversion that would take the cash of a silo below zero.
 2. **Buys and sales, in the order they happened**, in a batch: the commands of a batch are checked in order against
    the state the previous ones produce, so a buy and its sale in one batch are valid. A sale takes the result from the
    lots' own entry prices, oldest lot first. A sale dated before a lot it would consume is refused. The order does
@@ -110,6 +107,19 @@ at the fill price and `stop_executed: true`.
 A refused batch is moved to `inbox/rejected/` with its errors beside it and applies nothing. It is never retried, and
 the heartbeat names it in every digest until you answer it: write a new batch that starts with `replaces: <file>`, or
 give it up with a `discard` command (`file: <file>`). The file stays in `rejected/` as the audit trail.
+
+Money you moved between your bank and the broker is a `deposit` or a `withdrawal` command: `amount` with its currency,
+which names the silo. It has no date: the line of the log is of the day the batch is applied. A withdrawal is refused if
+it exceeds the available cash. The first deposit of a currency creates its silo.
+
+```yaml
+schema_version: 1
+commands:
+  - command: deposit
+    amount: 500 EUR
+  - command: withdrawal
+    amount: 200 USD
+```
 
 A currency conversion is a `convert` command: `amount` is what you converted, with its currency, which is the silo the
 money **leaves**. Say what arrived (`received`, in the other currency) or the rate you got (`rate`: the other currency
@@ -183,18 +193,6 @@ commands:
 All examples run as `echo '<json>' | npm run decision:record`, or with the JSON in a file piped in.
 `currency` is the silo (`EUR` or `USD`). Numbers are plain (`1234.56`), not localized. Each command prints what it
 recorded; read that line, it is the engine's feedback.
-
-### Deposit or withdrawal
-
-Money you moved between your bank and the broker. The command moves the cash of the store.
-
-```json
-{ "type": "deposit", "currency": "EUR", "amount": 500, "date": "2026-10-12" }
-```
-
-```json
-{ "type": "withdrawal", "currency": "USD", "amount": 200 }
-```
 
 ### Stop change
 

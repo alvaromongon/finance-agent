@@ -12,7 +12,7 @@ parentheses so a code comment that cites it can be found here.
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | [Heartbeat](#heartbeat)                                       | `heartbeat:eu`, `heartbeat:us`                                                              |
 | [Resolve a pending escalation](#resolve-a-pending-escalation) | `pending:list`, `pending:show`, `pending:record`; a `resolve` command in `inbox/` closes it |
-| [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner's flows and stop adjustments |
+| [Record a decision](#record-a-decision)                       | called by the two flows above; `decision:record` for the owner's stop adjustments           |
 | [Monday briefing](#monday-briefing)                           | `monday-briefing:prepare`, `monday-briefing:finalize`                                       |
 | [Weekly screening](#weekly-screening)                         | `screening:prepare`, `screening:resolve`, `screening:summarize`                             |
 | [Check the inbox](#check-the-inbox)                           | `inbox:check`                                                                               |
@@ -253,7 +253,7 @@ them. It needs one history request per position with a stop; without ATR the pos
 ## Record a decision
 
 - **Starts with**: a reasoner answer (the heartbeat with the `api` backend, or `pending:record`),
-  or the owner narrating a cash flow or a stop adjustment (`npm run decision:record`, JSON on stdin).
+  or the owner narrating a stop adjustment (`npm run decision:record`, JSON on stdin).
 - **Steps (reasoner answer)**:
   1. Check the answer is for the signal's ticker and currency.
   2. Compute the engine ticket: stop, units, amount and R:R from the rules below. The reasoner
@@ -268,8 +268,10 @@ them. It needs one history request per position with a stop; without ATR the pos
      and `pending:resolve` (a reasoner's `ADJUST_STOP` whose ticket is not blocked) and the Monday briefing (an
      `ADJUST_STOP` in its `PROPOSALS` whose ticket has a stop). A blocked one (`no_atr`, `stop_not_raised`, no
      position) is logged and dropped nowhere. The tight-stop warning of the heartbeat proposes no level.
-- **Steps (owner narration)**: `decision:record` records what the owner narrates that is not a trade: a stop
-  adjustment (`adjust_stop`), a deposit or a withdrawal. **A currency [conversion](glossary.md#conversion) is no longer recorded here (#135)**:
+- **Steps (owner narration)**: `decision:record` records what the owner narrates that the inbox does not: a stop
+  adjustment (`adjust_stop`), one line of the log. **A deposit and a withdrawal are not recorded here any more (#197)**:
+  they are the `deposit` and `withdrawal` commands of the [inbox](#apply-the-inbox), which move the cash and write
+  their line of the log. **A currency [conversion](glossary.md#conversion) is no longer recorded here (#135)**:
   `fx_conversion` is refused, with a message that names the `convert` command of the [inbox](#apply-the-inbox), the
   only way to convert cash between the silos. **A buy and a sale
   are not recorded here any more (#152)**: `entry` and `exit` are refused, with a message that names the `buy` and
@@ -278,26 +280,16 @@ them. It needs one history request per position with a stop; without ATR the pos
   [ticker](glossary.md#ticker) of an adjustment is parsed first: one that does not parse is refused before anything
   is written), then fills what the owner need not know: id, rules version, the silo benchmark and, for an adjustment,
   the system proposal it follows (within 10 days), which sets the origin.
-  - With the [store](glossary.md#store) the cash moves too, as the inbox's `deposit` and `withdrawal` move it: a
-    deposit and a withdrawal move it likewise, in one write. Any movement that would take the
-    available cash of a silo below zero is refused, before anything is recorded (the movement is tried first, then the
-    log is appended, then the same movement is written). `portfolio.md` is then a generated view and is never edited
-    by hand. Without the store, the cash is the owner's cell, as before, and the flow only appends to the log.
 - **Reads / writes**: reads `logs/decisions.jsonl` (and the archive, if `DECISIONS_ARCHIVE_DIR` gives one), the rules
-  version and the store; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the cash of the store (and the view
-  generated from it) and email. The decision log is appended first and the store written second, atomically (a
-  temporary file in the same directory renamed over it). Every writer of the store (this one and `inbox:ingest`) goes through the portfolio
-  [state port](glossary.md#state-port) (`src/portfolio-store.ts`).
+  version and the store; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl` and email; it writes no state. Every writer of the store
+  (`inbox:ingest` and `state:repair`) goes through the portfolio [state port](glossary.md#state-port) (`src/portfolio-store.ts`).
   Only with `STATE_COMMIT=git` is the run (`src/decision-record.ts`) a [compare-and-swap](glossary.md#compare-and-swap)
-  like `inbox:ingest`: the log line and the cash move are committed on top of the last commit, and done again over the
+  like `inbox:ingest`: the log line is committed on top of the last commit, and done again over the
   new state if another run committed first. Losing every attempt records nothing and says so: say it again. No
   workflow of the engine or of `examples/workflows/` runs `decision:record` or sets `STATE_COMMIT=git` for it: the owner
   runs it by hand or from the portfolio-sync routine, which leaves its files in the working copy to commit.
 - **When it fails**: nothing is written before the checks pass; a missing rules version stops the record, because a
-  Markdown log without its decision line would mean measuring halfway. A failure of the store write after the log
-  append (no permission, disk full) says the decision is recorded and the cash was not updated, and that the cash is
-  corrected with a `deposit` or a `withdrawal` command in the inbox; the flow must not be recorded again. No message
-  asks the owner to edit the portfolio by hand.
+  Markdown log without its decision line would mean measuring halfway. No message asks the owner to edit the portfolio by hand.
 - **Why**: [ADR-0006](decisions/0006-single-append-only-decision-log.md),
   [ADR-0009](decisions/0009-swing-framework-risk-sizing-and-measurement.md),
   [ADR-0015](decisions/0015-open-lots-live-in-the-portfolio.md) (lots), and for the lot design
@@ -566,7 +558,7 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
   `state/portfolio.json`, `portfolio.md` and `watchlist.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
   `inbox/`; with `STATE_COMMIT=git` it commits and pushes them as one commit, `chore(state): apply inbox <date>`. A batch
   with an error changes none of them. The writers of the store: `inbox:ingest` and
-  `decision:record` (compare-and-swap) and nothing else (#133): the heartbeat and the Monday briefing write only
+  `state:repair` (compare-and-swap) and nothing else (#133): the heartbeat and the Monday briefing write only
   [telemetry](glossary.md#telemetry) (see [Heartbeat](#heartbeat)). The view it generates shows the last prices over the state it
   writes; it reads them, never writes them.
 - **When it fails**: a transient failure (the store or the log cannot be written, a file cannot be moved) leaves the

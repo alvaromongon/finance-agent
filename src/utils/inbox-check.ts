@@ -38,7 +38,6 @@ import {
   patchesOf,
   replay,
   restoreMetadata,
-  stateDifferences,
   withTelemetry,
   type Correction,
   type LedgerFile,
@@ -926,16 +925,6 @@ function checkCorrections(state: InboxState, parsed: ParsedBatch, earlier: Earli
     );
     return rejected();
   }
-  const drift = stateDifferences(state, base.state, "the state", "the applied batches");
-  if (drift.length > 0) {
-    fail(
-      firstAt?.command ?? null,
-      firstAt?.line ?? null,
-      `the state is not what the batches already applied give (${drift.slice(0, 3).join("; ")}${drift.length > 3 ? `; and ${drift.length - 3} more` : ""}): rebuild it first with state:repair (docs/input-format.md › \`state:repair\`)`,
-    );
-    return rejected();
-  }
-
   // One correction at a time, so that the one that fails is named; the ones accepted before it stay in the replay.
   const accepted: Correction[] = [];
   let latest = base;
