@@ -528,6 +528,35 @@ describe("inbox handlers", () => {
       assert.deepEqual([next.EUR.cash, next.EUR.totalCash], [1100, 1300]);
     });
 
+    it("creates the silo of its currency when the portfolio has none: that cash, nothing held, synced the day of the batch (#196)", () => {
+      const { USD: _usd, ...eurOnly } = stateOf();
+      const next = ok(eurOnly, { kind: "deposit", currency: "USD", amount: usd(250.5) });
+      assert.deepEqual(
+        [next.USD.currency, next.USD.cash, next.USD.positions, next.USD.lots, next.USD.syncedAt],
+        ["USD", 250.5, [], [], "2026-11-26T00:00:00.000Z"],
+      );
+      assert.equal(next.USD.reconciled, undefined, "a silo made by a deposit was never compared with the broker");
+      assert.equal(next.EUR.cash, 1000);
+    });
+
+    it("starts a portfolio from nothing, and a second currency adds the other silo (#196)", () => {
+      const first = ok({}, { kind: "deposit", currency: "EUR", amount: eur(100) });
+      assert.deepEqual(Object.keys(first), ["EUR"]);
+      const second = ok(first, { kind: "deposit", currency: "USD", amount: usd(40) });
+      assert.deepEqual([second.EUR.cash, second.USD.cash], [100, 40]);
+    });
+
+    it("every other command on a silo the portfolio lacks is refused and says to deposit first (#196)", () => {
+      const { USD: _usd, ...eurOnly } = stateOf();
+      for (const command of [
+        { kind: "withdrawal", currency: "USD", amount: usd(1) },
+        { kind: "buy", currency: "USD", ticker: tk("KO"), date: "2026-11-01", units: 1, price: 10 },
+        { kind: "convert", from: "EUR", to: "USD", amount: eur(10), rate: 1.1 },
+      ] as Command[]) {
+        assert.match(reason(eurOnly, command), /there is no USD silo in the portfolio: deposit first/);
+      }
+    });
+
     it("checks the currency explicitly: an amount of another silo is refused, not added", () => {
       // A silo whose `currency` does not match the one asked for: the type alone does not catch it (#145).
       const state = stateOf();
@@ -899,9 +928,15 @@ describe("inbox handlers", () => {
     });
 
     it("reports the state's error for a silo that fails to read, not 'no open position' or 'no stop to clear'", () => {
-      assert.match(reason(crossedState(stateOf()), clearStopOf()), /^there is no USD silo in the portfolio$/);
+      assert.match(
+        reason(crossedState(stateOf()), clearStopOf()),
+        /^there is no USD silo in the portfolio: deposit first/,
+      );
       const unstopped = stateOf({}, { EUR: [lot("EUR", { ticker: "SAP.DE", units: 2 })] });
-      assert.match(reason(crossedState(unstopped), clearStopOf()), /^there is no USD silo in the portfolio$/);
+      assert.match(
+        reason(crossedState(unstopped), clearStopOf()),
+        /^there is no USD silo in the portfolio: deposit first/,
+      );
     });
 
     it("clears a ticker held in a silo that reads although the other silo does not", () => {

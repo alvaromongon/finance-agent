@@ -207,6 +207,71 @@ describe("inbox:ingest", () => {
     });
   });
 
+  describe("the first deposit creates the silo (#196)", () => {
+    const DEPOSIT = (amount: string) => batch(`command: deposit\namount: ${amount}`);
+    beforeEach(() => rm(dir("portfolio.md"), { force: true })); // an empty data repository: no store, no portfolio.md
+
+    it("an empty store plus a deposit batch gives a silo, and a second currency adds the other", async () => {
+      await drop("1.yaml", DEPOSIT("250.50 EUR"));
+      const first = await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"));
+      assert.equal(first.exitCode, 0, first.lines.join("\n"));
+      let doc = JSON.parse(await storeText());
+      assert.deepEqual(Object.keys(doc.silos), ["EUR"]);
+      assert.equal(doc.silos.EUR.cash, "250.50 EUR");
+      assert.equal(doc.silos.EUR.synced_at, "2026-11-12T09:00:00.000Z");
+      assert.deepEqual([doc.silos.EUR.positions, doc.silos.EUR.lots], [[], []]);
+      assert.match(await read("portfolio.md"), /Available cash \| 250,50 €/);
+
+      await drop("2.yaml", DEPOSIT("40 USD"));
+      const second = await inbox.ingestInbox(new Date("2026-11-13T09:00:00Z"));
+      assert.equal(second.exitCode, 0, second.lines.join("\n"));
+      doc = JSON.parse(await storeText());
+      assert.deepEqual([doc.silos.EUR.cash, doc.silos.USD.cash], ["250.50 EUR", "40.00 USD"]);
+      assert.equal(doc.silos.EUR.synced_at, "2026-11-12T09:00:00.000Z", "the silo no command touched keeps its time");
+      assert.equal(doc.silos.USD.synced_at, "2026-11-13T09:00:00.000Z");
+    });
+
+    it("check reports the same outcome without writing", async () => {
+      await drop("1.yaml", DEPOSIT("250.50 EUR"));
+      const before = await snapshot();
+      assert.deepEqual(await inbox.checkInbox(), {
+        lines: ["Inbox is clean: 1 batch(es) would apply."],
+        exitCode: 0,
+      });
+      assert.deepEqual(await snapshot(), before);
+    });
+
+    it("what the silo holds can be spent in the same batch, and a later command of the other currency is refused", async () => {
+      await drop("1.yaml", batch("command: deposit\namount: 500 EUR", BUY(), STOP));
+      assert.equal((await inbox.ingestInbox()).exitCode, 0);
+      assert.equal(JSON.parse(await storeText()).silos.EUR.cash, "300.00 EUR");
+    });
+
+    it("every other command on a silo that is absent is refused, check and ingest alike, saying to deposit first", async () => {
+      await drop("1.yaml", DEPOSIT("100 EUR"));
+      await inbox.ingestInbox();
+      await drop("2.yaml", batch("command: withdrawal\namount: 5 USD"));
+      const stored = await storeText();
+      const checked = await inbox.checkInbox();
+      const ingested = await inbox.ingestInbox();
+      for (const { lines, exitCode } of [checked, ingested]) {
+        assert.equal(exitCode, 1);
+        assert.match(lines[0], /there is no USD silo in the portfolio: deposit first/);
+      }
+      assert.equal(await storeText(), stored);
+    });
+
+    it("a correction replays over a silo a deposit created", async () => {
+      await drop("1.yaml", DEPOSIT("100 EUR"));
+      await inbox.ingestInbox(new Date("2026-11-12T09:00:00Z"));
+      const [line] = await log();
+      await drop("2.yaml", batch(`command: correct\nid: ${String(line?.id)}\namount: 120 EUR`));
+      const result = await inbox.ingestInbox(new Date("2026-11-13T09:00:00Z"));
+      assert.equal(result.exitCode, 0, result.lines.join("\n"));
+      assert.equal(JSON.parse(await storeText()).silos.EUR.cash, "120.00 EUR");
+    });
+  });
+
   describe("a conversion between the silos (#135)", () => {
     const CONVERT = "command: convert\namount: 1100 EUR\nreceived: 1320 USD\ncosts: 5 EUR";
     const KO_BUY = "command: buy\nticker: KO\ndate: 2026-09-15\nunits: 10\nprice: 100 USD";

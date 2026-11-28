@@ -1,0 +1,25 @@
+# The batch a data repository starts from: the first deposit of a currency creates its silo, so no portfolio.md is
+# needed. `npm run inbox:ingest` applies it to the engine's own store (`state/portfolio.json`); the format is in
+# docs/input-format.md (`inbox/*.yaml`). Fictitious amounts: replace them with yours.
+schema_version: 1
+commands:
+  - command: deposit
+    amount: 1560.00 EUR
+  - command: deposit
+    amount: 1210.00 USD
+  - command: buy
+    ticker: SAP.DE
+    date: 2026-09-15
+    units: 2
+    price: 180.00 EUR
+  - command: set_stop
+    ticker: SAP.DE
+    price: 168.00 EUR
+  - command: buy
+    ticker: KO
+    date: 2026-09-16
+    units: 5
+    price: 62.00 USD
+  - command: set_stop
+    ticker: KO
+    price: 58.00 USD

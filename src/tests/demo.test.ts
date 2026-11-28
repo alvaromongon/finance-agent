@@ -2,7 +2,7 @@
  * The demo: a heartbeat per silo against examples/brain with the
  * fixtures provider, without Claude, SMTP or network, in a temporary copy so
  * the example stays clean. It also checks that every example file parses with
- * the input format (portfolio.md v2, every other file v1).
+ * the input format (the store made from the example's deposit batch, every other file v1).
  */
 import { describe, it, after, mock } from "node:test";
 import assert from "node:assert/strict";
@@ -46,14 +46,24 @@ describe("demo against examples/brain", () => {
 
   it("leaves examples/brain untouched", async () => {
     const brain = join(import.meta.dirname, "..", "..", "examples", "brain");
-    // The example ships the decision log its lots refer to; a demo run must leave nothing next to it
-    // (no outbox, no pending files, no decision logs).
-    assert.deepEqual(await readdir(join(brain, "logs")), ["decisions.jsonl"]);
+    // The example starts from a deposit batch, not from a portfolio.md (#196); a demo run must leave nothing next to
+    // it: no store, no logs (outbox, pending, decisions), and the batch still in `inbox/`, not in `inbox/applied/`.
+    assert.deepEqual(await readdir(brain), [
+      "inbox",
+      "portfolio-policy.md",
+      "routines",
+      "screening-log.md",
+      "screening-universe.md",
+      "strategies",
+      "tesis",
+      "watchlist.md",
+    ]);
+    assert.deepEqual(await readdir(join(brain, "inbox")), ["2026-09-01-start.yaml"]);
   });
 
-  it("every example file parses with the input format, and its lots match the decision log", async () => {
-    // Read the example itself, not a copy a demo run already changed.
-    process.env.VAULT_PROJECT_DIR = join(import.meta.dirname, "..", "..", "examples", "brain");
+  it("every file of the example, once its deposit batch is applied, parses with the input format, and its lots match the decision log", async () => {
+    // The copy a demo run made from the example, not the example itself: the silos exist only after the batch.
+    process.env.VAULT_PROJECT_DIR = (await demo("EUR")).dir;
     const io = await import("../vault-io.js");
     const store = await import("../portfolio-store.js");
     const readSilo = async (currency: "EUR" | "USD") => store.requireReadable(await store.readPortfolio(currency));

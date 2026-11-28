@@ -519,7 +519,9 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
      the batches before), its own proceeds (`units × price`) and its origin (`sistema` after a `sell` proposal of the system
      within 10 days, `propietario` otherwise). A `convert` changes the cash of both silos in one step, from the cash the
      commands before it left (a conversion refused leaves the cash of both silos unknown to the commands after it); it
-     opens no lot and writes its `fx_conversion` line. A `split` (a [corporate action](glossary.md#corporate-action))
+     opens no lot and writes its `fx_conversion` line. A `deposit` into a currency with no silo creates it (an empty data
+     repository starts from a deposit batch: [the `deposit` command](input-format.md#inboxyaml)); any other command on a
+     currency with no silo is refused, saying to deposit first. A `split` (a [corporate action](glossary.md#corporate-action))
      scales every open lot of its ticker in every silo that holds it (units × new ÷ old, entry price and initial
      stop ÷ new ÷ old) and the position with them, changes no cash and keeps the order of the lots, so a sale after it
      sells the adjusted lots first in, first out; a split that would leave a whole number of units fractional, that is

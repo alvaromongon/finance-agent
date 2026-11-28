@@ -18,7 +18,7 @@ import {
   setTableRows,
 } from "../utils/portfolio-codec.js";
 
-const EXAMPLE = readFileSync(new URL("../../examples/brain/portfolio.md", import.meta.url), "utf8");
+const EXAMPLE = readFileSync(new URL("./fixtures/portfolio-example.md", import.meta.url), "utf8");
 
 const HEADER = ["Ticker", "Volume", "Avg price", "Current price", "P/L", "Stop loss"];
 

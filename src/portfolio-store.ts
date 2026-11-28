@@ -716,8 +716,8 @@ export async function saveStore(store: PortfolioStore): Promise<void> {
 
 /**
  * Makes the store from the old `portfolio.md` now, with every silo synced and reconciled with the broker as of
- * `syncedAt` (the demo, which runs on a copy of the example brain that must not warn of a stale portfolio: it is made
- * as if the owner had sent a snapshot with no difference that day). A store that exists is left as it is.
+ * `syncedAt` (the tests that start from a portfolio that must not warn of being stale: it is made as if the owner had
+ * sent a snapshot with no difference that day). A store that exists is left as it is. Removed with the seeding (#143).
  */
 export async function seedStore(syncedAt: Date): Promise<void> {
   if ((await readStore()) !== null) return;

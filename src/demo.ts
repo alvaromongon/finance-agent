@@ -11,7 +11,7 @@
 // leaves the machine. The environment is set here, before config.js loads,
 // and the local .env is not loaded, so it cannot point the demo at real data,
 // send real mail or change its thresholds.
-import { cp, mkdtemp, readFile, readdir } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Currency } from "./types.js";
@@ -46,10 +46,31 @@ export async function runDemo(currency: Currency): Promise<DemoResult> {
     MAIL_REQUIRE_DELIVERY: "false",
   });
 
-  // The copy gets the engine's own store, synced today, so the demo does not warn of a stale portfolio and runs on
-  // the state the engine works on, with `portfolio.md` as the view it generates (#132).
-  const { seedStore } = await import("./portfolio-store.js");
-  await seedStore(new Date());
+  // The copy starts the way a data repository does: a deposit batch in `inbox/` (examples/brain/inbox/) and no
+  // portfolio.md, so the first deposit of each currency creates its silo (#196). Applied now, then a snapshot of what the
+  // broker would show today (the same cash and positions), so the demo does not warn of a stale portfolio.
+  const { ingestInbox } = await import("./inbox.js");
+  const { asNumber } = await import("./money.js");
+  const { readBothPortfolios, requireReadable } = await import("./portfolio-store.js");
+  const now = new Date();
+  const start = await ingestInbox(now);
+  if (start.exitCode !== 0) throw new Error(`The example batch was not applied:\n${start.lines.join("\n")}`);
+  const silos = await readBothPortfolios();
+  const snapshot = [silos.EUR, silos.USD].flatMap((read) => {
+    if (read === undefined) return [];
+    const { currency, cash, positions } = requireReadable(read);
+    const held = positions.map((p) => `\n      - ticker: ${p.ticker}\n        units: ${p.volume}`).join("");
+    return [
+      `  - command: snapshot\n    date: ${now.toISOString().slice(0, 10)}\n    cash: ${asNumber(cash)} ${currency}\n    positions:${held || " []"}`,
+    ];
+  });
+  await writeFile(
+    join(dir, "inbox", "snapshot.yaml"),
+    `schema_version: 1\ncommands:\n${snapshot.join("\n")}\n`,
+    "utf8",
+  );
+  const reconciled = await ingestInbox(now);
+  if (reconciled.exitCode !== 0) throw new Error(`The snapshot was not applied:\n${reconciled.lines.join("\n")}`);
 
   const { runHeartbeat } = await import("./heartbeat-run.js");
   const { createMarketDataProvider } = await import("./providers/factory.js");
