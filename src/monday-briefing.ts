@@ -40,7 +40,7 @@ import {
   readWatchlistSkippingBadTickers,
   archiveThesis,
 } from "./vault-io.js";
-import { ignoringLots, readPortfolio, readPortfolioView, readWatchlistView, refreshPrices } from "./portfolio-store.js";
+import { ignoringLots, readPortfolio, readPortfolioView, readWatchlistView, recordPrices } from "./portfolio-store.js";
 import { dropBatchOnce } from "./inbox-store.js";
 import { stopWatchingBatch } from "./utils/inbox-proposals.js";
 import { dropStopProposals } from "./stop-proposals.js";
@@ -141,16 +141,16 @@ export async function prepareBriefing(
     ]),
   ];
 
-  // Refresh Current price and P/L in portfolio.md BEFORE reading it for the
+  // Record the last prices (telemetry, #133; the state is not written) BEFORE reading the portfolio for the
   // prompt. Without this the briefing got the table as the last heartbeat
   // left it next to today's technicals, and had to resolve the contradiction
   // in prose: the 2026-08-31 report spent a process note explaining why
   // BTC-EUR showed both 79.858,60 and 67.308,25. With the batch provider this
   // is 1–2 requests that also warm the cache for buildTechnicalsSection.
-  console.error("[monday-briefing] Refreshing portfolio.md prices...");
+  console.error("[monday-briefing] Recording the last prices...");
   const refreshedPrices = await provider.getPrices(allTickers);
-  await refreshPrices("EUR", refreshedPrices);
-  await refreshPrices("USD", refreshedPrices);
+  await recordPrices("EUR", refreshedPrices);
+  await recordPrices("USD", refreshedPrices);
 
   // Re-read with the prices already written: the prompt, the weight breakdown
   // and the USD buffer must all describe the same state.

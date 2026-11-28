@@ -32,6 +32,7 @@ this format.
 | -------------------------------------- | --------------------------- | ------- | ---------------------------------------------------------------- |
 | `portfolio.md`                         | yes                         | **2**   | Frontmatter, `Cash`, `Positions` and `Lots` tables per currency  |
 | `state/portfolio.json`                 | yes (written by the engine) | **1**   | All of it: the engine's store of the portfolio                   |
+| `telemetry/prices-<ccy>.json`          | yes (written by the engine) | **1**   | All of it: the last prices of a silo (not state, #133)           |
 | `inbox/*.yaml`                         | yes                         | **1**   | Frontmatter-less YAML: `schema_version` and `commands`           |
 | `watchlist.md`                         | yes                         | 1       | First ` ```yaml ` block: seeds the store, then generated from it |
 | `screening-universe.md`                | yes                         | 1       | Frontmatter, first ` ```yaml ` block                             |
@@ -309,9 +310,11 @@ automated run is in flight) together with its lot in `Lots` and `Volume` in
 ## `state/portfolio.json`
 
 The engine's [store](glossary.md#store) of the portfolio: cash, positions and lots of each silo it has, as JSON that
-only the engine writes. **Do not edit it**, and do not edit `portfolio.md` either: `inbox:ingest` and the flows that
-refresh prices write the store and generate `portfolio.md` from it, overwriting what is there. To change the portfolio,
-drop a batch of commands in `inbox/` ([below](#inboxyaml)). Commit `state/` with the rest of the data directory.
+only the engine writes. **Do not edit it**, and do not edit `portfolio.md` either: `inbox:ingest` is the only flow that
+writes the store (the heartbeat and the Monday briefing write no state: [prices are telemetry](#telemetryprices-ccyjson)), and it
+generates `portfolio.md` from it, overwriting what is there. To change the portfolio,
+drop a batch of commands in `inbox/` ([below](#inboxyaml)). Commit `state/` with the rest of the data directory. The `current_price` and `pl` of a position are as the last command left them
+(a buy's price, a snapshot, a split's adjustment); the flows read the last prices over them, from telemetry.
 
 `decision:record` no longer records a buy or a sale (#152): they are told to the engine with a `buy` or a `sale`
 command in a batch, the only way a trade is recorded; `entry` and `exit` are refused there with a message that names
@@ -441,6 +444,29 @@ is as of, against `PORTFOLIO_STALE_DAYS` (default 7), measured from the start of
 and the [heartbeat](flows.md#heartbeat) digest names it. Seeding the store from a `portfolio.md` gives no snapshot, so a
 silo made from a file with no `last_manual_sync` is stale instead of synced at the moment of the seeding. While there is
 no store (the state is still `portfolio.md`) the `last_manual_sync` warning is the only one, until #143 removes that way.
+
+## `telemetry/prices-<ccy>.json`
+
+The last prices of a silo (#133): [telemetry](glossary.md#telemetry), written only by the engine's heartbeat and Monday briefing,
+never by `inbox:ingest`, and **not state**: the store is not written when a price changes. **Do not edit it.** Commit `telemetry/`
+with the rest of the data directory, so the generated `portfolio.md` keeps showing the last prices from one run to the next.
+It is the one telemetry file the format versions; the sent-alert markers `logs/heartbeat-sent-<ccy>.json` are telemetry too.
+
+```json
+{
+  "schema_version": 1,
+  "silos": {
+    "USD": { "TCK": { "price": "110.5", "volume": "2", "avg_price": "100" } }
+  }
+}
+```
+
+Each price carries the `volume` and `avg_price` of the position it was seen against, and every read of the portfolio puts it over
+a position only while both still match: a buy, a sale or a split changes them, and the position then shows the price the state
+holds until the next refresh. The P/L shown is `(price − avg_price) × volume`. Numbers are plain decimal text, tickers are in
+order. The file is a silo's alone (`prices-eur.json`, `prices-usd.json`), so two heartbeats never write the same one. A file that
+is missing, is not valid or has another `schema_version` is said and ignored, never a reason to stop a flow; the next refresh
+writes it again. Nothing is written when no price changes.
 
 ## `inbox/*.yaml`
 

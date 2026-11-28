@@ -183,8 +183,19 @@ writes a state file.
 ### Store
 
 The engine's own file of the portfolio, `state/portfolio.json`, written only by the engine; it holds the [watchlist](#watchlist) too.
-`portfolio.md` and `watchlist.md` are views generated from it, read by nobody; to change the portfolio or the watchlist, drop a
+`portfolio.md` and `watchlist.md` are views generated from it, read by nobody; prices are not in it but in [telemetry](#telemetry) (the view
+shows them); to change the portfolio or the watchlist, drop a
 [batch](#batch) in the [inbox](#inbox).
+
+### Telemetry
+
+What the engine observes, as against what the owner tells it (#133): the last prices and the P/L they give, and the markers of the
+alerts already sent (`logs/heartbeat-sent-<ccy>.json`). It is written by the [heartbeat](#heartbeat) and the Monday briefing
+and never by `inbox:ingest`, and it is not [state](#store): the last prices
+are in `telemetry/prices-<ccy>.json`, one file per silo, each price with the volume and average price of the position it was
+seen against, so that a buy, a sale or a split makes a price seen before it stop applying to the position. A read of the
+portfolio puts them over the positions, and the generated `portfolio.md` shows them. A telemetry file that does not read is
+ignored and never stops a flow.
 
 ### Watchlist
 
@@ -208,7 +219,7 @@ does not take part in it: its stop checks read the last commit.
 
 ### Heartbeat
 
-The daily run, after each market's close: it refreshes prices, checks stops, looks for
+The daily run, after each market's close: it records the last prices ([telemetry](#telemetry)), checks stops, looks for
 [setups](#setup) and [risk triggers](#risk-trigger), and [escalates](#escalation) what survives
 the rules.
 

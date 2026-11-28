@@ -52,7 +52,7 @@ parentheses so a code comment that cites it can be found here.
      (bad JSON, a field the engine does not accept, another version), the run goes on over `state/portfolio.last-readable.json`, the
      last state that read (a copy written with every write of the store), so the stops it holds are still checked. A console warning
      and the digest name the corruption and the [repair](#repair-the-state) that fixes it, in every run while it lasts (not
-     deduplicated). The corrupt file is left as it is (prices are not written over it), and a run with neither the file nor its copy
+     deduplicated). The corrupt file is left as it is (nothing is written over it: the prices go to telemetry), and a run with neither the file nor its copy
      readable fails with the reason.
      2'. Name every [rejected batch](glossary.md#rejected-batch) still awaiting an answer (a file of `inbox/rejected/` that
      no applied batch replaced or discarded, #152) in the digest, in every run while it lasts (not deduplicated), right
@@ -75,22 +75,26 @@ parentheses so a code comment that cites it can be found here.
      digest in every run (not deduplicated) until a later snapshot shows none; a snapshot with no difference says so, once,
      the day it is recorded (`recorded_on` of the silo's snapshot in the store). While the state is still `portfolio.md` there is no snapshot and its `last_manual_sync`
      keeps its own warning until #143 removes that way.
-  3. Fetch prices ([market data](#market-data-freshness)) and write them into the portfolio
-     (current price and P/L; with the [store](glossary.md#store), into it, regenerating `portfolio.md`; the rest of
-     this step describes the old file, which is the state until the first `inbox:ingest`). This happens before the market-session guard on purpose. The write
-     goes through the file's one codec and edits the priced cells in place, then replaces the file
-     atomically (a temporary file renamed over it), so every other line stays where it was (notes and spacing included); every `Positions` row of a ticker that has a
-     price and a readable `Volume` and `Avg price` is updated, its ticker written in upper case.
-     The price refresh is the heartbeat's only write of the state, and it takes no lock and runs no compare-and-swap: the
-     run reads the last commit it was started from and the write reaches the data repository through `commit-changes`
-     with `state-paths`. If another run committed the [store](glossary.md#store) or its view since, the refresh is dropped
-     with a warning and the rest of the run's changes (logs) is committed; the next run refreshes the prices again. The
-     run's lines of `logs/decisions.jsonl` are merged with the ones another run appended meanwhile only if the data
+  3. Fetch prices ([market data](#market-data-freshness)) and record them as the last prices. **Prices are not state**
+     (#133): with the [store](glossary.md#store) they go to [telemetry](glossary.md#telemetry), `telemetry/prices-<ccy>.json`
+     (one file per silo, each price with the volume and average price of the position it was seen against), and into the
+     generated view `portfolio.md`; the store is not written, and `inbox:ingest` is its only writer. Every read of the
+     portfolio puts the last prices over the positions they were seen against, so the P/L, the position values and the view
+     show them; a price seen before a buy, a sale or a split of its position is not shown over it, and a position with no price
+     takes the one the state holds. A telemetry file that does not read is said in the log and ignored, and never stops the run.
+     This happens before the market-session guard on purpose. Nothing is written if no price changes. (While there is still no
+     store, `portfolio.md` is the state and its `Current price` and `P/L` cells are edited in place as before, through the file's
+     one codec, until #143 removes that way.)
+     The run takes no lock and runs no compare-and-swap, because it writes no state: the telemetry and the view reach the
+     data repository through `commit-changes` (the view with `state-paths`, so that if another run committed the store or its
+     view since, the view is dropped with a warning and the rest of the run's changes is committed; the next run generates it
+     again). The run's lines of `logs/decisions.jsonl` are merged with the ones another run appended meanwhile only if the data
      repository's `.gitattributes` gives that file `merge=union` (README, _State writes never overlap_); without it the
      patch conflicts, `commit-changes` fails with an error and that run's logs are not committed. A push that loses a
      race is retried from the new head and puts back only the files the run's patch touched. Stop
      detection (step 4) never waits for any of this, and a run that keeps losing the
-     [compare-and-swap](glossary.md#compare-and-swap) of an ingest delays the state and never a stop check (ADR-0015).
+     [compare-and-swap](glossary.md#compare-and-swap) of an ingest delays the state and never a stop check (ADR-0015): it
+     checks every stop of the state last applied against the prices just fetched.
   4. Detect crossed stops: a position priced below its recorded stop goes straight into the digest,
      with no LLM and no cooldown.
      4'. Name every open position with no stop (`stopOf`: a stop that is not above zero is none) in the digest, with its
@@ -133,10 +137,10 @@ parentheses so a code comment that cites it can be found here.
   12. Send the digest (crossed stops, positions without a stop, a configuration file that does not validate, a problem with the lots, a ticker or a money cell that cannot be read, a stale silo, the differences of the latest snapshot, tight stops, armed setups, escalations) with only what is new
       since the last send today (crossed stops, the differences of a snapshot, configuration problems and the lots, ticker and unreadable-cell warnings are always included), and mark it as sent only if the email went out.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), the watchlist (the store, else `watchlist.md`), `logs/decisions.jsonl`, the rules
-  `version` in `strategies/base.md`, `routines/execution-analysis.md` and the last log of each ticker. Writes the portfolio (prices: into the store,
-  regenerating the view `portfolio.md`; else `portfolio.md`), `state/config/`, the batch of stop proposals in `inbox/` (a new file; it never edits one),
+  `version` in `strategies/base.md`, `routines/execution-analysis.md` and the last log of each ticker. Writes the last prices (`telemetry/prices-<ccy>.json`, and the view `portfolio.md` generated with them; never the store; while there is no store, the
+  prices of `portfolio.md`), `state/config/`, the batch of stop proposals in `inbox/` (a new file; it never edits one),
   `logs/decisions.jsonl`, `logs/<date>-<ticker>.md`, `logs/pending/`, `logs/heartbeat-sent-<ccy>.json`
-  and email ([delivery](#email-delivery)). Market data comes from Yahoo Finance. Its workflow commits `inbox/` with the other paths it writes, never state.
+  and email ([delivery](#email-delivery)). Market data comes from Yahoo Finance. Its workflow commits `inbox/` and `telemetry/` with the other paths it writes, never the store.
 - **When it fails**: what was gathered before the failure still goes out in the digest, and the
   original error turns the run red; if that email also fails, it is only logged. A provider failure
   on one ticker's extras (strength, ATR, benchmark) does not stop the run; they are best-effort.
@@ -156,7 +160,7 @@ parentheses so a code comment that cites it can be found here.
 - The "market closed" guard looks at the age of the last tick (18 h by default,
   `MARKET_SESSION_MAX_AGE_HOURS`), not at calendar dates. A late schedule (up to 13 h in the worst
   observed case) is told apart from a holiday (at least 25 h) or a weekend (at least 49 h).
-- Portfolio prices are refreshed before that guard, so a closed market still leaves fresh closes.
+- The last prices are recorded before that guard, so a closed market still leaves fresh closes.
 - A price below a recorded stop sends a direct email, with no LLM and no cooldown. It repeats on
   every run until the portfolio is synced, deliberately: it means the account has not been checked.
   The engine cannot know whether the broker executed the stop; only a manual sync answers that.
@@ -282,8 +286,7 @@ them. It needs one history request per position with a stop; without ATR the pos
 - **Reads / writes**: reads `logs/decisions.jsonl` (and the archive, if `DECISIONS_ARCHIVE_DIR` gives one), the rules
   version and the store; writes `logs/<date>-<ticker>.md`, `logs/decisions.jsonl`, the cash of the store (and the view
   generated from it) and email. The decision log is appended first and the store written second, atomically (a
-  temporary file in the same directory renamed over it). Every writer of the store (this one, `inbox:ingest` and the
-  price update that the heartbeat and the Monday briefing run) goes through the portfolio
+  temporary file in the same directory renamed over it). Every writer of the store (this one and `inbox:ingest`) goes through the portfolio
   [state port](glossary.md#state-port) (`src/portfolio-store.ts`).
   Only with `STATE_COMMIT=git` is the run (`src/decision-record.ts`) a [compare-and-swap](glossary.md#compare-and-swap)
   like `inbox:ingest`: the log line and the cash move are committed on top of the last commit, and done again over the
@@ -315,7 +318,7 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
   an invalid one is named on stderr and the run goes on over its last valid version; `finalize` also puts the warning, with the
   errors, at the top of the email until the first run after a valid edit. With no last valid version the run refuses with the errors.
   1. `prepare` reads both portfolios and watchlists (the watchlist as the text of `watchlist.md`, generated from the store), the portfolio policy, the latest evaluation
-     table and the logs of the last 30 days, and refreshes prices in the portfolio (the store, else `portfolio.md`) first so the
+     table and the logs of the last 30 days, and records the last prices first (telemetry, #133: the store is not written; else `portfolio.md`) so the
      prompt describes one state.
   2. It computes technicals and current setups per asset, the weight breakdown and the USD buffer,
      and prints the prompt (progress goes to stderr).
@@ -327,14 +330,14 @@ value, a position is capped at 25 %, and a buy needs a reward:risk of at least 2
      dropped twice; a failure to write is said and stops nothing), and emails the summary. The watchlist is engine state: the
      briefing edits neither it nor the store, and [`inbox:ingest`](#apply-the-inbox) applies the batches.
 - **Reads / writes**: reads the portfolio (the store, else `portfolio.md`), the watchlist (the store, else `watchlist.md`), `portfolio-policy.md`,
-  `routines/monday-briefing.md`, `strategies/base.md`, `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the portfolio (prices),
-  `tesis/`, `state/config/`, `logs/decisions.jsonl`, the briefing log, `inbox/` (the `stop_watching` batch and the batch of stop proposals) and email. Its workflow commits `inbox/` with the other paths it writes, never state.
+  `routines/monday-briefing.md`, `strategies/base.md`, `logs/decisions-evaluation.md`, thesis notes and recent logs; writes the last prices (telemetry and the generated view, never the store),
+  `tesis/`, `state/config/`, `logs/decisions.jsonl`, the briefing log, `inbox/` (the `stop_watching` batch and the batch of stop proposals) and email. Its workflow commits `inbox/` and `telemetry/` with the other paths it writes, never the store.
 - **When it fails**: an incomplete or truncated report is rejected and nothing is written or sent.
   It re-reads the portfolio instead of using `prepare`'s snapshot, since it runs in another process.
-  In the GitHub workflow its price refresh reaches the data repository through `commit-changes` with `state-paths`,
-  with no lock: if another run committed the [store](glossary.md#store) or its view since the briefing started, the
-  refresh is dropped with a warning and the rest (logs, briefing files, the inbox batch, thesis notes) is committed; the
-  next run refreshes the prices again. `commit-changes` commits only the paths the workflow gives it.
+  In the GitHub workflow its telemetry and the view generated with it reach the data repository through `commit-changes` (the
+  view with `state-paths`: if another run committed the [store](glossary.md#store) or its view since the briefing started,
+  the view is dropped with a warning and the rest (logs, briefing files, the inbox batch, thesis notes, telemetry) is
+  committed; the next run generates it again). `commit-changes` commits only the paths the workflow gives it.
 - **Why**: [ADR-0004](decisions/0004-handoff-mode-for-the-reasoner.md).
 
 ## Weekly screening
@@ -560,9 +563,10 @@ Candidates excluded by filter 0 are not recorded; only the run's progress output
 - **Reads / writes**: reads the last commit of the branch (with `STATE_COMMIT=git`), the state and the rest above. Writes
   `state/portfolio.json`, `portfolio.md` and `watchlist.md`, `logs/decisions.jsonl` (telemetry), and moves the files of
   `inbox/`; with `STATE_COMMIT=git` it commits and pushes them as one commit, `chore(state): apply inbox <date>`. A batch
-  with an error changes none of them. The writers of the store found when this was written: `inbox:ingest` and
-  `decision:record` (compare-and-swap), and the price refresh of the heartbeat and the Monday briefing (through
-  `commit-changes`, see [Heartbeat](#heartbeat)).
+  with an error changes none of them. The writers of the store: `inbox:ingest` and
+  `decision:record` (compare-and-swap) and nothing else (#133): the heartbeat and the Monday briefing write only
+  [telemetry](glossary.md#telemetry) (see [Heartbeat](#heartbeat)). The view it generates shows the last prices over the state it
+  writes; it reads them, never writes them.
 - **When it fails**: a transient failure (the store or the log cannot be written, a file cannot be moved) leaves the
   files in `inbox/` and throws; the next run finishes it without applying anything twice (the store remembers the batches
   it applied, and the lines it owes the log).

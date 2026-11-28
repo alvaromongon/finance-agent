@@ -140,6 +140,7 @@ describe("runHeartbeat", () => {
     escalated.length = 0;
     await rm(join(vaultDir, "logs"), { recursive: true, force: true });
     await rm(join(vaultDir, "state"), { recursive: true, force: true });
+    await rm(join(vaultDir, "telemetry"), { recursive: true, force: true });
     await rm(join(vaultDir, "inbox"), { recursive: true, force: true });
     await mkdir(join(vaultDir, "logs"), { recursive: true });
     await mkdir(join(vaultDir, "strategies"), { recursive: true });
@@ -214,6 +215,58 @@ describe("runHeartbeat", () => {
     it("a position with a stop is not named", async () => {
       await heartbeat();
       for (const email of await outbox()) assert.doesNotMatch(email.body, /Posiciones sin stop/);
+    });
+  });
+
+  describe("prices are telemetry, never state (#133)", () => {
+    const stateFiles = ["portfolio.json", "portfolio.last-readable.json"];
+    const readState = async () => Promise.all(stateFiles.map((f) => readFile(join(vaultDir, "state", f), "utf8")));
+    const seedStore = async () => {
+      const { storeFromPortfolioFile, saveStore } = await import("../portfolio-store.js");
+      await saveStore(await storeFromPortfolioFile());
+    };
+
+    it("a run changes no byte of the store, and the last prices are in telemetry and in the generated view", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await seedStore();
+      const before = await readState();
+
+      await heartbeat();
+
+      assert.deepEqual(await readState(), before);
+      const telemetry = JSON.parse(await readFile(join(vaultDir, "telemetry", "prices-usd.json"), "utf8"));
+      assert.deepEqual(Object.keys(telemetry.silos.USD).sort(), ["CAT", "MSFT"]);
+      assert.equal(telemetry.silos.USD.CAT.price, "210.77");
+      const view = await readFile(join(vaultDir, "portfolio.md"), "utf8");
+      assert.match(view, /\| CAT \| 1 \| 218\.00 \| 210\.77 \| -7\.23 \| 213\.00 \|/);
+    });
+
+    it("risk watch still checks every stop of the state last applied, with no price written to it", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await seedStore();
+
+      await heartbeat();
+      const [first] = await outbox();
+      assert.match(first.subject, /stop cruzado: CAT/);
+
+      // A later run reads the last prices over the state, and the stop is still the state's.
+      await rm(join(vaultDir, "logs", "outbox"), { recursive: true, force: true });
+      await heartbeat();
+      const [second] = await outbox();
+      assert.match(second.subject, /stop cruzado: CAT/, "a crossed stop is in every digest while it lasts");
+      assert.match(second.body, /213/);
+    });
+
+    it("a telemetry file that does not read never stops risk watch", async () => {
+      await setPortfolio(`${MSFT_ROW}\n${CAT_ROW}`, [MSFT_LOT, CAT_LOT]);
+      await seedStore();
+      await mkdir(join(vaultDir, "telemetry"), { recursive: true });
+      await writeFile(join(vaultDir, "telemetry", "prices-usd.json"), "{ not json", "utf8");
+
+      await heartbeat();
+
+      const [email] = await outbox();
+      assert.match(email.subject, /stop cruzado: CAT/);
     });
   });
 

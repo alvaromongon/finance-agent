@@ -11,6 +11,10 @@
 // still the old `portfolio.md` and everything behaves as before; the first `inbox:ingest` seeds the store from
 // it, and #143 removes the old way.
 //
+// Prices are not state (#133). The heartbeat and the Monday briefing write the last prices to `telemetry/prices-<ccy>.json`,
+// never to the store: `inbox:ingest` is the store's only writer. A read puts the last prices over the positions they were seen
+// against, and the generated view shows them, so no flow notices where they live.
+//
 // One read, `readPortfolio`, for every flow. What it could not read is in its result: `lotsProblem` (the
 // `Lots` table as such), `portfolio.skippedLotRows` (rows of it), `skippedRows` (`Positions` rows) and
 // `unreadableCells`. Each flow keeps its own behaviour on them: the heartbeat reports them and goes on, the
@@ -35,9 +39,15 @@ import {
   encodeStore,
   renderView,
   renderWatchlistView,
-  withPrices,
   type PortfolioStore,
 } from "./utils/portfolio-json.js";
+import {
+  decodeTelemetry,
+  encodeTelemetry,
+  observePrices,
+  withObservedPrices,
+  type PriceTelemetry,
+} from "./utils/price-telemetry.js";
 import { volumeMismatches } from "./utils/lots-check.js";
 import { stalenessOf, type Staleness } from "./utils/staleness.js";
 import { addCounted, countedInCents, formatMoney } from "./money.js";
@@ -112,6 +122,56 @@ const watchlistPath = () => join(projectDir(), "watchlist.md");
  */
 const lastReadablePath = () => join(projectDir(), "state", "portfolio.last-readable.json");
 const LAST_READABLE_WHERE = "state/portfolio.last-readable.json";
+
+/**
+ * The last prices the heartbeat and the briefing saw, one file per silo (`telemetry/prices-eur.json`, `prices-usd.json`):
+ * telemetry, not state (#133). A silo's file is written only by the runs of that silo, so the two heartbeats never write the
+ * same file.
+ */
+const telemetryWhere = (currency: Currency) => `telemetry/prices-${currency.toLowerCase()}.json`;
+const telemetryPath = (currency: Currency) => join(projectDir(), telemetryWhere(currency));
+
+/**
+ * The last prices, or none when there are none or the file does not read: they are telemetry, so a file that is missing or
+ * corrupt is said and never stops a flow (a bad file of prices must not switch off risk watch). The next refresh writes it again.
+ */
+async function readTelemetry(): Promise<PriceTelemetry> {
+  const read = async (currency: Currency): Promise<PriceTelemetry> => {
+    const where = telemetryWhere(currency);
+    let text: string;
+    try {
+      text = await readFile(telemetryPath(currency), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+      warnSkipped(`${where} cannot be read: ${(err as Error).message}; the last prices are ignored`);
+      return {};
+    }
+    try {
+      const { [currency]: seen } = decodeTelemetry(text, where);
+      return seen === undefined ? {} : { [currency]: seen };
+    } catch (err) {
+      warnSkipped(`${(err as Error).message}; the last prices are ignored`);
+      return {};
+    }
+  };
+  return { ...(await read("EUR")), ...(await read("USD")) };
+}
+
+/** The read of a silo of the store with the last prices over its positions. */
+async function withLastPrices<C extends Currency>(read: PortfolioRead<C>): Promise<PortfolioRead<C>> {
+  const seen = (await readTelemetry())[read.portfolio.currency];
+  return seen === undefined ? read : { ...read, portfolio: withObservedPrices(read.portfolio, seen) };
+}
+
+/** The store as the flows and the view show it: the state, and the last prices over its positions. Never written back. */
+async function showingLastPrices(store: PortfolioStore): Promise<PortfolioStore> {
+  const telemetry = await readTelemetry();
+  const silo = <C extends Currency>(currency: C) => {
+    const state: PortfolioSnapshot<C> | undefined = store.silos[currency];
+    return state === undefined ? {} : { [currency]: withObservedPrices(state, telemetry[currency]) };
+  };
+  return { ...store, silos: { ...silo("EUR"), ...silo("USD") } };
+}
 
 /** The store, or `null` while there is none (the state is still `portfolio.md`). A store that does not read is refused. */
 async function readStore(): Promise<PortfolioStore | null> {
@@ -209,14 +269,14 @@ export async function readPortfolio<C extends Currency>(
   if (lastReadable) {
     const { store, problem } = await readLastReadable();
     if (store !== null) {
-      const read = readFromStore(store, currency, true);
+      const read = await withLastPrices(readFromStore(store, currency, true));
       return problem === undefined ? read : { ...read, storeProblem: problem };
     }
     // Neither the store nor its copy reads: the old file is the state while there is no store, or the error is the verdict.
     if (problem !== undefined) throw new StoreUnreadableError(problem);
   } else {
     const store = await readStore();
-    if (store !== null) return readFromStore(store, currency, true);
+    if (store !== null) return withLastPrices(readFromStore(store, currency, true));
   }
   return parsePortfolioText(await readFile(portfolioPath(), "utf8"), currency);
 }
@@ -412,26 +472,32 @@ export async function changeCash(
 }
 
 /**
- * Refreshes the `Current price` and `P/L` of the positions that have a price (the heartbeat and the Monday
- * briefing). It touches no other field, `last_manual_sync` included, and writes nothing if no value changes
- * or there is no `portfolio.md`.
+ * Records the prices the heartbeat and the Monday briefing saw (#133). With the store they are telemetry: written to
+ * `telemetry/prices-<ccy>.json` and into the generated view, never into the store, which `inbox:ingest` alone writes. Nothing
+ * is written if no price changes, or while a position has none. Without a store the state is still `portfolio.md`, and
+ * its `Current price` and `P/L` cells are refreshed as before (#143 removes that way); no other field is touched,
+ * `last_manual_sync` included.
  */
-export async function refreshPrices(currency: Currency, prices: ReadonlyMap<Ticker, number>): Promise<void> {
+export async function recordPrices(currency: Currency, prices: ReadonlyMap<Ticker, number>): Promise<void> {
   let store: PortfolioStore | null;
   try {
     store = await readStore();
   } catch (err) {
-    // A store that does not read is not written over with prices: the repair is the way back (#139). The heartbeat goes on.
+    // A store that does not read is not the base of a price: the repair is the way back (#139). The heartbeat goes on.
     if (!(err instanceof StoreUnreadableError)) throw err;
     console.warn(`[vault-io] WARNING: prices not updated: ${err.message}`);
     return;
   }
   if (store !== null) {
     const silo = store.silos[currency];
-    const priced = silo === undefined ? null : withPrices(silo, prices);
-    if (priced === null) return; // nothing changed
-    await writeStore({ ...store, silos: { ...store.silos, [currency]: priced } });
-    console.log(`[vault-io] portfolio.md: prices updated (${currency})`);
+    if (silo === undefined) return;
+    const telemetry = await readTelemetry();
+    const observed = observePrices(silo, prices, telemetry[currency]);
+    if (observed === null) return; // nothing changed
+    await writeAtomically(encodeTelemetry({ [currency]: observed }), telemetryPath(currency));
+    // The view shows the last prices: generated again, as after any write of the store (the store itself is not touched).
+    await rewriteView(store);
+    console.log(`[vault-io] ${telemetryWhere(currency)}: prices updated (${currency})`);
     return;
   }
   // As the file is, line ends included: the writer keeps every line it did not change.
@@ -472,9 +538,12 @@ async function writeStore(store: PortfolioStore): Promise<void> {
   await rewriteView(store);
 }
 
-/** Generates the views again from the store (`portfolio.md`, and `watchlist.md` once the store holds the watchlist), for a run that finds the state already written. */
+/**
+ * Generates the views again from the store (`portfolio.md`, with the last prices over its positions, and `watchlist.md` once the
+ * store holds the watchlist), for a run that finds the state already written and for a refresh of the prices.
+ */
 export async function rewriteView(store: PortfolioStore): Promise<void> {
-  await writeAtomically(renderView(store));
+  await writeAtomically(renderView(await showingLastPrices(store)));
   if (store.watchlist !== undefined) await writeAtomically(renderWatchlistView(store), watchlistPath());
 }
 
@@ -484,7 +553,7 @@ export async function rewriteView(store: PortfolioStore): Promise<void> {
  */
 export async function readPortfolioView(): Promise<string> {
   const store = await readStore();
-  if (store !== null) return renderView(store);
+  if (store !== null) return renderView(await showingLastPrices(store));
   return readFile(portfolioPath(), "utf8").catch(() => "");
 }
 
