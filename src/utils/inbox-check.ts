@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { CURRENCIES, type Currency, type Difference, type Lot } from "../types.js";
 import type { Ticker } from "../ticker.js";
-import { formatMoney, zero, type Money } from "../money.js";
+import { asNumber, formatMoney, zero, type Money } from "../money.js";
 import { round } from "./round.js";
 import { isDeepStrictEqual } from "node:util";
 import { uniqueDecisionIds } from "./decision-id.js";
@@ -438,7 +438,7 @@ export function checkBatch(state: InboxState, text: string, earlier: Earlier): B
         ...(read.date !== undefined ? { date: read.date } : {}),
         amount: read.amount,
         costs: read.costs ?? zero(read.from),
-        fxRate: read.rate ?? round(read.received! / (read.amount - (read.costs ?? 0)), 6),
+        fxRate: read.rate ?? round(asNumber(read.received!) / (asNumber(read.amount) - asNumber(read.costs ?? 0)), 6),
       })),
       ...deposited.map(({ command, line, read }): Trade => ({
         kind: read.kind,
@@ -1158,7 +1158,7 @@ const signed = (n: number, text: string): string => `${n > 0 ? "+" : n < 0 ? "-"
 export function describeDifference(currency: Currency, date: string, d: Difference): string {
   const head = `the ${currency} snapshot as of ${date} differs from the state in`;
   if (d.kind === "cash") {
-    const size = round(d.broker - d.engine, 2);
+    const size = round(asNumber(d.broker) - asNumber(d.engine), 2);
     return `${head} the cash: the broker has ${formatMoney(d.broker)} ${currency}, the engine ${formatMoney(d.engine)} ${currency} (${signed(size, `${formatMoney(Math.abs(size))} ${currency}`)})`;
   }
   const size = round(d.broker - d.engine, 8);

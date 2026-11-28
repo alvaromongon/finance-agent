@@ -13,7 +13,7 @@
 // conviction; armed breakouts also go out in the heartbeat summary email.
 import { benchmarkFields, buildDecision, setupFields, strengthFields, type Decision } from "../../decisions.js";
 import { latestScreening, setupConviction } from "../conviction.js";
-import { money } from "../../money.js";
+import { asNumber, money } from "../../money.js";
 import { round2 } from "../round.js";
 import { siloValue } from "../sizing.js";
 import { snapshotFromTechnicals, type HistoricalSource } from "../strength.js";
@@ -72,7 +72,7 @@ export async function scanSetups(input: SetupScanInput): Promise<SetupScanResult
         entry,
         bars,
         regime: benchmark?.regime,
-        cash: portfolio.cash,
+        cash: asNumber(portfolio.cash),
         siloValue: silo,
       });
       const strength = snapshotFromTechnicals(ev.technicals);
@@ -89,7 +89,7 @@ export async function scanSetups(input: SetupScanInput): Promise<SetupScanResult
           triggers: ["setup"],
           price: setup.level,
           entry,
-          cash: portfolio.cash,
+          cash: asNumber(portfolio.cash),
           siloValue: silo,
           // The pattern target is the only level that anchors the reasoner's.
           strength: strength ? { ...strength, levels: [setup.target] } : undefined,

@@ -9,6 +9,7 @@
 //
 // What falls short of the framework rules is not hidden: the ticket is
 // computed anyway and comes out with its block reasons, recorded as `buy_blocked`.
+import { asNumber } from "../money.js";
 import { en } from "../i18n/en.js";
 import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
@@ -59,7 +60,7 @@ export function siloValue(portfolio: PortfolioSnapshot, prices?: ReadonlyMap<str
     (sum, p) => sum + p.volume * (prices?.get(p.ticker) ?? p.currentPrice),
     0,
   );
-  return round2((portfolio.totalCash ?? portfolio.cash) + invested);
+  return round2(asNumber(portfolio.totalCash ?? portfolio.cash) + invested);
 }
 
 /**

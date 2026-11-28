@@ -7,6 +7,7 @@
 // touches a silo (`siloOf`).
 import {
   CURRENCIES,
+  type AnySilo,
   type AssetClass,
   type Currency,
   type Difference,
@@ -28,6 +29,7 @@ import {
 import type { Ticker } from "../ticker.js";
 import {
   addCounted,
+  asNumber,
   formatMoney,
   countedInCents,
   exactAmount,
@@ -282,7 +284,7 @@ export type Silos = { readonly [C in Currency]?: PortfolioSnapshot<C> };
 export type InboxState = Silos & { readonly watchlist?: readonly WatchlistEntry[] };
 
 /** The silos of a state, in the order of `CURRENCIES`. */
-export const silosOf = (state: InboxState): PortfolioSnapshot[] => CURRENCIES.flatMap((c) => state[c] ?? []);
+export const silosOf = (state: InboxState): AnySilo[] => CURRENCIES.flatMap((c) => state[c] ?? []);
 
 /**
  * What a handler returns: the new state, or why the command is refused. A buy also says which lot it opened
@@ -456,7 +458,7 @@ const belowHalfACent = (command: { units: number; price: number; currency: Curre
 const tooFewUnits = (units: number): string =>
   `${units} units is below the units tolerance (${UNITS_TOLERANCE}): a lot of that size could never be sold`;
 
-const show = (amount: number, currency: Currency): string => `${formatMoney(amount)} ${currency}`;
+const show = (amount: number | Money, currency: Currency): string => `${formatMoney(amount)} ${currency}`;
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -486,9 +488,13 @@ export function withdrawal<C extends Currency>(state: InboxState, command: Withd
  * Moves cash from the `from` silo to the `to` silo: both change or neither (a refusal returns no state). Every silo is
  * looked up by its own currency (#145) and the two must differ.
  */
-export function convert(state: InboxState, command: Conversion): HandlerResult {
+export function convert<F extends Currency, T extends Currency>(
+  state: InboxState,
+  command: Conversion<F, T>,
+): HandlerResult {
   const { from, to, amount } = command;
-  if (from === to) {
+  const fromCurrency: Currency = from;
+  if (fromCurrency === to) {
     return refused(
       `a conversion needs two currencies: it takes ${from} out of the ${from} silo and gives ${to} back to it`,
     );
@@ -497,7 +503,7 @@ export function convert(state: InboxState, command: Conversion): HandlerResult {
   if (isRefusal(source)) return source;
   const target = siloOf(state, to);
   if (isRefusal(target)) return target;
-  if (!(amount > 0)) return refused(`the conversion must take out an amount greater than zero of ${from}`);
+  if (!(amount > zero(from))) return refused(`the conversion must take out an amount greater than zero of ${from}`);
   const costs = command.costs ?? zero(from);
   if (!(costs < amount)) {
     return refused(
@@ -510,19 +516,23 @@ export function convert(state: InboxState, command: Conversion): HandlerResult {
   if ((command.received === undefined) === (command.rate === undefined)) {
     return refused('a conversion says what arrived with "received" or with "rate", one of the two');
   }
-  let received: Money;
+  let received: Money<T>;
   if (command.received !== undefined) received = command.received;
   else {
     if (!(command.rate! > 0)) return refused("the rate of a conversion must be greater than zero");
-    received = countedInCents((amount - costs) * command.rate!, "the amount the conversion delivers", to);
+    received = countedInCents(
+      (asNumber(amount) - asNumber(costs)) * command.rate!,
+      "the amount the conversion delivers",
+      to,
+    );
   }
-  if (!(received > 0)) {
+  if (!(received > zero(to))) {
     return refused(
       `the conversion of ${show(amount, from)} delivers nothing: ${show(received, to)} would reach the ${to} silo`,
     );
   }
   const taken = movedCash(source, subtractCounted(zero(from), amount, "the conversion"), "the conversion");
-  const given = movedCash(target, received as Money<typeof to>, "the conversion");
+  const given = movedCash(target, received, "the conversion");
   return { state: withSilo(withSilo(state, taken), given) };
 }
 
@@ -548,7 +558,7 @@ export function buy<C extends Currency>(state: InboxState, command: Buy<C>, cont
     `the amount of the buy of ${printable(ticker)}`,
     currency,
   );
-  if (amount === 0) {
+  if (amount === zero(currency)) {
     return refused(`the buy of ${printable(ticker)} costs nothing: ${belowHalfACent(command)}`);
   }
   const cost = addCounted(amount, command.costs ?? zero(currency), `the cost of the buy of ${printable(ticker)}`);
@@ -804,6 +814,8 @@ export function sale<C extends Currency>(
   );
   let shares: SaleShare<C>[];
   try {
+    // The one cast of the money model: the map is by entry id over both silos, and an entry id is of one silo, so the
+    // amounts under the ids of this silo's lots are in its currency; the types cannot see that.
     shares = saleShares(chosen, command, entryCostsTaken as ReadonlyMap<string, Money<C>>);
   } catch (err) {
     // Only the lot arithmetic's own refusals are reasons; anything else is a bug and must crash. Where the
@@ -833,7 +845,7 @@ export function sale<C extends Currency>(
   }
   // Checked after the lots so that an unheld ticker or too many units report their real reason, not this one.
   // A sale that uses up every lot it touches is the way out for dust lots, so it may credit 0.00 (#149, #162).
-  if (amount === 0 && !shares.every((share) => share.unitsLeft === 0)) {
+  if (amount === zero(currency) && !shares.every((share) => share.unitsLeft === 0)) {
     return refused(`the sale of ${printable(ticker)} yields nothing: ${belowHalfACent(command)}`);
   }
   const costs = command.costs ?? zero(currency);

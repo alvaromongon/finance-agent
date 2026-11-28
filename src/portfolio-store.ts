@@ -51,7 +51,7 @@ import {
 import { volumeMismatches } from "./utils/lots-check.js";
 import { skippedWarner } from "./utils/warn-skipped.js";
 import { stalenessOf, type Staleness } from "./utils/staleness.js";
-import { addCounted, countedInCents, formatMoney } from "./money.js";
+import { addCounted, asNumber, countedInCents, formatMoney } from "./money.js";
 import {
   assertPortfolioSections,
   assertSchemaVersion,
@@ -435,9 +435,9 @@ export function ignoringLots<C extends Currency>(read: PortfolioRead<C>): Portfo
 function withCashChange<C extends Currency>(silo: PortfolioSnapshot<C>, delta: number): PortfolioSnapshot<C> {
   if (delta === 0) return silo;
   const by = countedInCents(delta, `the ${silo.currency} cash movement`, silo.currency);
-  if (silo.cash + by < 0) {
+  if (asNumber(silo.cash) + asNumber(by) < 0) {
     throw new Error(
-      `${STORE_WHERE}: this needs ${formatMoney(Math.abs(by))} ${silo.currency}, more than the available cash of ` +
+      `${STORE_WHERE}: this needs ${formatMoney(Math.abs(asNumber(by)))} ${silo.currency}, more than the available cash of ` +
         `${formatMoney(silo.cash)} ${silo.currency} (nothing was recorded)`,
     );
   }

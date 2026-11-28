@@ -12,7 +12,7 @@ import { tradeUnits, type Decision } from "../decisions.js";
 import type { HistoricalBar } from "../providers/types.js";
 import type { Currency, PortfolioSnapshot } from "../types.js";
 import { closeOnOrBefore, daysBetween } from "./forward-returns.js";
-import { isMoreThanACent } from "../money.js";
+import { asNumber, isMoreThanACent } from "../money.js";
 import type { Ticker } from "../ticker.js";
 
 /** Rounding tolerance of units: ten-thousandths. (Cash is compared at the cent, in `money.ts`.) */
@@ -39,7 +39,7 @@ export function flowAmount(d: Decision, currency: Currency): number | null {
       return d.currency === currency ? -d.amount : null;
     case "fx_conversion":
       if (d.currency === currency) return -d.amount;
-      return d.fx_rate != null ? (d.amount - (d.costs ?? 0)) * d.fx_rate : null;
+      return d.fx_rate != null ? (d.amount - asNumber(d.costs ?? 0)) * d.fx_rate : null;
     default:
       return null;
   }
@@ -58,8 +58,8 @@ interface TradeEffect {
 function tradeEffect(d: Decision, currency: Currency): TradeEffect | null {
   if (d.currency !== currency || d.ticker == null || d.price == null || d.amount == null) return null;
   const units = tradeUnits(d);
-  if (d.type === "entry") return { ticker: d.ticker, units, cash: -(d.amount + (d.costs ?? 0)) };
-  if (d.type === "exit") return { ticker: d.ticker, units: -units, cash: d.amount - (d.costs ?? 0) };
+  if (d.type === "entry") return { ticker: d.ticker, units, cash: -(d.amount + asNumber(d.costs ?? 0)) };
+  if (d.type === "exit") return { ticker: d.ticker, units: -units, cash: d.amount - asNumber(d.costs ?? 0) };
   return null;
 }
 
@@ -114,7 +114,7 @@ export function reconstructSilo(input: SiloInput): SiloHistory {
     .sort((a, b) => a.date.localeCompare(b.date));
 
   // Undo from today back to before the start.
-  let cash: number = portfolio.totalCash ?? portfolio.cash;
+  let cash = asNumber(portfolio.totalCash ?? portfolio.cash);
   const units = new Map<Ticker, number>(portfolio.positions.map((p) => [p.ticker, p.volume]));
   for (const e of events) {
     cash -= (e.flow ?? 0) + (e.trade?.cash ?? 0);

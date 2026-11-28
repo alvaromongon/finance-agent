@@ -21,6 +21,7 @@
 //   logs/heartbeat-sent-<currency>.json.
 // - Escalated signals are an informational line: the BUY/SELL alert comes
 //   separately when the Routine resolves them, and a HOLD asks for nothing.
+import { asNumber } from "../money.js";
 import { formatNumber, messages, type Messages } from "../i18n/index.js";
 import { STOP_ATR_BY_HORIZON, type TightStop } from "./atr-stop.js";
 import { describeSetup, type SetupEvaluation } from "./setups/index.js";
@@ -302,11 +303,11 @@ function differencesSection(d: HeartbeatDigest, m: Messages): string[] {
   return [
     ...t.differencesIntro(d.currency, date),
     ...differences.map((x) => {
-      const size = Math.round((x.broker - x.engine) * 1e8) / 1e8;
+      const size = Math.round((asNumber(x.broker) - asNumber(x.engine)) * 1e8) / 1e8;
       return x.kind === "cash"
         ? t.differenceCash(
-            formatNumber(m, x.broker),
-            formatNumber(m, x.engine),
+            formatNumber(m, asNumber(x.broker)),
+            formatNumber(m, asNumber(x.engine)),
             sized(formatNumber(m, Math.abs(size)), size),
             d.currency,
           )

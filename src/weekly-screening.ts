@@ -21,6 +21,7 @@
 // available as an escape hatch behind the same switch as the heartbeat: with
 // ANALYST_PROVIDER=api it calls the API; with "handoff" it fails explicitly
 // so the API is not spent by accident.
+import { asNumber } from "./money.js";
 import { messages, responseLanguageInstruction } from "./i18n/index.js";
 import "dotenv/config";
 import Anthropic from "@anthropic-ai/sdk";
@@ -281,7 +282,7 @@ function currentSetups(
       entry,
       bars,
       regime: benchmark?.regime,
-      cash: portfolio.cash,
+      cash: asNumber(portfolio.cash),
       siloValue: siloValue(portfolio),
     }),
   );

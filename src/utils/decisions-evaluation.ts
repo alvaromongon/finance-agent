@@ -5,7 +5,7 @@
 // Markdown.
 import { messages, type Messages } from "../i18n/index.js";
 import { config } from "../config.js";
-import { unitsWorthACent } from "../money.js";
+import { asNumber, unitsWorthACent } from "../money.js";
 import {
   lotSnapshotProblems,
   tradeUnits,
@@ -469,7 +469,7 @@ export function realizedR(exit: Decision): number | null {
   ) {
     return null;
   }
-  const costPerUnit = ((exit.entry_costs ?? 0) + (exit.costs ?? 0)) / tradeUnits(exit);
+  const costPerUnit = (asNumber(exit.entry_costs ?? 0) + asNumber(exit.costs ?? 0)) / tradeUnits(exit);
   return (exitPrice - entryPrice - costPerUnit) / (entryPrice - stop);
 }
 

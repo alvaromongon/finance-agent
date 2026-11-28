@@ -1,6 +1,7 @@
 // Cheap filter (no LLM): the risk triggers of everything watched. The
 // candidates' entry setups live in utils/setups/ (ADR-0013). See
 // routines/daily-heartbeat.md and strategies/base.md.
+import { asNumber } from "./money.js";
 import { config } from "./config.js";
 import type { Ticker } from "./ticker.js";
 import { siloValue } from "./utils/sizing.js";
@@ -92,7 +93,16 @@ export function evaluateSignals(
 
     if (triggers.length > 0) {
       const currency = entry?.currency ?? position?.currency ?? portfolio.currency;
-      signals.push({ ticker, currency, triggers, price, entry, position, cash: portfolio.cash, siloValue: silo });
+      signals.push({
+        ticker,
+        currency,
+        triggers,
+        price,
+        entry,
+        position,
+        cash: asNumber(portfolio.cash),
+        siloValue: silo,
+      });
     }
   }
 

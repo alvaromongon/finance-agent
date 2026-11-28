@@ -376,7 +376,13 @@ describe("English notes and screening pieces", () => {
   });
 
   it("two-month rule warning", () => {
-    const loss = { type: "exit", ticker: "ADBE", date: "2026-08-31", pnl: -30, currency: "USD" } as Decision;
+    const loss = {
+      type: "exit",
+      ticker: "ADBE",
+      date: "2026-08-31",
+      pnl: money(-30, "USD"),
+      currency: "USD",
+    } as Decision;
     assert.equal(
       twoMonthRuleWarning([loss], tk("ADBE"), "2026-09-15", "real", en),
       "Two-month rule (art. 33.5.f LIRPF): ADBE was sold at a loss (-30 USD) on 2026-08-31. Buying it back before 2026-10-31 defers that loss.",

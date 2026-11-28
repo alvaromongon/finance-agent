@@ -6,7 +6,7 @@
 // source of decision ids (`uniqueDecisionIds`).
 import { createHash } from "node:crypto";
 import { buildDecision, type Decision } from "../decisions.js";
-import { exactAmount } from "../money.js";
+import { asNumber, exactAmount } from "../money.js";
 import type { Trade } from "./inbox-check.js";
 import { uniqueDecisionIds } from "./decision-id.js";
 import { pinKey } from "./inbox-replay.js";
@@ -50,7 +50,7 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
           rules_version: context.rulesVersion,
           origin: "propietario",
           type: trade.kind,
-          amount: trade.amount,
+          amount: asNumber(trade.amount),
         }),
       ];
     }
@@ -83,7 +83,7 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
           rules_version: context.rulesVersion,
           origin: "propietario",
           type: "fx_conversion",
-          amount: trade.amount,
+          amount: asNumber(trade.amount),
           costs: trade.costs,
           fx_rate: trade.fxRate,
         }),
@@ -117,9 +117,9 @@ export function decisionsOf(trades: readonly Trade[], text: string, context: Dec
           rules_version: context.rulesVersion,
           origin: "propietario",
           type: "reconcile",
-          broker: d.broker,
-          engine: d.engine,
-          difference: round(d.broker - d.engine, d.kind === "cash" ? 2 : 8),
+          broker: asNumber(d.broker),
+          engine: asNumber(d.engine),
+          difference: round(asNumber(d.broker) - asNumber(d.engine), d.kind === "cash" ? 2 : 8),
         }),
       );
     }
